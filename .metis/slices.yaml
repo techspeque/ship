@@ -1,2 +1,151 @@
 version: 1
-slices: []
+slices:
+    - id: phase-0-ws-0.1
+      title: Workspace scaffold and verify gate
+      type: feat
+      priority: p2
+      risk: medium
+      stage: foundation
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-0-plan.md
+      plan_section: §0.1
+      coded: false
+      reviewed: false
+      review_cycles: 0
+      created: ""
+    - id: phase-0-ws-0.2
+      title: Domain types and state machines
+      type: feat
+      priority: p2
+      risk: high
+      stage: foundation
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-0-plan.md
+      plan_section: §0.2
+      coded: false
+      reviewed: false
+      review_cycles: 0
+      created: ""
+    - id: phase-0-ws-0.3
+      title: SQLite store and migrations
+      type: feat
+      priority: p2
+      risk: medium
+      stage: foundation
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-0-plan.md
+      plan_section: §0.3
+      coded: false
+      reviewed: false
+      review_cycles: 0
+      created: ""
+    - id: phase-0-ws-0.4
+      title: Daemon skeleton, listeners and logging
+      type: feat
+      priority: p2
+      risk: high
+      stage: foundation
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-0-plan.md
+      plan_section: §0.4
+      coded: false
+      reviewed: false
+      review_cycles: 0
+      created: ""
+    - id: phase-0-ws-0.5
+      title: Docker and Compose preflight
+      type: feat
+      priority: p2
+      risk: medium
+      stage: foundation
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-0-plan.md
+      plan_section: §0.5
+      coded: false
+      reviewed: false
+      review_cycles: 0
+      created: ""
+    - id: phase-0-ws-0.6
+      title: Client transports and targets
+      type: feat
+      priority: p2
+      risk: high
+      stage: foundation
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-0-plan.md
+      plan_section: §0.6
+      coded: false
+      reviewed: false
+      review_cycles: 0
+      created: ""
+    - id: phase-0-ws-0.7
+      title: UI shell
+      type: feat
+      priority: p2
+      risk: medium
+      stage: foundation
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-0-plan.md
+      plan_section: §0.7
+      coded: false
+      reviewed: false
+      review_cycles: 0
+      created: ""
+    - id: phase-0-ws-0.8
+      title: Service install
+      type: feat
+      priority: p2
+      risk: medium
+      stage: foundation
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-0-plan.md
+      plan_section: §0.8
+      coded: false
+      reviewed: false
+      review_cycles: 0
+      created: ""
+    - id: phase-0-ws-0.9
+      title: Release pipeline and install script
+      type: feat
+      priority: p2
+      risk: medium
+      stage: foundation
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-0-plan.md
+      plan_section: §0.9
+      coded: false
+      reviewed: false
+      review_cycles: 0
+      created: ""
+    - id: phase-0-gate
+      title: 'Phase 0 gate: composed-system validation'
+      type: gate
+      priority: p2
+      risk: high
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-0-plan.md
+      plan_section: Phase Gate
+      coded: false
+      reviewed: false
+      review_cycles: 0
+      blocked_by:
+        - phase-0-ws-0.1
+        - phase-0-ws-0.2
+        - phase-0-ws-0.3
+        - phase-0-ws-0.4
+        - phase-0-ws-0.5
+        - phase-0-ws-0.6
+        - phase-0-ws-0.7
+        - phase-0-ws-0.8
+        - phase-0-ws-0.9
+      created: ""
