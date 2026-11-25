@@ -113,6 +113,9 @@ findings:
       severity: P2
       category: tests
       finding: crates/ship/tests/ssh_real.rs:148 — The real-sshd test accepts 503 when the UI is absent, and the CI ssh job never builds web/dist, so it does not perform the brief-required real-SSH GET of the UI. Build the UI before compiling ship in that job and require HTTP 200 with the embedded index content in the real-SSH test.
-      status: open
+      status: resolved
+      resolved_by: commit 23f978fb6a17; crates/ship/tests/ssh_real.rs:143
       cycle: 1
       file: crates/ship/tests/ssh_real.rs
+      commit: 23f978fb6a17b8aa41f29706095d204b41a0570f
+      evidence: crates/ship/tests/ssh_real.rs:143
