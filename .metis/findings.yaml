@@ -101,3 +101,12 @@ findings:
       status: open
       cycle: 1
       file: crates/ship/src/open.rs
+    - id: f-010
+      date: "2026-11-25"
+      slice: phase-0-ws-0.7
+      severity: P2
+      category: tests
+      finding: crates/ship/tests/ssh_real.rs:148 — The real-sshd test accepts 503 when the UI is absent, and the CI ssh job never builds web/dist, so it does not perform the brief-required real-SSH GET of the UI. Build the UI before compiling ship in that job and require HTTP 200 with the embedded index content in the real-SSH test.
+      status: open
+      cycle: 1
+      file: crates/ship/tests/ssh_real.rs
