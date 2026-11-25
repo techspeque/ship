@@ -14,6 +14,10 @@ slices:
       reviewed: false
       review_cycles: 0
       created: ""
+      waiting:
+        reason: 'auto: session_failed'
+        since: "2026-11-25T01:13:23Z"
+        human: true
     - id: phase-0-ws-0.6
       title: Client transports and targets
       type: feat
