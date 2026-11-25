@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use clap::{Subcommand, ValueEnum};
 use serde::Serialize;
-use ship_core::ProjectList;
-use ship_core::api::PROJECTS_PATH;
+use ship_core::api::{HOST_PATH, PROJECTS_PATH};
+use ship_core::{DockerStatus, HostInfo, ProjectList};
 use ship_net::{DEFAULT_SOCKET, TARGET_FORMS, Target};
 
 use crate::client::{self, ClientError, Endpoint};
@@ -52,6 +52,20 @@ pub enum TargetCommand {
 
 #[derive(Debug, clap::Args)]
 pub struct ProjectsArgs {
+    #[arg(short = 'o', long = "output", value_enum, default_value_t)]
+    output: Output,
+    /// Give up after this many seconds, including the ssh connection.
+    #[arg(long, value_name = "SECS", default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..=3600))]
+    timeout: u64,
+}
+
+#[derive(Debug, clap::Args)]
+#[command(
+    after_help = "Exit status: 0 when the daemon answered, whatever Docker's status \
+                        (this is a report, not a check); 1 when the daemon could not be \
+                        reached or refused; 2 on a usage error."
+)]
+pub struct HostArgs {
     #[arg(short = 'o', long = "output", value_enum, default_value_t)]
     output: Output,
     /// Give up after this many seconds, including the ssh connection.
@@ -196,26 +210,100 @@ pub(crate) fn runtime() -> Result<tokio::runtime::Runtime, ExitCode> {
         .map_err(|e| fail(format!("cannot start the runtime: {e}"), FAILURE))
 }
 
-pub fn projects(args: ProjectsArgs) -> ExitCode {
-    let endpoint = match endpoint() {
-        Ok(e) => e,
-        Err(code) => return code,
-    };
-    let rt = match runtime() {
-        Ok(rt) => rt,
-        Err(code) => return code,
-    };
-    let timeout = Duration::from_secs(args.timeout);
-    let result: Result<ProjectList, ClientError> =
-        rt.block_on(client::get_json(&endpoint, PROJECTS_PATH, timeout));
+/// `GET path` from the current target as `T`; on failure the message is
+/// already printed and the exit code returned.
+fn fetch<T: serde::de::DeserializeOwned>(path: &str, timeout_secs: u64) -> Result<T, ExitCode> {
+    let endpoint = endpoint()?;
+    let rt = runtime()?;
+    let timeout = Duration::from_secs(timeout_secs);
+    let result: Result<T, ClientError> = rt.block_on(client::get_json(&endpoint, path, timeout));
     // Drop the runtime now so an ssh child is reaped before printing.
     drop(rt);
-    match result {
+    result.map_err(|e| fail(e, FAILURE))
+}
+
+pub fn projects(args: ProjectsArgs) -> ExitCode {
+    match fetch::<ProjectList>(PROJECTS_PATH, args.timeout) {
         Ok(list) => {
             print!("{}", render_projects(&list, args.output));
             ExitCode::SUCCESS
         }
-        Err(e) => fail(e, FAILURE),
+        Err(code) => code,
+    }
+}
+
+/// Exit 0 whenever the daemon answered: Docker's status is reported, not
+/// judged.
+pub fn host(args: HostArgs) -> ExitCode {
+    match fetch::<HostInfo>(HOST_PATH, args.timeout) {
+        Ok(info) => {
+            print!("{}", render_host(&info, args.output));
+            ExitCode::SUCCESS
+        }
+        Err(code) => code,
+    }
+}
+
+/// `-o json` is the contract shape (ADR-0004 rule 2): the daemon's
+/// [`HostInfo`] pretty-printed and a newline. Text is one block with
+/// Docker's status first and, unless `ready`, the daemon's message verbatim.
+fn render_host(info: &HostInfo, output: Output) -> String {
+    if output == Output::Json {
+        let mut s = serde_json::to_string_pretty(info).expect("host info serialises");
+        s.push('\n');
+        return s;
+    }
+    let docker = &info.docker;
+    let mut lines = vec![("Docker", docker.status.as_str().to_owned())];
+    if docker.status != DockerStatus::Ready
+        && let Some(message) = &docker.message
+    {
+        lines.push(("Message", message.clone()));
+    }
+    let version = |v: &Option<String>, range: &str| {
+        format!("{} (supported {range})", v.as_deref().unwrap_or("unknown"))
+    };
+    lines.push((
+        "Engine",
+        version(&docker.engine_version, &docker.supported.engine),
+    ));
+    lines.push((
+        "Compose",
+        version(&docker.compose_version, &docker.supported.compose),
+    ));
+    let c = &info.capacity;
+    let cpus = match c.cpus {
+        Some(1) => "1 CPU".to_owned(),
+        Some(n) => format!("{n} CPUs"),
+        None => "unknown CPUs".to_owned(),
+    };
+    lines.push((
+        "Host",
+        format!(
+            "{} {}, {cpus}, {} memory, {} disk free",
+            info.os,
+            info.arch,
+            gib(c.memory_bytes),
+            gib(c.disk_free_bytes)
+        ),
+    ));
+    lines.push((
+        "Daemon",
+        format!("ship {}, API {}", info.version, info.api_version),
+    ));
+    let mut s = String::new();
+    for (label, value) in lines {
+        s.push_str(&format!("{:10}{value}\n", format!("{label}:")));
+    }
+    s
+}
+
+/// Bytes as GiB with one decimal; `unknown` when absent.
+fn gib(bytes: Option<u64>) -> String {
+    match bytes {
+        #[allow(clippy::cast_precision_loss)] // one decimal is shown
+        Some(b) => format!("{:.1} GiB", b as f64 / (1u64 << 30) as f64),
+        None => "unknown".to_owned(),
     }
 }
 
@@ -305,6 +393,78 @@ mod tests {
             "SLUG    ID                              CREATED\n\
              my-app  prj_01aryz6s41tsv4rrffq69g5fav  2016-07-30T22:36:16.385Z\n"
         );
+    }
+
+    const HOST_FIXTURE: &str = include_str!("../tests/fixtures/host.json");
+
+    fn fixture_host() -> HostInfo {
+        serde_json::from_str(HOST_FIXTURE).unwrap()
+    }
+
+    #[test]
+    fn host_json_is_the_fixture() {
+        assert_eq!(render_host(&fixture_host(), Output::Json), HOST_FIXTURE);
+    }
+
+    #[test]
+    fn host_text_ready() {
+        assert_eq!(
+            render_host(&fixture_host(), Output::Text),
+            "Docker:   ready\n\
+             Engine:   28.3.2 (supported >= 24.0.0, < 30.0.0)\n\
+             Compose:  2.39.1 (supported >= 2.20.0, < 6.0.0)\n\
+             Host:     linux x86_64, 4 CPUs, 8.0 GiB memory, 100.0 GiB disk free\n\
+             Daemon:   ship 0.0.0, API v1\n"
+        );
+    }
+
+    #[test]
+    fn host_text_unreachable_puts_status_then_message_verbatim() {
+        let mut info = fixture_host();
+        let message = "Docker Engine is not reachable: x. Start Docker (systemctl start docker).";
+        info.docker.status = DockerStatus::Unreachable;
+        info.docker.engine_version = None;
+        info.docker.compose_version = None;
+        info.docker.message = Some(message.to_owned());
+        info.capacity = ship_core::HostCapacity {
+            cpus: Some(1),
+            memory_bytes: None,
+            disk_free_bytes: None,
+        };
+        let text = render_host(&info, Output::Text);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "Docker:   unreachable");
+        assert_eq!(lines[1], format!("Message:  {message}"));
+        assert_eq!(
+            lines[2],
+            "Engine:   unknown (supported >= 24.0.0, < 30.0.0)"
+        );
+        assert_eq!(lines[3], "Compose:  unknown (supported >= 2.20.0, < 6.0.0)");
+        assert_eq!(
+            lines[4],
+            "Host:     linux x86_64, 1 CPU, unknown memory, unknown disk free"
+        );
+    }
+
+    #[test]
+    fn host_text_unsupported_version_shows_message() {
+        let mut info = fixture_host();
+        info.docker.status = DockerStatus::UnsupportedVersion;
+        info.docker.engine_version = Some("20.10.24".to_owned());
+        info.docker.message = Some("Docker Engine 20.10.24 is outside >= 24.0.0".to_owned());
+        let text = render_host(&info, Output::Text);
+        assert!(text.starts_with(
+            "Docker:   unsupported_version\n\
+             Message:  Docker Engine 20.10.24 is outside >= 24.0.0\n\
+             Engine:   20.10.24 (supported"
+        ));
+    }
+
+    #[test]
+    fn gib_formatting() {
+        assert_eq!(gib(None), "unknown");
+        assert_eq!(gib(Some(0)), "0.0 GiB");
+        assert_eq!(gib(Some(16_314_660 * 1024)), "15.6 GiB");
     }
 
     #[test]

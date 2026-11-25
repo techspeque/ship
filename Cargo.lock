@@ -947,6 +947,7 @@ dependencies = [
  "serde_json",
  "ship-core",
  "ship-daemon",
+ "ship-docker",
  "ship-net",
  "tempfile",
  "tokio",

@@ -7,8 +7,9 @@ hosted account. See [OVERVIEW.md](OVERVIEW.md) for the full specification.
 ## Status
 
 **Pre-alpha.** Nothing deploys yet. Phase 0 is the foundation: `ship
-daemon`, `ship service install`, `ship target`, `ship projects` (an empty
-registry), `ship open` (the UI shell) and `ship --version`.
+daemon`, `ship service install`, `ship target`, `ship host` (host and
+Docker status), `ship projects` (an empty registry), `ship open` (the UI
+shell) and `ship --version`.
 
 - Before v1.0 the CLI, the HTTP API and the storage formats may change
   without notice. Semantic versioning applies from v1.0.
@@ -27,6 +28,16 @@ Only what CI builds and tests is claimed:
 
 `ship daemon` and `ship service` run on Linux only. Further platforms are
 added here when CI covers them.
+
+## Footprint
+
+One measurement, taken at the Phase 0 gate, not a guarantee: on Ubuntu,
+x86_64, a static musl build, about 3 minutes after start with no projects,
+the idle daemon held 5.7 MB resident memory (VmRSS 5716 kB, peak the
+same), ran 10 threads and had used 0.21 s of CPU in total since start.
+`ship projects` over ssh on a LAN took 0.12–0.13 s per run with an
+already-open ssh connection; a bare `ssh HOST true` took 0.12 s on the same
+link.
 
 ## Install
 

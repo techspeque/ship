@@ -1,9 +1,8 @@
 //! The `ship` binary: client commands and `ship daemon` dispatch.
 //!
-//! Phase 0: `--version` / `-V`, `ship daemon`, `ship target`, `ship
-//! projects`, `ship open`, `ship dial-stdio` and `ship service`. Exit codes: 0
-//! success, 1 failure, 2
-//! usage error.
+//! Phase 0: `--version` / `-V`, `ship daemon`, `ship target`, `ship host`,
+//! `ship projects`, `ship open`, `ship dial-stdio` and `ship service`. Exit
+//! codes: 0 success, 1 failure, 2 usage error.
 
 mod client;
 mod commands;
@@ -48,6 +47,8 @@ enum Command {
     /// Manage the daemons this client talks to.
     #[command(subcommand)]
     Target(commands::TargetCommand),
+    /// Show the current target's host and Docker status.
+    Host(commands::HostArgs),
     /// List the projects on the current target.
     Projects(commands::ProjectsArgs),
     /// Open the current target's UI in a browser; over ssh, forward it
@@ -185,6 +186,7 @@ fn main() -> ExitCode {
     match cli.command {
         Some(Command::Daemon(args)) => daemon(args),
         Some(Command::Target(command)) => commands::target(command),
+        Some(Command::Host(args)) => commands::host(args),
         Some(Command::Projects(args)) => commands::projects(args),
         Some(Command::Open(args)) => open::open(args),
         Some(Command::DialStdio(args)) => commands::dial_stdio(args),

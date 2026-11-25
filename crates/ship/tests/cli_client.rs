@@ -14,11 +14,44 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use ship_docker::Runner;
+
 const SHIP: &str = env!("CARGO_BIN_EXE_ship");
 const FIXTURE: &str = include_str!("fixtures/projects-empty.json");
+const HOST_FIXTURE: &str = include_str!("fixtures/host.json");
+
+/// A fake `docker` answering `version` with 28.3.2 and `compose version`
+/// with 2.39.1, the fixture's versions.
+const FAKE_DOCKER: &str = r#"#!/bin/sh
+case "$1" in
+  version) echo 28.3.2 ;;
+  compose) echo 2.39.1 ;;
+  *) exit 64 ;;
+esac
+"#;
+
+/// A runner for [`FAKE_DOCKER`]. Written once per test binary, so no test
+/// executes a file another thread still has open for writing.
+fn fake_docker() -> Runner {
+    static PATH: OnceLock<(tempfile::TempDir, PathBuf)> = OnceLock::new();
+    let (_, path) = PATH.get_or_init(|| {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("docker");
+        fs::write(&path, FAKE_DOCKER).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        (dir, path)
+    });
+    Runner::new(path)
+}
+
+/// The real `docker` CLI pointed at an Engine socket that cannot exist.
+fn unreachable_docker() -> Runner {
+    Runner::docker().env("DOCKER_HOST", "unix:///nonexistent/ship-test/docker.sock")
+}
 
 /// A fake `ssh`: records its arguments one per line, then either hangs or
 /// runs the remote command's `ship …` words with the real binary.
@@ -135,17 +168,25 @@ struct Daemon {
 
 impl Daemon {
     fn start(dir: &Path) -> Daemon {
+        Daemon::start_with(dir, None)
+    }
+
+    /// With `docker` as the daemon's Docker runner, or the default.
+    fn start_with(dir: &Path, docker: Option<Runner>) -> Daemon {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
             .build()
             .unwrap();
-        let config = ship_daemon::Config {
+        let mut config = ship_daemon::Config {
             state_dir: dir.join("state"),
             socket_path: dir.join("ship.sock"),
             port: 0,
             ..ship_daemon::Config::new(ship_daemon::Redactor::new())
         };
+        if let Some(docker) = docker {
+            config.docker = docker;
+        }
         let running = rt.block_on(ship_daemon::start(&config)).unwrap();
         let socket = running.socket_path().to_path_buf();
         Daemon {
@@ -513,4 +554,143 @@ fn incompatible_daemon_gets_the_upgrade_instruction() {
     assert!(err.contains("speaks API v1"), "{err}");
     assert!(err.contains("the daemon speaks v2"), "{err}");
     assert!(err.contains("Upgrade this client to ship 9.0.0"), "{err}");
+}
+
+/// `ship host -o json` with the fields that vary by host and build set to
+/// the fixture's values, after checking each has the right JSON type.
+fn normalised_host(stdout: &[u8]) -> serde_json::Value {
+    let fixture: serde_json::Value = serde_json::from_str(HOST_FIXTURE).unwrap();
+    let mut v: serde_json::Value = serde_json::from_slice(stdout).unwrap();
+    for key in ["version", "os", "arch"] {
+        assert!(v[key].is_string(), "{key}: {v}");
+        v[key] = fixture[key].clone();
+    }
+    for key in ["cpus", "memory_bytes", "disk_free_bytes"] {
+        let n = &v["capacity"][key];
+        assert!(n.is_u64() || n.is_null(), "capacity.{key}: {v}");
+        v["capacity"][key] = fixture["capacity"][key].clone();
+    }
+    v
+}
+
+/// `ship host -o json` output with the `disk_free_bytes` line's value
+/// blanked, so two answers can be compared byte for byte.
+fn without_disk_free(stdout: &[u8]) -> String {
+    let text = String::from_utf8(stdout.to_vec()).unwrap();
+    let mut out = String::new();
+    for line in text.split_inclusive('\n') {
+        if line.trim_start().starts_with("\"disk_free_bytes\":") {
+            out.push_str("    \"disk_free_bytes\": _\n");
+        } else {
+            out.push_str(line);
+        }
+    }
+    assert_eq!(out.matches("disk_free_bytes").count(), 1, "{text}");
+    out
+}
+
+#[test]
+fn host_json_matches_fixture_over_local_and_ssh() {
+    let env = Env::new();
+    let daemon = Daemon::start_with(env.path(), Some(fake_docker()));
+    env.add("here", "local", Some(&daemon.socket));
+    env.add("lab", "ssh://tester@lab.example", Some(&daemon.socket));
+
+    let local = env.run(&["host", "-o", "json"]);
+    assert!(local.status.success(), "{}", show(&local));
+    let fixture: serde_json::Value = serde_json::from_str(HOST_FIXTURE).unwrap();
+    assert_eq!(normalised_host(&local.stdout), fixture);
+    let text = String::from_utf8(local.stdout.clone()).unwrap();
+    assert!(
+        text.starts_with("{\n  \"api_version\": \"v1\",\n"),
+        "{text}"
+    );
+    assert!(text.ends_with("}\n"), "{text}");
+
+    let out = env.run(&["target", "use", "lab"]);
+    assert!(out.status.success(), "{}", show(&out));
+    let ssh = env.run(&["host", "-o", "json"]);
+    assert!(ssh.status.success(), "{}", show(&ssh));
+    // Free disk is read live on every request, so only that line may differ
+    // between the two answers; every other byte is the same.
+    assert_eq!(normalised_host(&ssh.stdout), fixture);
+    assert_eq!(
+        without_disk_free(&ssh.stdout),
+        without_disk_free(&local.stdout)
+    );
+    assert!(env.recorded_argv().contains(&"dial-stdio".to_owned()));
+}
+
+#[test]
+fn host_text_with_docker_ready() {
+    let env = Env::new();
+    let daemon = Daemon::start_with(env.path(), Some(fake_docker()));
+    env.add("here", "local", Some(&daemon.socket));
+    let out = env.run(&["host"]);
+    assert!(out.status.success(), "{}", show(&out));
+    let text = String::from_utf8(out.stdout).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[0], "Docker:   ready", "{text}");
+    assert!(
+        lines[1].starts_with("Engine:   28.3.2 (supported "),
+        "{text}"
+    );
+    assert!(
+        lines[2].starts_with("Compose:  2.39.1 (supported "),
+        "{text}"
+    );
+    assert!(!text.contains("Message:"), "{text}");
+    let daemon_line = format!("Daemon:   ship {}, API v1", env!("CARGO_PKG_VERSION"));
+    assert!(text.contains(&daemon_line), "{text}");
+}
+
+#[test]
+fn host_with_docker_unreachable_reports_it_and_exits_zero() {
+    let env = Env::new();
+    let daemon = Daemon::start_with(env.path(), Some(unreachable_docker()));
+    env.add("here", "local", Some(&daemon.socket));
+
+    let out = env.run(&["host", "-o", "json"]);
+    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["docker"]["status"], "unreachable", "{v}");
+    let message = v["docker"]["message"].as_str().unwrap().to_owned();
+
+    let out = env.run(&["host"]);
+    assert_eq!(out.status.code(), Some(0), "{}", show(&out));
+    let text = String::from_utf8(out.stdout).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[0], "Docker:   unreachable", "{text}");
+    assert_eq!(lines[1], format!("Message:  {message}"), "{text}");
+    assert!(
+        lines[2].starts_with("Engine:   unknown (supported "),
+        "{text}"
+    );
+
+    // The daemon is still serving afterwards.
+    let out = env.run(&["projects", "-o", "json"]);
+    assert!(out.status.success(), "{}", show(&out));
+}
+
+#[test]
+fn host_without_a_daemon_fails_and_says_how_to_start_one() {
+    let env = Env::new();
+    let socket = env.path().join("absent.sock");
+    env.add("here", "local", Some(&socket));
+    let out = env.run(&["host"]);
+    assert_eq!(out.status.code(), Some(1), "{}", show(&out));
+    assert!(out.stdout.is_empty(), "{}", show(&out));
+    let err = stderr(&out);
+    assert!(err.contains("systemctl start ship"), "{err}");
+}
+
+#[test]
+fn host_help_states_the_exit_status() {
+    let out = Env::new().run(&["host", "--help"]);
+    assert!(out.status.success(), "{}", show(&out));
+    let help = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        help.contains("0 when the daemon answered, whatever Docker's status"),
+        "{help}"
+    );
 }
