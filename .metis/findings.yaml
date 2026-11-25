@@ -1,1 +1,10 @@
-findings: []
+findings:
+    - id: f-001
+      date: "2026-11-25"
+      slice: phase-0-ws-0.1
+      severity: P2
+      category: correctness
+      finding: 'crates/ship/tests/dependency_rule.rs:110-113 — is_dependency_table ignores valid quoted TOML section names: ["dependencies"] followed by ship-docker = { path = "../ship-docker" } yields no violation for ship-store, bypassing the brief requirement to reject leaf-to-leaf dependencies in any dependency section. A reviewer regression reproduced the empty result. Recognize quoted dependency table segments (including dev/build/target-specific forms) and add regression coverage.'
+      status: open
+      cycle: 1
+      file: crates/ship/tests/dependency_rule.rs
