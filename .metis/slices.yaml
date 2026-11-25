@@ -14,10 +14,6 @@ slices:
       reviewed: false
       review_cycles: 0
       created: ""
-      waiting:
-        reason: 'auto: no_progress'
-        since: "2026-11-25T00:48:20Z"
-        human: true
     - id: phase-0-ws-0.5
       title: Docker and Compose preflight
       type: feat
