@@ -1,8 +1,11 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
+
   import { HOST_PATH, PROJECTS_PATH, getJson, isHostInfo, isProjectList } from './lib/api';
   import type { HostInfo, ProjectList } from './lib/api';
   import HostCard from './lib/HostCard.svelte';
   import Projects from './lib/Projects.svelte';
+  import { Poller } from './lib/poller.svelte';
   import { FOCUS } from './lib/tone';
   import { announcement, hostView, projectsView, type Load } from './lib/view';
 
@@ -10,7 +13,6 @@
 
   let host: Load<HostInfo> = $state({ kind: 'loading' });
   let projects: Load<ProjectList> = $state({ kind: 'loading' });
-  let refreshing = $state(false);
 
   const hv = $derived(hostView(host));
   const pv = $derived(projectsView(projects));
@@ -26,26 +28,21 @@
 
   // The last answer stays on screen until the next one arrives, so a
   // refresh never flashes back to "loading".
-  async function refresh(): Promise<void> {
-    if (refreshing) return;
-    refreshing = true;
-    try {
-      const [h, p] = await Promise.all([
-        load(HOST_PATH, isHostInfo),
-        load(PROJECTS_PATH, isProjectList),
-      ]);
-      host = h;
-      projects = p;
-    } finally {
-      refreshing = false;
-    }
+  const poller = new Poller(async () => {
+    const [h, p] = await Promise.all([
+      load(HOST_PATH, isHostInfo),
+      load(PROJECTS_PATH, isProjectList),
+    ]);
+    host = h;
+    projects = p;
+  });
+  const refreshing = $derived(poller.refreshing);
+
+  function refresh(): Promise<void> {
+    return poller.refresh();
   }
 
-  $effect(() => {
-    void refresh();
-    const timer = setInterval(() => void refresh(), POLL_MS);
-    return () => clearInterval(timer);
-  });
+  onMount(() => poller.start(POLL_MS));
 </script>
 
 <a
