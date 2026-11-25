@@ -53,6 +53,9 @@ findings:
       severity: P2
       category: behavior
       finding: 'crates/ship-daemon/src/log.rs:62-67 — Redacting raw byte patterns across the serialized record corrupts JSON syntax for valid registered secrets. Reproduced by registering a single double-quote: a JSON record becomes {[redacted]fields[redacted]:{[redacted]message[redacted]:[redacted]hello [redacted] secret[redacted]}}, which cannot be parsed as JSON. Preserve JSON structure while redacting secret-bearing values and add regression coverage for quote/backslash-only and numeric secrets, asserting that emitted records remain parseable and secret values are removed.'
-      status: open
+      status: resolved
+      resolved_by: commit 69d4cd94540b; test json_syntax_and_numeric_secrets_keep_records_parseable; Independent forced metis verify --post passed.
       cycle: 1
       file: crates/ship-daemon/src/log.rs
+      commit: 69d4cd94540b3f69c035772a1e500b5e78b95647
+      evidence: test json_syntax_and_numeric_secrets_keep_records_parseable
