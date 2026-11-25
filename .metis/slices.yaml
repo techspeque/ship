@@ -1,5 +1,20 @@
 version: 1
 slices:
+    - id: fix-0005
+      title: ship open fails over an ssh server that refuses unix-socket forwarding (Tailscale SSH)
+      type: fix
+      priority: p1
+      risk: high
+      stage: foundation
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-0-plan.md
+      plan_section: §0.7
+      coded: false
+      reviewed: false
+      review_cycles: 0
+      notes: 'Found at the Phase 0 gate. ship open over an ssh:// target runs ''ssh -N -T -o BatchMode=yes -o ExitOnForwardFailure=yes -l USER -L 127.0.0.1:PORT:/run/ship/ship.sock -- HOST''. When the host is reached through Tailscale SSH (tailscaled answers port 22 on the tailnet address, not OpenSSH) the forward listener comes up but every channel is refused: ''channel 1: open failed: administratively prohibited: socket path "/run/ship/ship.sock" is not in an allowed directory: ssh: rejected''. The same command through OpenSSH on the same host works (UI 200). Every other command works over Tailscale SSH because it uses ''ssh HOST ship dial-stdio'' (ship projects -o json matched the fixture there). ship open then prints only ''the daemon on USER@HOST did not answer through the ssh forward within 30s'', hiding the reason. Required: (1) ship open must work on any ssh server that can run ''ship dial-stdio'', with no dependence on streamlocal forwarding: listen on 127.0.0.1:PORT in the ship process and carry each accepted connection over its own ''ssh ... HOST ship dial-stdio'' child (the transport ADR-0003 names), reusing ship-net''s existing structured argv and hostile-value checks; bind 127.0.0.1 only, never 0.0.0.0; on Ctrl-C stop accepting, end every child and leave no ssh process behind; bound the number of concurrent children. (2) Keep the same-origin and Host guard behaviour seen through the forward today (foreign Origin POST -> 403; UI and /api/v1/host work with Host 127.0.0.1:PORT). (3) When the first connection fails, print ssh''s own stderr reason. (4) Tests: with the fake ssh used by cli_client tests, ship open serves /healthz and the UI index through dial-stdio, concurrent requests work, and no child survives Ctrl-C. Say in the report whether OpenSSH -L was kept as anything; prefer one path. The supervisor verifies against a host behind Tailscale SSH after the change.'
+      created: "2026-11-25"
     - id: phase-0-gate
       title: 'Phase 0 gate: composed-system validation'
       type: gate
