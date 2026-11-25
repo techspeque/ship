@@ -74,18 +74,3 @@ slices:
         - phase-0-ws-0.8
         - phase-0-ws-0.9
       created: ""
-    - id: fix-0001
-      title: Store reopen straight after close fails intermittently with NotFound
-      type: fix
-      priority: p1
-      risk: medium
-      stage: foundation
-      coder: claude-code/opus-5-5
-      reviewer: codex/gpt-6-astra
-      plan: .metis/plans/phase-0-plan.md
-      plan_section: §0.3
-      coded: true
-      reviewed: true
-      review_cycles: 0
-      notes: 'crates/ship-store/tests/store.rs:231: Store::open(dir) immediately after store.close().await returns Io(NotFound) in about 1 run in 5 (8 of 40 runs of the store test binary; also reproduces with only project_environment_service_roundtrip selected). Introduced in phase-0-ws-0.3 (fd713de, 753a65e). Likely cause to confirm, not assume: close() returns before SQLite has finished removing the -wal/-shm sidecars, and open()''s read-only schema-version probe or pre-migration backup lists then reads a sidecar that has gone. Required: close() leaves no connection open when it returns, open() tolerates a sidecar disappearing between listing and reading, and a regression test loops close-then-open enough times to have caught this. make verify must pass 20 consecutive runs.'
-      created: "2026-11-25"
