@@ -1,0 +1,21 @@
+# A crate that exists only to depend on a version with a known
+# vulnerability: smallvec 1.6.0, RUSTSEC-2021-0003 (buffer overflow in
+# SmallVec::insert_many, fixed in 1.6.1). CI job `audit` runs
+# `cargo deny check advisories` on it and requires that check to fail, which
+# shows the audit catches a known vulnerability. Never built.
+
+[package]
+name = "ship-audit-fixture"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MIT"
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+smallvec = "=1.6.0"
+
+# Not a member of the repository's workspace.
+[workspace]

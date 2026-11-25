@@ -52,6 +52,25 @@ cd web && npm test   # then update api.ts until this passes
 `cd web && npm run dev` serves the UI with hot reload against a daemon on
 `127.0.0.1:7180`.
 
+## Dependency audit
+
+CI job `audit` runs `cargo deny check` against [deny.toml](deny.toml)
+(RustSec advisories, licences, sources, bans), `npm audit` in `web/` and
+`node scripts/web-licenses.mjs` (the web licence allowlist). Any known
+vulnerability or unlisted licence fails the job. A new dependency with a
+licence outside the allowlist needs the allowlist changed in both files,
+in the same pull request, with the reason. Locally, with `cargo-deny`
+installed:
+
+```sh
+cargo deny --locked check
+cd web && npm audit && cd .. && node scripts/web-licenses.mjs
+```
+
+## Releases
+
+See [docs/release.md](docs/release.md).
+
 ## Workspace layout
 
 The crates and the dependency rule are in OVERVIEW §2.3. `ship` and

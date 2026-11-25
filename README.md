@@ -6,8 +6,9 @@ hosted account. See [OVERVIEW.md](OVERVIEW.md) for the full specification.
 
 ## Status
 
-**Pre-alpha.** Nothing deploys yet: the repository holds the workspace
-scaffold, and `ship --version` is the only working command.
+**Pre-alpha.** Nothing deploys yet. Phase 0 is the foundation: `ship
+daemon`, `ship service install`, `ship target`, `ship projects` (an empty
+registry), `ship open` (the UI shell) and `ship --version`.
 
 - Before v1.0 the CLI, the HTTP API and the storage formats may change
   without notice. Semantic versioning applies from v1.0.
@@ -17,11 +18,35 @@ scaffold, and `ship --version` is the only working command.
 
 Only what CI builds and tests is claimed:
 
-| Platform     | CI                        |
-|--------------|---------------------------|
-| linux amd64  | build, lint, unit tests   |
+| Platform     | Role             | CI                                                                                                                                                                  |
+|--------------|------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| linux amd64  | daemon and client | build, lint, unit tests; real Docker Engine, real sshd and real systemd tests; static release build run with no libraries and no network; `install.sh` self-test |
+| linux arm64  | daemon and client | static release build run with no libraries and no network                                                                                                           |
+| macOS arm64  | client           | release build, `ship --version`; `install.sh` self-test                                                                                                             |
+| macOS amd64  | client           | release build only (cross-compiled; not run in CI)                                                                                                                  |
 
-Further platforms are added here when CI covers them.
+`ship daemon` and `ship service` run on Linux only. Further platforms are
+added here when CI covers them.
+
+## Install
+
+Each release carries four archives, `SHA256SUMS`, a Sigstore signature
+bundle (`*.sigstore.json`) for every file, an SPDX SBOM and `install.sh`.
+The script verifies the signature (with [cosign](https://docs.sigstore.dev/cosign/system_config/installation/),
+which must be installed, 2.4 or later) and the SHA-256 before it installs
+anything, and refuses otherwise. Download it, read it, then run it as
+yourself. Do not pipe it into a root shell:
+
+```sh
+curl -fsSLO https://github.com/techspeque/ship/releases/latest/download/install.sh
+less install.sh
+sh install.sh                       # or: sh install.sh --version v0.0.1 --prefix ~/bin
+```
+
+It installs to `/usr/local/bin` when that is writable, otherwise
+`~/.local/bin`. With an explicit `--prefix` that is not writable, only the
+final copy uses `sudo`. To verify by hand instead, see
+[docs/release.md](docs/release.md).
 
 ## Build
 

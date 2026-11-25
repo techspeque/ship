@@ -61,7 +61,7 @@ Design decisions:
   `scripts/no-network-smoke.sh` runs every Phase 0 command that needs no
   root under `strace -f`: `--version`, `--help`, `target add/list/use`,
   `daemon` on a temp state dir and socket, `projects -o json` over the
-  local socket, `dial-stdio` with stdin closed. It fails on any `connect`,
+  local socket, `dial-stdio` carrying one `GET /healthz`. It fails on any `connect`,
   `sendto` or `sendmsg` to an `AF_INET` / `AF_INET6` address. It runs on
   both Linux arches. On macOS, the arm64 binary runs `--version`.
 - **Workflow triggers:** `release.yml` runs on `push: tags: v*` (build,
@@ -167,4 +167,37 @@ None.
 
 ## Report
 
-Filled at implementation.
+- `.github/workflows/release.yml` (new): jobs `version` (tag must equal
+  `v` + the workspace version), `ui`, `build` (matrix of 4 targets; Linux
+  static, busybox and no-network checks), `sbom-and-sums` (Syft SPDX and
+  `SHA256SUMS`), `publish` (tags only; cosign keyless signing, install.sh
+  verification with real cosign plus 2 tamper cases, `gh release create
+  --prerelease`).
+- `.github/workflows/ci.yml`: new jobs `audit` (cargo-deny, npm audit, web
+  licences, vulnerable-fixture self-test) and `install-script` (shellcheck
+  and `install-selftest.sh` on ubuntu-latest and macos-latest).
+- `scripts/install.sh` (new), `scripts/install-selftest.sh` (new, 13
+  cases), `scripts/no-network-smoke.sh` (new), `scripts/web-licenses.mjs`
+  (new), `scripts/audit-fixture/{Cargo.toml,lib.rs}` (new), `deny.toml`
+  (new).
+- `README.md`: status line brought up to date with Phase 0 commands,
+  platforms table, install section. `CONTRIBUTING.md`: dependency audit
+  and releases sections. `docs/release.md` (new).
+- Decisions beyond the design list:
+  - MPL-2.0 is on both licence allowlists. `web/package-lock.json` has 12
+    `lightningcss*` packages (the Tailwind CSS build tool) under MPL-2.0.
+    MPL-2.0 is file-level copyleft and compatible with an MIT binary.
+  - The bundle is checked for the archive as well as for `SHA256SUMS`.
+  - README asks for cosign 2.4 or later, the first release that reads the
+    bundle format current cosign writes.
+- Not run in this session: the new scripts and both workflows. Running
+  `sh`, `cargo` and `shellcheck` needed approval here, and this machine is
+  macOS with no tag pushed. They run on the next push to `dev` (`audit`,
+  `install-script`), on the first `v*` tag, or on a `workflow_dispatch` dry
+  run (release). Untested assumptions: the deny.toml schema matches the
+  cargo-deny that `taiki-e/install-action` installs; every Rust licence is
+  on the allowlist (it was assembled without `cargo metadata`);
+  `smallvec 1.6.0` resolves and is not yanked; `ubuntu-24.04-arm` provides
+  Docker for the busybox check.
+- The new scripts are committed mode 0644; CI calls them through `sh` /
+  `bash`.

@@ -126,3 +126,62 @@ jobs:
         run: cargo build -p ship
       - name: Service smoke test
         run: bash scripts/service-smoke.sh target/debug/ship
+
+  # Dependency audit and licences (ADR-0012): Rust crates through cargo-deny
+  # (deny.toml), web packages through npm audit and scripts/web-licenses.mjs.
+  # Any known vulnerability fails the job; the last step shows it would.
+  audit:
+    name: dependency audit and licences
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install pinned toolchain
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - name: cargo deny (advisories, bans, licenses, sources)
+        run: cargo deny --locked check
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: web/.nvmrc
+      - name: npm audit
+        run: |
+          cd web
+          npm audit --audit-level=low
+      - name: Web licences
+        run: node scripts/web-licenses.mjs
+      # A crate depending on smallvec 1.6.0 (RUSTSEC-2021-0003) must fail the
+      # same advisories check.
+      - name: Audit fails on a known vulnerability
+        run: |
+          set -o pipefail
+          if cargo deny --manifest-path scripts/audit-fixture/Cargo.toml check \
+              --config deny.toml advisories 2>&1 | tee "$RUNNER_TEMP/fixture.log"; then
+            echo "cargo deny passed a crate with a known vulnerability"; exit 1
+          fi
+          grep -q RUSTSEC-2021-0003 "$RUNNER_TEMP/fixture.log"
+
+  # scripts/install.sh against a fake release and a stub cosign: a good
+  # release installs; tampered, unsigned or incomplete ones are refused.
+  install-script:
+    name: install.sh self-test (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        runner: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: shellcheck
+        if: runner.os == 'Linux'
+        run: shellcheck scripts/install.sh scripts/install-selftest.sh scripts/no-network-smoke.sh
+      - name: Self-test
+        run: sh scripts/install-selftest.sh
