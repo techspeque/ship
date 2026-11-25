@@ -18,10 +18,6 @@ slices:
 
         HUMAN DECISION 2026-11-25: upgrade, do not ignore the advisory. Approved and in scope for this slice (add them to the brief's owned_paths): rust-toolchain.toml channel 1.91.0 -> 1.94.0, workspace Cargo.toml rust-version 1.91 -> 1.94, and any docs or CI that name the Rust version. Then sqlx 0.9.1 and libsqlite3-sys 0.40.0 in Cargo.lock. Facts checked on crates.io by the supervisor: the advisory is patched in libsqlite3-sys >= 0.39.0; sqlx-sqlite 0.9.1 requires libsqlite3-sys >=0.30.1, <0.41.0 and rustc 1.94.0. Toolchain 1.94.0 with rustfmt and clippy is already installed on this machine. Cargo.lock kept libsqlite3-sys at 0.30.1 last time because the lock entry was still there: remove the libsqlite3-sys and sqlx* [[package]] entries from Cargo.lock (or the whole file) so the build under metis verify re-resolves them to the newest compatible versions, then confirm in Cargo.lock that libsqlite3-sys is >= 0.39.0 and that no unrelated crate moved more than necessary (say which did). Fix any sqlx 0.9 API changes in ship-store and any new clippy/rustfmt findings from 1.94 anywhere in the workspace (in scope). deny.toml ignore stays empty. cargo deny and shellcheck cannot run in the coder session; CI is the check and the supervisor pushes and reads it after review. Do not park for that.
       created: "2026-11-25"
-      waiting:
-        reason: sqlx 0.9.1 (the RUSTSEC-2026-0459 upgrade path) needs rustc 1.94 but repo pins 1.91.0; and the bump alone left libsqlite3-sys at 0.30.1. Approve raising rust-toolchain.toml + workspace rust-version to 1.94 (out of scope) and forcing a fixed libsqlite3-sys, or accept a deny.toml ignore?
-        since: "2026-11-25T11:16:02Z"
-        human: true
     - id: phase-0-gate
       title: 'Phase 0 gate: composed-system validation'
       type: gate
