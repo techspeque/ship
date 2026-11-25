@@ -5,19 +5,54 @@
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use ship_daemon::{Config, Redactor};
+use ship_docker::Runner;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// A config whose state directory and socket live under `dir`, on a free
-/// loopback port.
+/// loopback port, with a `docker` pointed at a socket that does not exist
+/// so that no test reaches a developer's real Docker by accident.
 pub fn config(dir: &Path) -> Config {
     Config {
         state_dir: dir.join("state"),
         socket_path: dir.join("ship.sock"),
         port: 0,
         redactor: Redactor::new(),
+        docker: Runner::docker().env("DOCKER_HOST", MISSING_DOCKER_HOST),
     }
+}
+
+/// A Docker endpoint that cannot exist.
+pub const MISSING_DOCKER_HOST: &str = "unix:///nonexistent/ship-test/docker.sock";
+
+/// A fake `docker` answering `version` with `$FAKE_ENGINE` and `compose
+/// version` with `$FAKE_COMPOSE`.
+const FAKE_DOCKER: &str = r#"#!/bin/sh
+case "$1" in
+  version) echo "$FAKE_ENGINE" ;;
+  compose) echo "$FAKE_COMPOSE" ;;
+  *) exit 64 ;;
+esac
+"#;
+
+/// A runner for a fake `docker` reporting `engine` and `compose`. The
+/// script is written once per test binary, so no test executes a file
+/// another thread still has open for writing.
+pub fn fake_docker(engine: &str, compose: &str) -> Runner {
+    static PATH: OnceLock<(tempfile::TempDir, PathBuf)> = OnceLock::new();
+    let (_, path) = PATH.get_or_init(|| {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("docker");
+        std::fs::write(&path, FAKE_DOCKER).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (dir, path)
+    });
+    Runner::new(path)
+        .env("FAKE_ENGINE", engine)
+        .env("FAKE_COMPOSE", compose)
 }
 
 /// Where to send a request.

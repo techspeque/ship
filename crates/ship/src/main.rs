@@ -79,7 +79,7 @@ fn daemon(args: DaemonArgs) -> ExitCode {
         state_dir: args.state,
         socket_path: args.socket,
         port: args.port,
-        redactor,
+        ..ship_daemon::Config::new(redactor)
     };
     match ship_daemon::run_blocking(config) {
         Ok(()) => ExitCode::SUCCESS,

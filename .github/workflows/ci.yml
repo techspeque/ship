@@ -28,3 +28,25 @@ jobs:
           rustup show active-toolchain
       - name: make verify
         run: make verify
+
+  # The tests `make verify` ignores because they need a real Docker Engine:
+  # preflight against the runner's Engine and Compose plugin, and the
+  # supported range checked against them (ADR-0001 rule 6).
+  docker:
+    name: real Docker Engine (linux amd64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install pinned toolchain
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
+      - name: Docker versions
+        run: |
+          docker version
+          docker compose version
+      - name: Real-Docker tests
+        run: cargo test -p ship-docker -p ship-daemon -- --ignored

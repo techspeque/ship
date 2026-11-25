@@ -7,8 +7,12 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use serde_json::json;
-use ship_core::api::PROJECTS_PATH;
-use ship_core::{ApiError, ErrorCode, ProjectList, ProjectSummary};
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use ship_core::api::{HOST_PATH, PROJECTS_PATH};
+use ship_core::{ApiError, ErrorCode, HostInfo, ProjectList, ProjectSummary};
+use ship_docker::Runner;
 use ship_store::Store;
 
 /// Path of the liveness probe. Reveals nothing about the host.
@@ -18,18 +22,32 @@ pub const HEALTHZ_PATH: &str = "/healthz";
 /// `ship open` reaches the daemon through an ssh-forwarded local port.
 const LOOPBACK_HOSTS: &[&str] = &["127.0.0.1", "localhost", "[::1]"];
 
+/// What `/api/v1/host` inspects.
+#[derive(Debug, Clone)]
+pub struct HostProbe {
+    /// Runs the Docker preflight.
+    pub docker: Runner,
+    /// Free disk is measured on this directory's filesystem.
+    pub state_dir: PathBuf,
+}
+
 #[derive(Clone)]
 struct AppState {
     store: Store,
+    host: Arc<HostProbe>,
 }
 
-/// The daemon's router over `store`.
-pub fn router(store: Store) -> Router {
+/// The daemon's router over `store`, inspecting the host through `host`.
+pub fn router(store: Store, host: HostProbe) -> Router {
     Router::new()
         .route(HEALTHZ_PATH, get(healthz))
+        .route(HOST_PATH, get(host_info))
         .route(PROJECTS_PATH, get(projects))
         .fallback(not_found)
-        .with_state(AppState { store })
+        .with_state(AppState {
+            store,
+            host: Arc::new(host),
+        })
         .layer(middleware::from_fn(origin_guard))
 }
 
@@ -42,6 +60,16 @@ pub fn error_response(error: ApiError) -> Response {
 
 async fn healthz() -> Json<serde_json::Value> {
     Json(json!({ "status": "ok" }))
+}
+
+/// Always `200`: Docker being unusable is part of the answer, not an error,
+/// and never stops the daemon.
+async fn host_info(State(state): State<AppState>) -> Json<HostInfo> {
+    let info = crate::host::host_info(&state.host.docker, &state.host.state_dir).await;
+    if let Some(message) = &info.docker.message {
+        tracing::warn!(status = %info.docker.status, message, "docker preflight");
+    }
+    Json(info)
 }
 
 async fn projects(State(state): State<AppState>) -> Response {

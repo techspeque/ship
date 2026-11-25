@@ -976,8 +976,10 @@ name = "ship-daemon"
 version = "0.0.1"
 dependencies = [
  "axum",
+ "libc",
  "serde_json",
  "ship-core",
+ "ship-docker",
  "ship-net",
  "ship-store",
  "tempfile",
@@ -989,6 +991,12 @@ dependencies = [
 [[package]]
 name = "ship-docker"
 version = "0.0.1"
+dependencies = [
+ "libc",
+ "ship-core",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "ship-net"

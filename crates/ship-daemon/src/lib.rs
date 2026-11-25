@@ -10,6 +10,7 @@
 //! belongs to the `ship` binary, so this library builds and tests on any
 //! unix.
 
+pub mod host;
 pub mod http;
 pub mod log;
 
@@ -22,6 +23,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
+use ship_docker::Runner;
 use ship_net::{BindError, SocketFile};
 use ship_store::{Store, StoreError};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -52,6 +54,8 @@ pub struct Config {
     pub port: u16,
     /// Secret values the logger must never print.
     pub redactor: Redactor,
+    /// How the daemon runs `docker`; the CLI on `PATH` by default.
+    pub docker: Runner,
 }
 
 impl Config {
@@ -62,6 +66,7 @@ impl Config {
             socket_path: PathBuf::from(DEFAULT_SOCKET_PATH),
             port: DEFAULT_PORT,
             redactor,
+            docker: Runner::docker(),
         }
     }
 }
@@ -139,7 +144,13 @@ pub async fn start(config: &Config) -> Result<Running, DaemonError> {
         .await
         .map_err(DaemonError::Store)?;
 
-    let router = http::router(store.clone());
+    let router = http::router(
+        store.clone(),
+        http::HostProbe {
+            docker: config.docker.clone(),
+            state_dir: config.state_dir.clone(),
+        },
+    );
     let (stop, stopped) = watch::channel(false);
     let (kill, killed) = watch::channel(false);
     let servers = vec![

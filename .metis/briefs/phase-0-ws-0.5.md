@@ -123,4 +123,39 @@ None.
 
 ## Report
 
-Filled at implementation.
+- `ship-core`: `api.rs` adds `DockerStatus`, `DockerInfo`,
+  `SupportedVersions`, `HostCapacity`; `HostInfo` gains `docker` and
+  `capacity`. `lib.rs` re-exports them.
+- `ship-docker`: new `runner.rs` (`Runner` {`docker`, `new`, `env`,
+  `timeout`, `max_output`, `program`, `run`}, `Output`, `RunError`),
+  `supported.rs` (`ENGINE`, `COMPOSE`, `Version`, `VersionRange`),
+  `preflight.rs` (`preflight`, `evaluate`, `Probe`, the two argv
+  constants); tests `tests/fake_docker.rs`, `tests/real_docker.rs`
+  (ignored). `Cargo.toml` adds `ship-core`, `tokio`, `libc`; dev `tempfile`.
+- `ship-daemon`: new `src/host.rs` (`host_info`, `capacity`); `http.rs`
+  serves `GET /api/v1/host` with `HostProbe`; `router(store, host)`;
+  `Config.docker: Runner`. `tests/common/mod.rs` points `DOCKER_HOST` at a
+  missing socket by default and adds `fake_docker`; new `tests/host.rs`.
+  `Cargo.toml` adds `ship-docker`, `libc`.
+- `ship`: `src/main.rs` builds `Config` with `..Config::new(redactor)`.
+- CI: new `docker` job, `cargo test -p ship-docker -p ship-daemon -- --ignored`.
+- Decisions beyond the design list:
+  - Compose missing reports `unsupported_version` (the plan's three
+    statuses; no fourth status added), with the range in the message.
+  - Preflight runs per request, not cached; the runner's 10 s timeout
+    bounds a hung Engine.
+  - The supported ranges are not verified against a real Engine locally
+    (no Docker access in this session); the CI `docker` job is the check.
+- `cargo`, `cargo fmt` and `docker` needed approval in this session; tests
+  ran through `metis verify`, and rustfmt's reported diffs were applied by
+  hand.
+- First `metis verify --post` run: everything in this slice passed, but
+  `ship-store` `tests/store.rs::project_environment_service_roundtrip`
+  failed once (`Store::open` after `close` → `Io NotFound`, store.rs:231).
+  That code is untouched here; a `--force` re-run was ALL GREEN. Looks
+  flaky and predates this slice.
+- `metis verify --post --slice phase-0-ws-0.5 --force`: ALL GREEN (fmt,
+  clippy -D warnings, tests: ship-core 42 unit; ship-docker 23 unit + 7
+  fake_docker + 2 ignored real_docker; ship-daemon 11 unit + 4 host
+  (1 ignored) + existing http/listeners/log_stderr/shutdown/sigterm;
+  ship, ship-net, ship-store passing).

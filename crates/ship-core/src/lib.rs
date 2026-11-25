@@ -78,7 +78,10 @@ pub mod slug;
 pub mod state;
 pub mod time;
 
-pub use api::{API_PREFIX, API_VERSION, HostInfo, ProjectList, ProjectSummary};
+pub use api::{
+    API_PREFIX, API_VERSION, DockerInfo, DockerStatus, HostCapacity, HostInfo, ProjectList,
+    ProjectSummary, SupportedVersions,
+};
 pub use compose::compose_project_name;
 pub use error::{ApiError, ErrorCode};
 pub use id::{

@@ -8,3 +8,10 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+ship-core = { path = "../ship-core" }
+libc = "0.2"
+tokio = { version = "1", features = ["io-util", "macros", "process", "rt", "time"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["io-util", "macros", "process", "rt", "rt-multi-thread", "time"] }
