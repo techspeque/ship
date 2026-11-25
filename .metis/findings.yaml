@@ -167,3 +167,12 @@ findings:
       file: scripts/web-licenses.mjs
       commit: b787be07ee6cc952c9639a5287434078514a783f
       evidence: test node scripts/web-licenses.mjs --self-test
+    - id: f-015
+      date: "2026-11-25"
+      slice: fix-0002
+      severity: P2
+      category: testing
+      finding: '.metis/briefs/fix-0002.md:114-119 — Required Linux validation is explicitly incomplete: the Linux-only pin implementation and new tests have not been compiled or run, and DoD 4 requires 50 consecutive successful Linux runs of remove_leaves_a_successor_socket — Compile and run the listener tests on Linux, complete the 50 consecutive regression runs, and record the successful evidence in the brief.'
+      status: open
+      cycle: 1
+      file: metis/briefs/fix-0002.md
