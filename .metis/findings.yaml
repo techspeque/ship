@@ -83,3 +83,12 @@ findings:
       file: crates/ship-daemon/src/http.rs
       commit: d987b0ef52527080a90e920f2fc3a1f7f147d401
       evidence: test origin_guard_rejections_on_api_carry_versions
+    - id: f-008
+      date: "2026-11-25"
+      slice: phase-0-ws-0.8
+      severity: P2
+      category: correctness
+      finding: crates/ship/src/service.rs:427-468 — An existing ship user with a primary GID different from the ship group is accepted, and that passwd GID is used to chown both directories, violating the brief requirement of ship:ship ownership. Reinstall while running changes /run/ship (0750) to the other group and denies socket traversal to ship-group clients. Resolve the ship group GID via getent group ship and use it for both directory owners; add a regression covering an existing user with a different primary group and repeat install.
+      status: open
+      cycle: 1
+      file: crates/ship/src/service.rs
