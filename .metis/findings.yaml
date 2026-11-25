@@ -83,3 +83,12 @@ findings:
       file: crates/ship-daemon/src/http.rs
       commit: d987b0ef52527080a90e920f2fc3a1f7f147d401
       evidence: test origin_guard_rejections_on_api_carry_versions
+    - id: f-008
+      date: "2026-11-25"
+      slice: phase-0-ws-0.7
+      severity: P2
+      category: behavior
+      finding: 'web/src/App.svelte:44 — The effect synchronously calls refresh(), which reads refreshing; resetting refreshing after each request retriggers the effect and immediately fetches again instead of polling every 10 seconds. Reproduced with the installed Svelte runtime: 15 refresh calls in 30 microtask turns before any interval fires. Initialise polling without tracking refreshing (for example onMount or untrack), and add a runtime regression test asserting no second request before the polling interval.'
+      status: open
+      cycle: 1
+      file: web/src/App.svelte
