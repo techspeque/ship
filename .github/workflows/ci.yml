@@ -58,11 +58,15 @@ jobs:
 
   # The ssh transport against a real OpenSSH server on the runner (ADR-0003):
   # `ship projects -o json` over ssh:// must return the same bytes as over the
-  # local socket and the recorded fixture. No account or remote host needed.
+  # local socket and the recorded fixture, and `ship open` must serve the
+  # embedded UI through the forward. No account or remote host needed.
   ssh:
     name: ssh transport against a real sshd (linux amd64)
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      # A missing web/dist fails the build instead of embedding no UI.
+      SHIP_REQUIRE_UI: "1"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -71,6 +75,15 @@ jobs:
         run: |
           rustup toolchain install
           rustup show active-toolchain
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: web/.nvmrc
+      # Before any cargo build, so ship embeds the UI.
+      - name: Build the UI
+        run: |
+          cd web
+          npm ci --no-audit --no-fund
+          npm run build
       - name: Start sshd and authorise a fresh key for this user
         run: |
           sudo apt-get update

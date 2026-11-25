@@ -5,10 +5,11 @@
 //!
 //! Ignored by default: it needs an sshd that accepts this user with a key
 //! (BatchMode, host key already known) and `ship` from this build on the
-//! login user's PATH. CI's `ssh` job sets that up on the runner and runs:
+//! login user's PATH, and a build that embeds the UI (`make web` first).
+//! CI's `ssh` job sets that up on the runner and runs:
 //!
 //! ```sh
-//! SHIP_TEST_SSH="$USER@localhost" cargo test -p ship --test ssh_real -- --ignored
+//! SHIP_REQUIRE_UI=1 SHIP_TEST_SSH="$USER@localhost" cargo test -p ship --test ssh_real -- --ignored
 //! ```
 
 use std::io::{BufRead, BufReader, Read, Write};
@@ -137,12 +138,18 @@ fn open_over_real_ssh_forwards_the_ui_until_sigint() {
         .and_then(|p| p.parse().ok())
         .unwrap_or_else(|| panic!("not a 127.0.0.1 URL: {line:?}"));
 
+    // The UI itself, not the not-built 503: CI's ssh job builds web/dist
+    // before compiling ship.
+    assert!(
+        ship_daemon::ui::is_built(),
+        "this build embeds no UI; run `make web` before cargo"
+    );
     let (status, body) = http_get(port);
-    if ship_daemon::ui::is_built() {
-        assert_eq!(status, 200, "{body}");
-    } else {
-        assert_eq!(status, 503, "{body}");
-    }
+    assert_eq!(status, 200, "{body}");
+    let index = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/dist/index.html");
+    let index = std::fs::read_to_string(&index)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", index.display()));
+    assert_eq!(body, index);
 
     // SAFETY: sending a signal to our own child has no memory effects.
     assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGINT) }, 0);
