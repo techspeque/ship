@@ -213,6 +213,23 @@ fn group_exists(host: &mut dyn Host, name: &str) -> Result<bool, ServiceError> {
     Ok(query(host, &["getent", "group", name])?.is_some())
 }
 
+/// GID of the `ship` group, from `getent group ship`.
+fn ship_group_gid(host: &mut dyn Host) -> Result<u32, ServiceError> {
+    let argv = ["getent", "group", SHIP];
+    let line = query(host, &argv)?.ok_or_else(|| ServiceError::Command {
+        argv: argv.join(" "),
+        detail: format!("group {SHIP} missing"),
+    })?;
+    line.trim()
+        .split(':')
+        .nth(2)
+        .and_then(|f| f.parse::<u32>().ok())
+        .ok_or_else(|| ServiceError::Command {
+            argv: argv.join(" "),
+            detail: format!("unexpected output {:?}", line.trim()),
+        })
+}
+
 /// `(uid, gid)` of the `ship` user, if it exists.
 fn ship_user(host: &mut dyn Host) -> Result<Option<(u32, u32)>, ServiceError> {
     let Some(line) = query(host, &["getent", "passwd", SHIP])? else {
@@ -422,9 +439,12 @@ pub fn install(
         change(host, &["groupadd", "--system", SHIP])?;
         steps.push((format!("group {SHIP}"), Change::Created));
     }
+    // Directories are owned by the ship group, whatever the user's primary
+    // group is.
+    let gid = ship_group_gid(host)?;
 
     // 2. user: no password is set, so the account is locked.
-    let (uid, gid) = match ship_user(host)? {
+    let (uid, _) = match ship_user(host)? {
         Some(ids) => {
             steps.push((format!("user {SHIP}"), Change::Unchanged));
             ids
@@ -576,6 +596,8 @@ mod tests {
     struct FakeHost {
         groups: BTreeSet<String>,
         user: Option<(u32, u32)>,
+        /// GID `getent group ship` reports.
+        ship_gid: u32,
         in_docker: bool,
         enabled: bool,
         calls: Vec<Vec<String>>,
@@ -587,6 +609,7 @@ mod tests {
             Self {
                 groups: [DOCKER_GROUP.to_owned()].into(),
                 user: None,
+                ship_gid: me().1,
                 in_docker: false,
                 enabled: false,
                 calls: Vec::new(),
@@ -631,7 +654,8 @@ mod tests {
             match argv {
                 ["getent", "group", g] => {
                     if self.groups.contains(*g) {
-                        ok(format!("{g}:x:999:\n"))
+                        let gid = if *g == SHIP { self.ship_gid } else { 999 };
+                        ok(format!("{g}:x:{gid}:\n"))
                     } else {
                         no()
                     }
@@ -803,6 +827,28 @@ mod tests {
             fs::read(e.layout.state_dir.join("ship.db")).unwrap(),
             b"keep"
         );
+    }
+
+    #[test]
+    fn existing_user_with_another_primary_group_gets_ship_group_dirs() {
+        let e = env();
+        let mut host = FakeHost::clean();
+        let (uid, gid) = me();
+        host.groups.insert(SHIP.to_owned());
+        host.user = Some((uid, gid.wrapping_add(4242)));
+        host.in_docker = true;
+
+        install(&mut host, &e.layout, &e.exe).unwrap();
+        for dir in [&e.layout.state_dir, &e.layout.runtime_dir] {
+            let meta = fs::metadata(dir).unwrap();
+            assert_eq!((meta.uid(), meta.gid()), (uid, gid), "{}", dir.display());
+        }
+
+        host.calls.clear();
+        let report = install(&mut host, &e.layout, &e.exe).unwrap();
+        assert!(!report.changed_anything(), "{:?}", report.steps);
+        assert_eq!(fs::metadata(&e.layout.runtime_dir).unwrap().gid(), gid);
+        assert_eq!(mode(&e.layout.runtime_dir), 0o750);
     }
 
     #[test]
