@@ -82,6 +82,8 @@ slices:
       stage: foundation
       coder: claude-code/opus-5-5
       reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-0-plan.md
+      plan_section: 'Workstream 0.3: SQLite store and migrations'
       coded: false
       reviewed: false
       review_cycles: 0
