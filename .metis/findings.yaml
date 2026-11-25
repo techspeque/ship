@@ -137,9 +137,12 @@ findings:
       severity: P2
       category: behavior
       finding: .github/workflows/release.yml:205 — publish checks only ref_type, so workflow_dispatch targeting a tag enters signing and publishing despite the brief requiring every dispatch to be a dry run — require the push event as well as a tag for publish, and check dispatch-on-tag stays unsigned and unpublished.
-      status: open
+      status: resolved
+      resolved_by: commit 351a6a683287; .github/workflows/release.yml:207
       cycle: 1
       file: github/workflows/release.yml
+      commit: 351a6a6832873cced4fc211ecee56a226b04f7fd
+      evidence: .github/workflows/release.yml:207
     - id: f-013
       date: "2026-11-25"
       slice: phase-0-ws-0.9
