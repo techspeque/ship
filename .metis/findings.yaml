@@ -185,6 +185,9 @@ findings:
       severity: P1
       category: correctness
       finding: 'scripts/daemon-smoke.sh:50 — http://ship/healthz sends Host: ship, which the daemon origin guard rejects with 403 even over the unix socket; supervisor Linux/musl execution confirms the smoke test fails on a working binary, blocking both Linux release packages before Package. Change the URL to http://localhost/healthz (or http://127.0.0.1/healthz) and rerun the smoke script against the musl release binary to verify HTTP 200 and successful SIGTERM/socket cleanup.'
-      status: open
+      status: resolved
+      resolved_by: 'commit 5214130a4793; test scripts/daemon-smoke.sh: aarch64-unknown-linux-musl release in Docker; HTTP 200, SIGTERM exit 0, socket removed'
       cycle: 1
       file: scripts/daemon-smoke.sh
+      commit: 5214130a47933524d412bc24680e164fde8d6162
+      evidence: 'test scripts/daemon-smoke.sh: aarch64-unknown-linux-musl release in Docker; HTTP 200, SIGTERM exit 0, socket removed'
