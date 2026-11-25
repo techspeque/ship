@@ -110,4 +110,25 @@ None.
 
 ## Report
 
-Filled at implementation.
+- Added in `crates/ship-core/src/`: `id.rs` (7 id types via `define_id!`),
+  `slug.rs`, `compose.rs`, `state.rs`, `error.rs`, `api.rs`, `time.rs`,
+  `secret.rs`; `lib.rs` gains the `string_enum!` macro (stable string per
+  variant for Display/FromStr/serde) and re-exports. Added
+  `crates/ship-core/tests/purity.rs`. `Cargo.toml` (ship-core) adds `serde`
+  (derive) and `serde_json`; `Cargo.lock` updated.
+- Decisions beyond the design list above:
+  - `ContainerState` → status mapping: `restarting`, `dead`, exited non-zero
+    → `failed`; absent, created, paused, exited 0 → `stopped`.
+  - `ErrorCode` set: `invalid_request`, `invalid_id`, `invalid_slug`,
+    `invalid_timestamp`, `not_found`, `conflict`, `illegal_transition`,
+    `forbidden`, `unsupported_api_version`, `docker_unavailable`, `internal`,
+    each with an `http_status()`. `From` impls for `IdError`, `SlugError`,
+    `TimestampError`, `TransitionError<_>` (details `{from, to}`).
+  - Id, slug and timestamp error messages never echo the input.
+  - Path constants `HOST_PATH`, `PROJECTS_PATH` alongside `API_PREFIX`.
+  - Purity test also forbids `std::io`, `std::os`, `std::thread`, `tokio`,
+    `env!`, `option_env!`, `include_str!`, `include_bytes!`.
+- `cargo fmt` needed approval in this session; rustfmt's reported diffs were
+  applied by hand.
+- `metis verify --post --slice phase-0-ws-0.2`: ALL GREEN (fmt, clippy
+  -D warnings, tests: 39 ship-core unit + 1 purity, plus existing 18).
