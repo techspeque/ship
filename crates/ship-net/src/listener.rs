@@ -70,13 +70,22 @@ fn io_err<'a>(step: &'static str, path: &'a Path) -> impl FnOnce(io::Error) -> B
 /// The socket file a [`bind_unix`] call created.
 ///
 /// Removes the file when [`SocketFile::remove`] is called or the value is
-/// dropped, but only while the path still names this very socket (same
-/// device and inode), so a successor daemon's socket is never deleted.
+/// dropped, but only while the path still names this very socket, so a
+/// successor daemon's socket is never deleted.
+///
+/// On Linux a device and inode number alone are not enough. Once the
+/// listener closes, the socket's inode is freed, and the next socket bound
+/// at the path can get the same number. So the value also holds `pin`, an
+/// `O_PATH` fd to the socket's inode. It accepts no connections and does not
+/// keep the socket listening. While it is open the inode cannot be freed, so
+/// no other file on the device can have its number.
 #[derive(Debug)]
 pub struct SocketFile {
     path: PathBuf,
     dev: u64,
     ino: u64,
+    #[cfg(target_os = "linux")]
+    pin: fs::File,
     removed: bool,
 }
 
@@ -96,14 +105,34 @@ impl SocketFile {
             return Ok(());
         }
         self.removed = true;
-        match fs::symlink_metadata(&self.path) {
-            Ok(meta) if meta.dev() == self.dev && meta.ino() == self.ino => {
-                fs::remove_file(&self.path)
-            }
-            Ok(_) => Ok(()),
+        let at_path = match fs::symlink_metadata(&self.path) {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        if !self.is_ours(&at_path)? {
+            return Ok(());
+        }
+        match fs::remove_file(&self.path) {
+            Ok(()) => Ok(()),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(e),
         }
+    }
+
+    /// Whether `at_path` (the path's current metadata) is this socket.
+    fn is_ours(&self, at_path: &fs::Metadata) -> io::Result<bool> {
+        if (at_path.dev(), at_path.ino()) != (self.dev, self.ino) {
+            return Ok(false);
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let pinned = self.pin.metadata()?;
+            if (at_path.dev(), at_path.ino()) != (pinned.dev(), pinned.ino()) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 }
 
@@ -136,24 +165,57 @@ pub fn bind_unix(path: &Path) -> Result<(UnixListener, SocketFile), BindError> {
     }
 
     let bound = bind_owner_only(path).map_err(io_err("bind", path))?;
-    let meta = match fs::symlink_metadata(path) {
-        Ok(meta) => meta,
+    // `bound` is alive here, so the inode at `path` is still this socket's.
+    let file = match identify(path) {
+        Ok(file) => file,
         Err(e) => {
             let _ = fs::remove_file(path);
-            return Err(io_err("stat", path)(e));
+            return Err(e);
         }
-    };
-    let file = SocketFile {
-        path: path.to_path_buf(),
-        dev: meta.dev(),
-        ino: meta.ino(),
-        removed: false,
     };
     // From here on, dropping `file` on error removes the socket.
     fs::set_permissions(path, fs::Permissions::from_mode(SOCKET_MODE))
         .map_err(io_err("set mode of", path))?;
     let listener = bound.listen().map_err(io_err("listen on", path))?;
     Ok((listener, file))
+}
+
+/// Records the identity of the socket just bound at `path`. Call it only
+/// while the bound socket is open.
+///
+/// On Linux the path is opened `O_PATH | O_NOFOLLOW` (std adds
+/// `O_CLOEXEC`), and that pin is checked to be a socket and to be the inode
+/// the path names. Elsewhere the identity is the path's device and inode.
+fn identify(path: &Path) -> Result<SocketFile, BindError> {
+    let meta = fs::symlink_metadata(path).map_err(io_err("stat", path))?;
+    #[cfg(target_os = "linux")]
+    let pin = {
+        use std::os::unix::fs::OpenOptionsExt;
+        let pin = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_NOFOLLOW)
+            .open(path)
+            .map_err(io_err("pin", path))?;
+        let pinned = pin.metadata().map_err(io_err("stat pin of", path))?;
+        if !pinned.file_type().is_socket()
+            || (pinned.dev(), pinned.ino()) != (meta.dev(), meta.ino())
+        {
+            return Err(BindError::Io {
+                step: "pin",
+                path: path.to_path_buf(),
+                source: io::Error::other("the path changed while binding"),
+            });
+        }
+        pin
+    };
+    Ok(SocketFile {
+        path: path.to_path_buf(),
+        dev: meta.dev(),
+        ino: meta.ino(),
+        #[cfg(target_os = "linux")]
+        pin,
+        removed: false,
+    })
 }
 
 /// A unix socket bound at a path but not yet listening: a connection
@@ -380,6 +442,56 @@ mod tests {
         file.remove().unwrap();
         assert_eq!(fs::symlink_metadata(&path).unwrap().ino(), successor);
         drop(second_file);
+        assert!(!path.exists());
+    }
+
+    /// Forces the collision the old `(dev, ino)` check fell for instead of
+    /// waiting for the filesystem to reuse a number: the predecessor's
+    /// recorded identity is set to the successor's. Only the pin tells the
+    /// two sockets apart.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn remove_leaves_a_successor_with_the_same_inode_number() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = sock_path(&dir);
+        let (first, mut by_remove) = bind_unix(&path).unwrap();
+        drop(first);
+        let (_second, second_file) = bind_unix(&path).unwrap();
+        let successor = fs::symlink_metadata(&path).unwrap();
+        by_remove.dev = successor.dev();
+        by_remove.ino = successor.ino();
+
+        by_remove.remove().unwrap();
+        assert_eq!(fs::symlink_metadata(&path).unwrap().ino(), successor.ino());
+        UnixStream::connect(&path).unwrap();
+
+        // The same through Drop, with a predecessor of the live successor.
+        let (third, mut by_drop) = bind_unix(&dir.path().join("other.sock")).unwrap();
+        drop(third);
+        by_drop.path = path.clone();
+        by_drop.dev = successor.dev();
+        by_drop.ino = successor.ino();
+        drop(by_drop);
+        assert_eq!(fs::symlink_metadata(&path).unwrap().ino(), successor.ino());
+        UnixStream::connect(&path).unwrap();
+
+        drop(second_file);
+        assert!(!path.exists());
+    }
+
+    /// The pin holds the inode, not the socket: once the listener closes,
+    /// the socket refuses connections and a successor sees it as stale.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pin_does_not_keep_the_socket_listening() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = sock_path(&dir);
+        let (listener, file) = bind_unix(&path).unwrap();
+        drop(listener);
+        let err = UnixStream::connect(&path).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::ConnectionRefused);
+        assert_eq!(check_existing(&path).unwrap(), Existing::Stale);
+        drop(file);
         assert!(!path.exists());
     }
 
