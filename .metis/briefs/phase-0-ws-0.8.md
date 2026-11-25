@@ -153,4 +153,36 @@ None.
 
 ## Report
 
-Filled at implementation.
+- `crates/ship/src/service.rs` (new): `Host` trait + `SystemHost`
+  (structured argv, stdin null), `Layout`, `install`, `uninstall`,
+  `render_unit`, `check_exe_path`, `unsupported`, `not_root`, printers;
+  13 unit tests against `FakeHost` and a temp layout.
+- `crates/ship/src/main.rs`: `ship service install|uninstall`; Linux check
+  (exit 2), root check via `geteuid` (exit 1), binary path from
+  `current_exe` canonicalised.
+- `crates/ship/Cargo.toml`: `libc` moved from dev-dependencies to
+  dependencies (for `geteuid`). `Cargo.lock` unchanged.
+- `crates/ship/tests/cli_service.rs` (new, 2 tests): refusal off Linux /
+  without root; `service --help`.
+- `scripts/service-smoke.sh` (new) and CI job `service` in
+  `.github/workflows/ci.yml`: real systemd + Docker on the runner. It has
+  not run yet; it runs on the next push to `dev`.
+- `docs/service.md` (new): install, what it creates, root-equivalence,
+  adding a login user to `ship`, uninstall, foreign units.
+- Decisions beyond the design list:
+  - Install warns, and does not refuse, when the binary or a directory
+    above it is not executable by others (the `ship` user could not start
+    it). Refusing would block legitimate group-permission setups.
+  - A non-regular file at the unit path, or a non-directory at the state
+    or runtime path, is refused and left alone.
+  - After `chown`, the mode is set again, because `chown` may clear
+    set-id bits and the umask narrows `mkdir`.
+- Not verified here: the real-systemd path (this machine is macOS), and
+  reboot survival, which the gate VM covers. CI checks `is-enabled`.
+- `cargo` and `cargo fmt` needed approval in this session. Tests ran
+  through `metis verify`, and rustfmt's diffs were applied by hand.
+  `scripts/service-smoke.sh` is not marked executable (chmod needed
+  approval); CI runs it with `bash`.
+- `metis verify --post --slice phase-0-ws-0.8`: ALL GREEN (fmt, clippy
+  -D warnings; ship 33 unit incl. 13 service + 12 cli_client + 2
+  cli_daemon + 2 cli_service + 2 cli_version + 15 dependency_rule).

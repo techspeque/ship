@@ -1,12 +1,13 @@
 //! The `ship` binary: client commands and `ship daemon` dispatch.
 //!
 //! Phase 0: `--version` / `-V`, `ship daemon`, `ship target`, `ship
-//! projects` and `ship dial-stdio`. Exit codes: 0 success, 1 failure, 2
+//! projects`, `ship dial-stdio` and `ship service`. Exit codes: 0 success, 1 failure, 2
 //! usage error.
 
 mod client;
 mod commands;
 mod config;
+mod service;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -51,6 +52,56 @@ enum Command {
     /// the ssh transport; not for interactive use).
     #[command(name = "dial-stdio")]
     DialStdio(commands::DialStdioArgs),
+    /// Install or remove the systemd unit that runs the daemon (Linux,
+    /// root).
+    #[command(subcommand)]
+    Service(ServiceCommand),
+}
+
+#[derive(Debug, Subcommand)]
+enum ServiceCommand {
+    /// Create the ship user and group, the state and socket directories,
+    /// give the ship user Docker access, and write and enable the unit.
+    /// Safe to run again.
+    Install,
+    /// Stop, disable and remove the unit. Leaves the user, the state
+    /// directory, containers and volumes in place.
+    Uninstall,
+}
+
+fn service(command: ServiceCommand) -> ExitCode {
+    let name = match command {
+        ServiceCommand::Install => "install",
+        ServiceCommand::Uninstall => "uninstall",
+    };
+    if let Some(message) = service::unsupported(std::env::consts::OS) {
+        eprintln!("ship: {message}");
+        return ExitCode::from(2);
+    }
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    if let Some(message) = service::not_root(unsafe { libc::geteuid() }, name) {
+        eprintln!("ship: {message}");
+        return ExitCode::FAILURE;
+    }
+    let mut host = service::SystemHost;
+    let layout = service::Layout::system();
+    let result = match command {
+        ServiceCommand::Install => std::env::current_exe()
+            .and_then(|p| p.canonicalize())
+            .map_err(|e| service::ServiceError::Refused(format!("cannot locate this binary: {e}")))
+            .and_then(|exe| service::install(&mut host, &layout, &exe))
+            .map(|r| service::print_install(&r)),
+        ServiceCommand::Uninstall => {
+            service::uninstall(&mut host, &layout).map(service::print_uninstall)
+        }
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("ship service {name}: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 #[derive(Debug, clap::Args)]
@@ -131,6 +182,7 @@ fn main() -> ExitCode {
         Some(Command::Target(command)) => commands::target(command),
         Some(Command::Projects(args)) => commands::projects(args),
         Some(Command::DialStdio(args)) => commands::dial_stdio(args),
+        Some(Command::Service(command)) => service(command),
         None => {
             eprintln!("ship: no command given; see `ship --help`");
             ExitCode::from(2)
