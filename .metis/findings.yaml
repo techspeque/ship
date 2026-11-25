@@ -173,6 +173,9 @@ findings:
       severity: P2
       category: testing
       finding: '.metis/briefs/fix-0002.md:114-119 — Required Linux validation is explicitly incomplete: the Linux-only pin implementation and new tests have not been compiled or run, and DoD 4 requires 50 consecutive successful Linux runs of remove_leaves_a_successor_socket — Compile and run the listener tests on Linux, complete the 50 consecutive regression runs, and record the successful evidence in the brief.'
-      status: open
+      status: resolved
+      resolved_by: commit dbb70fbb4068; .metis/briefs/fix-0002.md:114
       cycle: 1
       file: metis/briefs/fix-0002.md
+      commit: dbb70fbb4068fa5f2cfed1408e0836f0ced8df0e
+      evidence: .metis/briefs/fix-0002.md:114
