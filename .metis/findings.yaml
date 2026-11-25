@@ -161,6 +161,9 @@ findings:
       severity: P2
       category: behavior
       finding: 'scripts/web-licenses.mjs:34 — removing parentheses changes SPDX semantics: acceptable("(MIT OR Apache-2.0) AND GPL-3.0-only") returns true in a local reproduction although GPL-3.0-only is mandatory and absent from the allowlist — preserve grouping with an SPDX expression parser or reject unsupported expressions, and add a regression for this compound expression.'
-      status: open
+      status: resolved
+      resolved_by: commit b787be07ee6c; test node scripts/web-licenses.mjs --self-test
       cycle: 1
       file: scripts/web-licenses.mjs
+      commit: b787be07ee6cc952c9639a5287434078514a783f
+      evidence: test node scripts/web-licenses.mjs --self-test
