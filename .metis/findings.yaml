@@ -92,3 +92,12 @@ findings:
       status: open
       cycle: 1
       file: web/src/App.svelte
+    - id: f-009
+      date: "2026-11-25"
+      slice: phase-0-ws-0.7
+      severity: P2
+      category: behavior
+      finding: crates/ship/src/open.rs:140 — A successful healthz on the requested local port is treated as proof the SSH forward exists before SSH has established it. With an existing local Ship-shaped health listener and a fake ssh that creates no forward, open --no-browser --port prints that unrelated URL and claims it forwards to the remote target. Reject occupied ports and establish forward readiness before accepting healthz; add a regression test ensuring this collision prints no URL and fails.
+      status: open
+      cycle: 1
+      file: crates/ship/src/open.rs
