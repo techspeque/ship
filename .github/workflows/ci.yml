@@ -155,7 +155,9 @@ jobs:
           cd web
           npm audit --audit-level=low
       - name: Web licences
-        run: node scripts/web-licenses.mjs
+        run: |
+          node scripts/web-licenses.mjs --self-test
+          node scripts/web-licenses.mjs
       # A crate depending on smallvec 1.6.0 (RUSTSEC-2021-0003) must fail the
       # same advisories check.
       - name: Audit fails on a known vulnerability
