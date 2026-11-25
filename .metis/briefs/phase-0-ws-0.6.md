@@ -102,6 +102,7 @@ Design decisions:
   - crates/ship/src/
   - crates/ship/tests/cli_client.rs
   - crates/ship/tests/ssh_real.rs
+  - crates/ship/tests/cli_version.rs (one line: its unknown-argument test used `projects`, which this slice makes a real command)
   - crates/ship/tests/fixtures/
   - crates/ship-net/
   - crates/ship-core/src/api.rs
