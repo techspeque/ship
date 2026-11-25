@@ -89,9 +89,12 @@ findings:
       severity: P2
       category: behavior
       finding: 'web/src/App.svelte:44 — The effect synchronously calls refresh(), which reads refreshing; resetting refreshing after each request retriggers the effect and immediately fetches again instead of polling every 10 seconds. Reproduced with the installed Svelte runtime: 15 refresh calls in 30 microtask turns before any interval fires. Initialise polling without tracking refreshing (for example onMount or untrack), and add a runtime regression test asserting no second request before the polling interval.'
-      status: open
+      status: resolved
+      resolved_by: 'commit 18a7907c195d; test web/src/lib/poller.svelte.test.ts: sends no second request before the polling interval'
       cycle: 1
       file: web/src/App.svelte
+      commit: 18a7907c195db9a9e0e186f65a45d203830132d7
+      evidence: 'test web/src/lib/poller.svelte.test.ts: sends no second request before the polling interval'
     - id: f-009
       date: "2026-11-25"
       slice: phase-0-ws-0.7
