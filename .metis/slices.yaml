@@ -15,6 +15,21 @@ slices:
       review_cycles: 0
       notes: 'CI on linux amd64 (first run of dev): listener::tests::remove_leaves_a_successor_socket panics at crates/ship-net/src/listener.rs:381 with NotFound; passes on macOS. SocketFile::remove_inner identifies its own socket by (dev, ino) only. On Linux the successor''s socket, bound right after the stale one is unlinked, can get the same inode number, so the predecessor''s remove()/Drop unlinks the successor''s live socket. Not a test problem: a daemon shutting down can delete the socket of the daemon that replaced it. Required: an identity that survives inode reuse (confirm the approach, do not assume: e.g. also compare ctime with nanoseconds, or another check that cannot match a different socket), the existing test passing on Linux 50 consecutive runs, and a test that forces the same-inode case rather than relying on the filesystem to reuse it. Must still never change the process umask (f-003).'
       created: "2026-11-25"
+    - id: fix-0003
+      title: 'CI: SQLite advisory RUSTSEC-2026-0459 fails the audit; shellcheck SC2115 in install-selftest.sh'
+      type: fix
+      priority: p1
+      risk: medium
+      stage: foundation
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-0-plan.md
+      plan_section: §0.9
+      coded: false
+      reviewed: false
+      review_cycles: 0
+      notes: 'First CI run of dev. (1) cargo deny: RUSTSEC-2026-0459 / CVE-2026-119375, bundled SQLite before 3.54.0 via libsqlite3-sys 0.30.1 <- sqlx-sqlite 0.8.6 <- ship-store. sqlx 0.9.1 and libsqlite3-sys 0.40.0 exist on crates.io; check whether sqlx 0.9 pulls a fixed libsqlite3-sys and upgrade if so, keeping ship-store''s tests and migrations green. Prefer the upgrade. Only if no fixed version is reachable, add a deny.toml ignore with the advisory id and a reason that states the real exposure (the advisory needs a database or -wal file written by a less trusted party; Ship''s database lives in the daemon-owned state directory) and say so plainly in the report: an ignore is a person''s decision to accept. (2) shellcheck SC2115 at scripts/install-selftest.sh:131: rm -rf "$work/$1" needs ${work:?} / ${1:?}. (3) The macOS install.sh self-test job was cancelled when the ubuntu one failed, so its result is unknown: make sure both run to completion (fail-fast off) so the next run reports both.'
+      created: "2026-11-25"
     - id: phase-0-gate
       title: 'Phase 0 gate: composed-system validation'
       type: gate
