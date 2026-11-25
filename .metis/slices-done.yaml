@@ -14,3 +14,17 @@ slices:
       reviewed: true
       review_cycles: 1
       created: ""
+    - id: phase-0-ws-0.2
+      title: Domain types and state machines
+      type: feat
+      priority: p2
+      risk: high
+      stage: foundation
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-0-plan.md
+      plan_section: §0.2
+      coded: true
+      reviewed: true
+      review_cycles: 0
+      created: ""
