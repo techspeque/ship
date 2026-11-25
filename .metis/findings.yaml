@@ -68,3 +68,12 @@ findings:
       status: open
       cycle: 1
       file: crates/ship-net/src/client.rs
+    - id: f-007
+      date: "2026-11-25"
+      slice: phase-0-ws-0.6
+      severity: P2
+      category: protocol
+      finding: crates/ship-daemon/src/http.rs:57 — origin_guard wraps api_version and returns forbidden directly at line 132, so /api/ requests rejected for Host or origin omit both version headers, contrary to the brief requirement for every API response. Ensure API response headers also decorate guard rejections while retaining authorization checks and header-free /healthz; add regression coverage for rejected API requests.
+      status: open
+      cycle: 1
+      file: crates/ship-daemon/src/http.rs
