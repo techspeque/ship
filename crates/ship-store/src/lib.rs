@@ -12,10 +12,10 @@ mod repo;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use sqlx::{ConnectOptions, Connection};
 use sqlx::sqlite::{
     SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous,
 };
+use sqlx::{ConnectOptions, Connection};
 
 pub use error::StoreError;
 pub use migrate::{LATEST_VERSION, OpenReport};
