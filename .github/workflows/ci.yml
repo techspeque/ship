@@ -163,8 +163,8 @@ jobs:
       - name: Audit fails on a known vulnerability
         run: |
           set -o pipefail
-          if cargo deny --manifest-path scripts/audit-fixture/Cargo.toml check \
-              --config deny.toml advisories 2>&1 | tee "$RUNNER_TEMP/fixture.log"; then
+          if cargo deny --manifest-path scripts/audit-fixture/Cargo.toml \
+              --config deny.toml check advisories 2>&1 | tee "$RUNNER_TEMP/fixture.log"; then
             echo "cargo deny passed a crate with a known vulnerability"; exit 1
           fi
           grep -q RUSTSEC-2021-0003 "$RUNNER_TEMP/fixture.log"
