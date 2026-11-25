@@ -140,3 +140,12 @@ findings:
       status: open
       cycle: 1
       file: github/workflows/release.yml
+    - id: f-013
+      date: "2026-11-25"
+      slice: phase-0-ws-0.9
+      severity: P2
+      category: behavior
+      finding: .github/workflows/release.yml:266 — every release is marked --prerelease, which GitHub excludes from releases/latest; consequently README.md:41 cannot download the installer and install.sh without --version cannot find releases produced by this pipeline — publish releases eligible for the brief-required latest redirect and verify the default documented install path.
+      status: open
+      cycle: 1
+      file: github/workflows/release.yml
