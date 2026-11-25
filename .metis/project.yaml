@@ -28,7 +28,7 @@ review_checklist:
   - Architectural fit — no duplicated/hallucinated interfaces; matches ADRs
   - Maintainability
 commands:
-  verify: make verify || exit 1
+  verify: make verify
 commits:
   prefixes:
     - feat
