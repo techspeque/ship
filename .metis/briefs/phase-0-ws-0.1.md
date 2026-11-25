@@ -72,4 +72,19 @@ None.
 
 ## Report
 
-Filled at implementation.
+- Added: `Cargo.toml` (workspace, edition 2024, version 0.0.1), `Cargo.lock`
+  (workspace crates only, no external crates), `rust-toolchain.toml`
+  (1.91.0, rustfmt + clippy), `Makefile`, `crates/` (7 crates),
+  `.github/workflows/ci.yml`, `LICENSE`, `SECURITY.md`, `CONTRIBUTING.md`.
+  Changed: `README.md`, `.gitignore`.
+- `ship --version` / `-V` prints `ship 0.0.1 (commit <12-char sha>, <os>-<arch>)`.
+  Commit comes from `SHIP_COMMIT` env, else `git rev-parse` in
+  `crates/ship/build.rs`, else `unknown`.
+- Decisions: `make verify` uses `cargo fmt --all --check` (`--all` covers
+  every workspace member regardless of cwd). Added
+  `crates/ship/tests/cli_version.rs`, which runs the built binary, beyond the
+  unit test in the test plan.
+- `metis verify --post`: ALL GREEN. fmt, clippy -D warnings and 16 tests
+  (1 unit, 2 cli_version, 13 dependency_rule).
+- Not verifiable locally: "CI is green on the integration branch". That needs
+  a push to `dev`.
