@@ -72,6 +72,7 @@ pub mod api;
 pub mod compose;
 pub mod error;
 pub mod id;
+pub mod model;
 pub mod secret;
 pub mod slug;
 pub mod state;
@@ -83,6 +84,7 @@ pub use error::{ApiError, ErrorCode};
 pub use id::{
     DeploymentId, EnvironmentId, IdError, OperationId, ProjectId, ReleaseId, RevisionId, ServiceId,
 };
+pub use model::{RecoveryPolicy, ServiceKind};
 pub use secret::SecretValue;
 pub use slug::{Slug, SlugError};
 pub use state::{

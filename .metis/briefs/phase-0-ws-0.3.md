@@ -114,4 +114,26 @@ None.
 
 ## Report
 
-Filled at implementation.
+- Added in `crates/ship-store/`: `migrations/0001_initial.sql`;
+  `src/lib.rs` (`Store::open`, `open_report`, `schema_version`, `close`,
+  `DATABASE_FILE`), `src/migrate.rs` (runner, `LATEST_VERSION`,
+  `OpenReport`), `src/repo.rs` (records and repositories), `src/error.rs`
+  (`StoreError`), `src/clock.rs` (clock and `getrandom` id entropy);
+  `tests/store.rs`. `Cargo.toml` adds `ship-core`, `sqlx` 0.8 (`sqlite`,
+  `runtime-tokio`, no default features), `getrandom` 0.3; dev `tokio`,
+  `tempfile`. `Cargo.lock` updated.
+- `ship-core`: new `src/model.rs` (`ServiceKind`, `RecoveryPolicy` with
+  `observe_only` default); `src/lib.rs` declares and re-exports it.
+- Decisions beyond the design list:
+  - `Store::events_after(operation, after)` added to read events back in
+    sequence order (needed to test gaplessness; it is the SSE resume read).
+  - `append_event` to an unknown operation is `NotFound` (the INSERT selects
+    from `operation`, so no row is written).
+  - A schema CHECK violation maps to `StoreError::Invalid`; empty
+    idempotency key and `kind` are rejected by CHECK.
+  - Pool of 4 connections; statement logging disabled.
+- `cargo fmt` / `rustfmt` needed approval in this session; rustfmt's
+  reported diffs were applied by hand.
+- `metis verify --post --slice phase-0-ws-0.3`: ALL GREEN (fmt, clippy
+  -D warnings; tests: ship-store 4 unit + 11 integration, ship-core 41 unit +
+  1 purity, ship 18).
