@@ -33,9 +33,10 @@ database and removes its socket; on non-Linux it refuses to start.
 Design decisions:
 - **`ship-net` listeners:** `bind_unix(path)` and `bind_loopback(port: u16)`.
   The TCP address is fixed to `127.0.0.1`; no API accepts an IP, so
-  0.0.0.0 cannot be requested. `bind_unix` binds at `path` under a
-  temporary umask of `0177` (owner-only from creation), then `chmod 0660`,
-  so the socket never exists with a wider mode. An existing `path`: a socket that accepts a
+  0.0.0.0 cannot be requested. `bind_unix` binds at `path` owner-only
+  (Linux: `fchmod 0600` on the socket before `bind`; the process umask is
+  never changed, f-003), then `chmod 0660`, then `listen`, so the socket
+  never accepts a connection under a wider mode. An existing `path`: a socket that accepts a
   connection → refuse (another daemon is live); a socket that refuses →
   stale, replaced; anything not a socket → refuse, untouched. Returns a
   guard holding the socket's (dev, ino) that removes the file on cleanup
@@ -122,7 +123,7 @@ None.
 
 - `ship-net`: new `src/listener.rs` (`bind_unix`, `bind_loopback`,
   `SocketFile`, `BindError`, `SOCKET_MODE`); `src/lib.rs` re-exports.
-  `Cargo.toml` adds `libc` 0.2 (for `umask`); dev `tempfile`.
+  `Cargo.toml` adds `libc` 0.2 (raw `socket`/`bind`/`listen`); dev `tempfile`.
 - `ship-daemon`: `src/lib.rs` (`Config`, `start`, `Running`
   {`socket_path`, `tcp_addr`, `store`, `shutdown`}, `run`, `run_blocking`,
   `DaemonError`, defaults), `src/http.rs` (router, origin guard,
@@ -136,7 +137,8 @@ None.
   `-V/--version` keeping the existing line); `Cargo.toml` adds
   `ship-daemon`, `clap` 4; new `tests/cli_daemon.rs`. `Cargo.lock` updated.
 - Decisions beyond the design list:
-  - Socket bound at its final path under umask `0177` rather than bound
+  - Socket bound at its final path (owner-only, listening only after
+    `chmod 0660`) rather than bound
     elsewhere and renamed: a renamed socket keeps its original bound name,
     which `ss`/`lsof` (and the listener test) would report.
   - Unix-socket liveness probe and stale removal happen before bind; the

@@ -4,6 +4,8 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::net::{Ipv4Addr, TcpListener};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -113,9 +115,10 @@ impl Drop for SocketFile {
 
 /// Binds the daemon's unix socket at `path` with mode [`SOCKET_MODE`].
 ///
-/// The socket is created under a umask of `0177`, so it is owner-only from
-/// the moment it exists, then widened to [`SOCKET_MODE`]; it never exists
-/// with a mode wider than that. If `path` exists:
+/// The socket is bound owner-only (on Linux, from the moment it exists),
+/// widened to [`SOCKET_MODE`], and only then starts listening, so it never
+/// accepts a connection under any other mode. The process umask is never
+/// changed. If `path` exists:
 ///
 /// - a socket that accepts a connection → [`BindError::InUse`];
 /// - a socket that refuses connections (a crashed daemon's) → replaced;
@@ -132,7 +135,7 @@ pub fn bind_unix(path: &Path) -> Result<(UnixListener, SocketFile), BindError> {
         }
     }
 
-    let listener = bind_owner_only(path).map_err(io_err("bind", path))?;
+    let bound = bind_owner_only(path).map_err(io_err("bind", path))?;
     let meta = match fs::symlink_metadata(path) {
         Ok(meta) => meta,
         Err(e) => {
@@ -149,21 +152,82 @@ pub fn bind_unix(path: &Path) -> Result<(UnixListener, SocketFile), BindError> {
     // From here on, dropping `file` on error removes the socket.
     fs::set_permissions(path, fs::Permissions::from_mode(SOCKET_MODE))
         .map_err(io_err("set mode of", path))?;
+    let listener = bound.listen().map_err(io_err("listen on", path))?;
     Ok((listener, file))
 }
 
-/// Binds with the process umask set to `0177` for the duration of the call.
+/// A unix socket bound at a path but not yet listening: a connection
+/// attempt is refused until [`Bound::listen`].
+struct Bound(OwnedFd);
+
+impl Bound {
+    fn listen(self) -> io::Result<UnixListener> {
+        // SAFETY: the fd is a valid, owned, bound socket.
+        if unsafe { libc::listen(self.0.as_raw_fd(), libc::SOMAXCONN) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(UnixListener::from(self.0))
+    }
+}
+
+/// Binds a socket at `path` without listening and without touching the
+/// process umask, which is process-wide and would race with every other
+/// thread creating files.
 ///
-/// The umask is process-wide; it is restored immediately, and only ever
-/// narrowed, so a file another thread creates meanwhile is at worst
-/// created owner-only.
-fn bind_owner_only(path: &Path) -> io::Result<UnixListener> {
-    // SAFETY: umask has no memory-safety preconditions.
-    let previous = unsafe { libc::umask(0o177) };
-    let result = UnixListener::bind(path);
-    // SAFETY: as above.
-    unsafe { libc::umask(previous) };
-    result
+/// On Linux the socket's mode is set to `0600` before `bind`; the kernel
+/// creates the file with that mode (further narrowed by the umask), so it
+/// is owner-only from the moment it exists. On every OS the caller widens
+/// the mode to [`SOCKET_MODE`] before [`Bound::listen`], so no connection
+/// can be accepted while the mode is anything else.
+fn bind_owner_only(path: &Path) -> io::Result<Bound> {
+    let bytes = path.as_os_str().as_bytes();
+    // SAFETY: sockaddr_un is plain old data; all-zero is a valid value.
+    let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    if bytes.contains(&0) || bytes.len() >= addr.sun_path.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "socket path too long or contains NUL",
+        ));
+    }
+    addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    for (dst, src) in addr.sun_path.iter_mut().zip(bytes) {
+        *dst = *src as libc::c_char;
+    }
+    let len = std::mem::offset_of!(libc::sockaddr_un, sun_path) + bytes.len() + 1;
+    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
+    {
+        addr.sun_len = len as u8;
+    }
+
+    // SAFETY: plain syscall; the result is checked before use.
+    let raw = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
+    if raw < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `raw` is a fresh fd this function owns.
+    let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+    // SAFETY: valid fd; FD_CLOEXEC has no memory-safety preconditions.
+    if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    #[cfg(target_os = "linux")]
+    // SAFETY: valid fd. Linux applies an unbound socket's inode mode to
+    // the file `bind` creates.
+    if unsafe { libc::fchmod(fd.as_raw_fd(), 0o600) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `addr` is a valid sockaddr_un and `len` does not exceed it.
+    let rc = unsafe {
+        libc::bind(
+            fd.as_raw_fd(),
+            (&addr as *const libc::sockaddr_un).cast::<libc::sockaddr>(),
+            len as libc::socklen_t,
+        )
+    };
+    if rc != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(Bound(fd))
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -317,6 +381,47 @@ mod tests {
         assert_eq!(fs::symlink_metadata(&path).unwrap().ino(), successor);
         drop(second_file);
         assert!(!path.exists());
+    }
+
+    /// Binding never changes the process umask, so directories and files
+    /// other threads create meanwhile keep their normal modes (f-003).
+    #[test]
+    fn concurrent_file_creation_is_unaffected() {
+        let base = tempfile::tempdir().unwrap();
+        let reference = base.path().join("reference");
+        fs::create_dir(&reference).unwrap();
+        let dir_mode = mode(&reference);
+        fs::write(reference.join("f"), b"").unwrap();
+        let file_mode = mode(&reference.join("f"));
+        assert_ne!(dir_mode & 0o100, 0, "test needs owner search on dirs");
+
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let binders: Vec<_> = (0..4)
+            .map(|_| {
+                let stop = stop.clone();
+                std::thread::spawn(move || {
+                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        let dir = tempfile::tempdir().unwrap();
+                        let path = sock_path(&dir);
+                        let (_l, _f) = bind_unix(&path).unwrap();
+                        assert_eq!(mode(&path), SOCKET_MODE);
+                    }
+                })
+            })
+            .collect();
+
+        for i in 0..2000 {
+            let dir = base.path().join(format!("d{i}"));
+            fs::create_dir(&dir).unwrap();
+            assert_eq!(mode(&dir), dir_mode, "directory {i}");
+            let file = dir.join("f");
+            fs::write(&file, b"").unwrap();
+            assert_eq!(mode(&file), file_mode, "file {i}");
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        for b in binders {
+            b.join().unwrap();
+        }
     }
 
     #[test]
