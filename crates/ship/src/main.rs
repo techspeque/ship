@@ -1,9 +1,12 @@
 //! The `ship` binary: client commands and `ship daemon` dispatch.
 //!
-//! Phase 0 scaffold: only `--version` / `-V` is implemented. Argument parsing
-//! with Clap arrives with the first real subcommand.
+//! Phase 0: `--version` / `-V` and `ship daemon`. Client subcommands arrive
+//! with their workstreams.
 
+use std::path::PathBuf;
 use std::process::ExitCode;
+
+use clap::{Parser, Subcommand};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const COMMIT: &str = env!("SHIP_COMMIT");
@@ -17,26 +20,150 @@ fn version_line() -> String {
     )
 }
 
+/// Turn a folder into a running, observable application on a Linux machine
+/// you own.
+#[derive(Debug, Parser)]
+#[command(name = "ship", disable_version_flag = true)]
+struct Cli {
+    /// Print version, commit and platform.
+    #[arg(short = 'V', long = "version")]
+    version: bool,
+
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    /// Run the Ship daemon (Linux only).
+    Daemon(DaemonArgs),
+}
+
+#[derive(Debug, clap::Args)]
+struct DaemonArgs {
+    /// State directory holding the database; created at 0700 if missing.
+    #[arg(long = "state", value_name = "DIR", default_value = ship_daemon::DEFAULT_STATE_DIR)]
+    state: PathBuf,
+
+    /// Path of the unix socket (mode 0660); its directory must exist.
+    #[arg(long, value_name = "PATH", default_value = ship_daemon::DEFAULT_SOCKET_PATH)]
+    socket: PathBuf,
+
+    /// Port of the listener on 127.0.0.1. Ship never listens on any other
+    /// interface.
+    #[arg(long, value_name = "N", default_value_t = ship_daemon::DEFAULT_PORT)]
+    port: u16,
+}
+
+/// The refusal `ship daemon` prints on `os`, or `None` on Linux.
+fn daemon_unsupported(os: &str) -> Option<String> {
+    (os != "linux").then(|| {
+        format!(
+            "ship daemon runs on Linux only (ADR-0002); this client runs on {os}. \
+             Run the daemon on a Linux host and reach it with a target."
+        )
+    })
+}
+
+fn daemon(args: DaemonArgs) -> ExitCode {
+    if let Some(message) = daemon_unsupported(std::env::consts::OS) {
+        eprintln!("ship: {message}");
+        return ExitCode::from(2);
+    }
+    let redactor = ship_daemon::Redactor::new();
+    if let Err(e) = ship_daemon::log::init(redactor.clone()) {
+        eprintln!("ship daemon: logger: {e}");
+        return ExitCode::FAILURE;
+    }
+    let config = ship_daemon::Config {
+        state_dir: args.state,
+        socket_path: args.socket,
+        port: args.port,
+        redactor,
+    };
+    match ship_daemon::run_blocking(config) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            tracing_error(&e);
+            eprintln!("ship daemon: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Records a fatal error in the structured log as well as plain stderr.
+fn tracing_error(e: &ship_daemon::DaemonError) {
+    ship_daemon::log::error(&e.to_string());
+}
+
 fn main() -> ExitCode {
-    let args: Vec<_> = std::env::args_os().skip(1).collect();
-    if args.len() == 1 && (args[0] == "--version" || args[0] == "-V") {
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => {
+            let _ = e.print();
+            return if e.use_stderr() {
+                ExitCode::from(2)
+            } else {
+                ExitCode::SUCCESS
+            };
+        }
+    };
+    if cli.version {
         println!("{}", version_line());
         return ExitCode::SUCCESS;
     }
-    eprintln!("ship: pre-alpha scaffold; only `ship --version` is implemented");
-    ExitCode::from(2)
+    match cli.command {
+        Some(Command::Daemon(args)) => daemon(args),
+        None => {
+            eprintln!("ship: no command given; see `ship --help`");
+            ExitCode::from(2)
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
 
     #[test]
     fn version_line_names_version_commit_and_platform() {
         let line = version_line();
         assert!(line.starts_with(&format!("ship {VERSION} ")), "{line}");
         assert!(line.contains(&format!("commit {COMMIT}")), "{line}");
-        let platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+        let platform = format!("{}-{})", std::env::consts::OS, std::env::consts::ARCH);
         assert!(line.contains(&platform), "{line}");
+    }
+
+    #[test]
+    fn cli_definition_is_valid() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn daemon_defaults() {
+        let cli = Cli::try_parse_from(["ship", "daemon"]).unwrap();
+        let Some(Command::Daemon(args)) = cli.command else {
+            panic!("expected daemon");
+        };
+        assert_eq!(args.state, PathBuf::from("/var/lib/ship"));
+        assert_eq!(args.socket, PathBuf::from("/run/ship/ship.sock"));
+        assert_eq!(args.port, 7180);
+    }
+
+    #[test]
+    fn daemon_takes_no_address() {
+        assert!(Cli::try_parse_from(["ship", "daemon", "--listen", "0.0.0.0"]).is_err());
+        assert!(Cli::try_parse_from(["ship", "daemon", "--port", "0.0.0.0:80"]).is_err());
+    }
+
+    #[test]
+    fn daemon_is_linux_only() {
+        assert_eq!(daemon_unsupported("linux"), None);
+        for os in ["macos", "windows", "freebsd"] {
+            let message = daemon_unsupported(os).unwrap();
+            assert!(message.contains("Linux only"), "{message}");
+            assert!(message.contains(os), "{message}");
+        }
     }
 }

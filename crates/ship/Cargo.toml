@@ -13,3 +13,5 @@ name = "ship"
 path = "src/main.rs"
 
 [dependencies]
+ship-daemon = { path = "../ship-daemon" }
+clap = { version = "4", default-features = false, features = ["derive", "error-context", "help", "std", "suggestions", "usage"] }
