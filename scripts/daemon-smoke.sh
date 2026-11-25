@@ -47,7 +47,7 @@ status=""
 for _ in $(seq 1 100); do
 	kill -0 "$daemon_pid" 2>/dev/null || fail "the daemon exited before /healthz answered"
 	status=$(curl -s -o "$work/healthz" -w '%{http_code}' --max-time 2 \
-		--unix-socket "$socket" http://ship/healthz || true)
+		--unix-socket "$socket" http://localhost/healthz || true)
 	[ "$status" = 200 ] && break
 	sleep 0.2
 done
