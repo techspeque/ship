@@ -263,6 +263,7 @@ ship target add NAME (ssh://USER@HOST | tailnet://HOST | local)
 ship target use NAME
 ship push [PATH] [--project P] [--env E] [--file F] [--port N]
           (--wait | --detach) [--dry-run] [--to TARGET]
+ship host                             # host and Docker status, as /api/v1/host
 ship projects
 ship status PROJECT [--env E]
 ship deployments PROJECT [--env E]
@@ -294,8 +295,8 @@ resume from a sequence number. Errors are
 
 ### JSON contract (provided to Gaia and scripts, ADR-0004)
 
-`ship push --wait`, `ship projects`, `ship status`, `ship deployments` and
-`ship logs`, all with `-o json`. `ship push --wait` behaves like a local
+`ship push --wait`, `ship host`, `ship projects`, `ship status`,
+`ship deployments` and `ship logs`, all with `-o json`. `ship push --wait` behaves like a local
 build tool: streamed progress, exit code 0 only when the deployment met its
 verification criteria, a reserved documented range for Ship's own failures.
 Shapes are provisional until Phase 5, then change only with a major version.

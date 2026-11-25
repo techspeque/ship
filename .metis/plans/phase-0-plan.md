@@ -305,9 +305,9 @@ Acceptance criteria:
 Composition scenarios to validate:
 - [ ] On a clean Linux VM with Docker, install a release build with `install.sh`, run `ship service install` and start the service; the daemon is up after a reboot
 - [ ] From a macOS or Linux laptop, `ship target add lab ssh://user@host` then `ship projects -o json` returns the empty list fixture
-- [ ] `ship open` shows the UI with Docker `ready`; stopping Docker changes it to `unreachable` and the CLI reports the same, with the daemon still running
+- [ ] `ship open` shows the UI with Docker `ready`; stopping Docker changes it to `unreachable` and `ship host` reports the same, with the daemon still running
 - [ ] Listing listening sockets on the host shows Ship only on its unix socket and 127.0.0.1
-- [ ] Containers, networks and volumes that existed before installing Ship are byte-for-byte unchanged in `docker inspect` after the whole scenario
+- [ ] Containers, networks and volumes that existed before installing Ship are unchanged in `docker inspect` after the whole scenario: volumes byte-for-byte, containers and networks on every field a reboot or Docker restart does not rewrite (not PIDs, start times, network sandboxes or the default bridge's id)
 - [ ] A client one API version behind the daemon fails with the upgrade instruction
 - [ ] `ship service uninstall` leaves the state directory and all Docker objects in place
 - [ ] Every `-o json` output matches its recorded fixture
