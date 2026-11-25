@@ -11,3 +11,12 @@ findings:
       file: crates/ship/tests/dependency_rule.rs
       commit: 7408af2c08c4ba4da6a3feb7093abcba9617a5ec
       evidence: test detects_leaf_to_leaf_quoted_section_names
+    - id: f-002
+      date: "2026-11-25"
+      slice: phase-0-ws-0.3
+      severity: P2
+      category: correctness
+      finding: 'crates/ship-store/src/migrate.rs:56-62 — The schema-version probe opens read-write, contrary to brief lines 41-44. Reproduced against a version-6 database left with committed WAL by an exited process: Store::open returns SchemaTooNew but changes ship.db and removes ship.db-wal and ship.db-shm on close. Use a read-only version check before any writable connection and add a regression asserting all database/sidecar bytes and directory entries remain unchanged for this WAL case.'
+      status: open
+      cycle: 1
+      file: crates/ship-store/src/migrate.rs
