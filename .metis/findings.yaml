@@ -149,9 +149,12 @@ findings:
       severity: P2
       category: behavior
       finding: .github/workflows/release.yml:266 — every release is marked --prerelease, which GitHub excludes from releases/latest; consequently README.md:41 cannot download the installer and install.sh without --version cannot find releases produced by this pipeline — publish releases eligible for the brief-required latest redirect and verify the default documented install path.
-      status: open
+      status: resolved
+      resolved_by: commit a53b1cda0bac; .github/workflows/release.yml:281
       cycle: 1
       file: github/workflows/release.yml
+      commit: a53b1cda0baca95aa5ba8396426b5985874b6da4
+      evidence: .github/workflows/release.yml:281
     - id: f-014
       date: "2026-11-25"
       slice: phase-0-ws-0.9
