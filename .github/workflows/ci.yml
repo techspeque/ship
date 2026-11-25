@@ -176,6 +176,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 10
     strategy:
+      # Both runners report a result even when the other fails.
+      fail-fast: false
       matrix:
         runner: [ubuntu-latest, macos-latest]
     steps:

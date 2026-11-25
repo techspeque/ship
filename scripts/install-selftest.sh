@@ -128,7 +128,7 @@ run() {
 	pass "$case_name"
 }
 
-copy() { rm -rf "$work/$1" && cp -R "$rel" "$work/$1" && echo "$work/$1"; }
+copy() { rm -rf "${work:?}/${1:?}" &&cp -R "$rel" "$work/$1" && echo "$work/$1"; }
 
 stubbed="$work/stub:$PATH"
 
