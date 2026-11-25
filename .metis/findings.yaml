@@ -131,3 +131,12 @@ findings:
       file: crates/ship/tests/ssh_real.rs
       commit: 23f978fb6a17b8aa41f29706095d204b41a0570f
       evidence: crates/ship/tests/ssh_real.rs:143
+    - id: f-012
+      date: "2026-11-25"
+      slice: phase-0-ws-0.9
+      severity: P2
+      category: behavior
+      finding: .github/workflows/release.yml:205 — publish checks only ref_type, so workflow_dispatch targeting a tag enters signing and publishing despite the brief requiring every dispatch to be a dry run — require the push event as well as a tag for publish, and check dispatch-on-tag stays unsigned and unpublished.
+      status: open
+      cycle: 1
+      file: github/workflows/release.yml
