@@ -275,6 +275,20 @@ jobs:
               less install.sh
               sh install.sh --version $TAG
           EOF
+          # Not --prerelease: GitHub leaves prereleases out of
+          # releases/latest, which README.md and install.sh's default rely on.
           gh release create "$TAG" dist/* \
-            --repo "$REPO" --verify-tag --prerelease \
+            --repo "$REPO" --verify-tag --latest \
             --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
+      # The default install path documented in README.md, against the
+      # release just published: install.sh from releases/latest, no
+      # --version, so it must resolve this tag through the redirect.
+      - name: Verify the documented install path
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          mkdir "$RUNNER_TEMP/latest"
+          cd "$RUNNER_TEMP/latest"
+          curl -fsSLO "https://github.com/$REPO/releases/latest/download/install.sh"
+          sh install.sh --prefix "$RUNNER_TEMP/latest/bin"
+          "$RUNNER_TEMP/latest/bin/ship" --version | grep -F "ship ${TAG#v} ("

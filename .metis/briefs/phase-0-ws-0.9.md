@@ -170,9 +170,10 @@ None.
 - `.github/workflows/release.yml` (new): jobs `version` (tag must equal
   `v` + the workspace version), `ui`, `build` (matrix of 4 targets; Linux
   static, busybox and no-network checks), `sbom-and-sums` (Syft SPDX and
-  `SHA256SUMS`), `publish` (tags only; cosign keyless signing, install.sh
-  verification with real cosign plus 2 tamper cases, `gh release create
-  --prerelease`).
+  `SHA256SUMS`), `publish` (tag pushes only; cosign keyless signing,
+  install.sh verification with real cosign plus 2 tamper cases, `gh release
+  create --latest`, then the README install path through
+  `releases/latest`).
 - `.github/workflows/ci.yml`: new jobs `audit` (cargo-deny, npm audit, web
   licences, vulnerable-fixture self-test) and `install-script` (shellcheck
   and `install-selftest.sh` on ubuntu-latest and macos-latest).
