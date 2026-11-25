@@ -139,8 +139,53 @@ Design decisions:
 
 ## Out-of-scope touches
 
-None.
+- `crates/ship/tests/cli_version.rs:33` — `unknown_arguments_exit_non_zero`
+  used `ship projects` as its example of an unknown subcommand (exit 2).
+  This slice makes `projects` a real command, so the test now uses
+  `no-such-command`. The assertion it makes is unchanged.
 
 ## Report
 
-Filled at implementation.
+- `ship-core/src/api.rs`: `API_VERSION_HEADER` (`ship-api-version`),
+  `SHIP_VERSION_HEADER` (`ship-version`), `api_version_number`; re-exported
+  from `lib.rs`.
+- `ship-daemon/src/http.rs`: `api_version` middleware on `/api/` paths
+  (version headers on every response; `426 unsupported_api_version` with
+  `client_api_version` / `daemon_api_version` / `daemon_version` details);
+  `/healthz` untouched. New `tests/api_version.rs`.
+- `ship-net`: new `target.rs` (`Target`, `SshTarget::ssh_args`,
+  `TargetError`, `DEFAULT_SOCKET`), `connect.rs` (`connect_unix`,
+  `ConnectError` NoDaemon / PermissionDenied with group / Io,
+  `group_name` via `getgrgid_r`), `dial.rs` (`dial_stdio`, `bridge`),
+  `client.rs` (`get`, `Response`, `TransportError`). `Cargo.toml` adds
+  `ship-core`, `tokio`, `hyper` (client, http1), `hyper-util`,
+  `http-body-util`, `bytes`. Still depends only on `ship-core` among
+  workspace crates (`dependency_rule` passes).
+- `ship`: `src/config.rs` (targets file), `src/client.rs` (`get_json`,
+  version check, `incompatibility` message), `src/commands.rs` (`target
+  add|use|list`, `projects`, `dial-stdio`); `main.rs` wires them.
+  `Cargo.toml` adds `ship-core`, `ship-net`, `serde`, `serde_json`,
+  `tokio`, `bytes`; dev `libc`, `tempfile`, `tokio`. Fixture
+  `tests/fixtures/projects-empty.json`. Tests `tests/cli_client.rs` (11)
+  and `tests/ssh_real.rs` (ignored; real sshd).
+- `.github/workflows/ci.yml`: new `ssh` job. It installs and starts
+  openssh-server on the runner, authorises a fresh ed25519 key, symlinks
+  the built `ship` into `/usr/local/bin`, then runs `ssh_real` with
+  `SHIP_TEST_SSH=$USER@localhost`. It has not run yet: it runs on the next
+  push to `dev`, and the real-sshd check passes only once it does.
+- Decisions beyond the design list:
+  - Version mismatch is checked on every response, not on a separate
+    handshake request, so each command costs one round trip (gate: projects
+    over ssh in under 2 s).
+  - `Connection: close` on every client request, so `dial-stdio` exits as
+    soon as the daemon finishes rather than after the client's drain.
+  - The local and ssh-fake tests start the daemon in-process with
+    `ship_daemon::start`, because `ship daemon` refuses non-Linux and this
+    was developed on macOS.
+- `cargo` and `cargo fmt` needed approval in this session. Tests ran through
+  `metis verify`, and rustfmt's diffs were applied by hand.
+- `metis verify --post --slice phase-0-ws-0.6`: ALL GREEN (fmt, clippy
+  -D warnings; tests: ship 20 unit + 11 cli_client + 2 cli_daemon + 2
+  cli_version + 15 dependency_rule + 1 ignored ssh_real; ship-net 31 unit;
+  ship-daemon 11 unit + 2 api_version + existing suites; ship-core 43
+  unit).

@@ -1,7 +1,7 @@
 //! The daemon's HTTP surface: routes and the origin guard.
 
 use axum::extract::{Request, State};
-use axum::http::{HeaderMap, Method, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -11,12 +11,18 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use ship_core::api::{HOST_PATH, PROJECTS_PATH};
-use ship_core::{ApiError, ErrorCode, HostInfo, ProjectList, ProjectSummary};
+use ship_core::{
+    API_VERSION, API_VERSION_HEADER, ApiError, ErrorCode, HostInfo, ProjectList, ProjectSummary,
+    SHIP_VERSION_HEADER,
+};
 use ship_docker::Runner;
 use ship_store::Store;
 
 /// Path of the liveness probe. Reveals nothing about the host.
 pub const HEALTHZ_PATH: &str = "/healthz";
+
+/// The daemon's Ship version, sent on every `/api/` response.
+const SHIP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Host names a request may address. Any port is accepted, because
 /// `ship open` reaches the daemon through an ssh-forwarded local port.
@@ -48,6 +54,7 @@ pub fn router(store: Store, host: HostProbe) -> Router {
             store,
             host: Arc::new(host),
         })
+        .layer(middleware::from_fn(api_version))
         .layer(middleware::from_fn(origin_guard))
 }
 
@@ -127,6 +134,46 @@ async fn origin_guard(request: Request, next: Next) -> Response {
     }
 }
 
+/// The API version handshake (OVERVIEW §8) on every `/api/` path.
+///
+/// Every response carries the daemon's API and Ship versions. A request
+/// naming a different API version is refused with `426
+/// unsupported_api_version` before routing, with both versions in the
+/// details so the client can say which side to upgrade. A request naming
+/// none (curl, a browser) is served. `/healthz` is left alone: it reveals
+/// nothing about the daemon.
+async fn api_version(request: Request, next: Next) -> Response {
+    if !request.uri().path().starts_with("/api/") {
+        return next.run(request).await;
+    }
+    let mut response = match request.headers().get(API_VERSION_HEADER) {
+        Some(value) if value.as_bytes() != API_VERSION.as_bytes() => {
+            let client = String::from_utf8_lossy(value.as_bytes()).into_owned();
+            tracing::warn!(
+                client_api_version = %client,
+                daemon_api_version = API_VERSION,
+                "request refused: unsupported API version"
+            );
+            error_response(
+                ApiError::new(
+                    ErrorCode::UnsupportedApiVersion,
+                    format!("this daemon speaks API {API_VERSION}, the client speaks {client}"),
+                )
+                .with_details(json!({
+                    "client_api_version": client,
+                    "daemon_api_version": API_VERSION,
+                    "daemon_version": SHIP_VERSION,
+                })),
+            )
+        }
+        _ => next.run(request).await,
+    };
+    let headers = response.headers_mut();
+    headers.insert(API_VERSION_HEADER, HeaderValue::from_static(API_VERSION));
+    headers.insert(SHIP_VERSION_HEADER, HeaderValue::from_static(SHIP_VERSION));
+    response
+}
+
 fn is_mutating(method: &Method) -> bool {
     !matches!(
         *method,
@@ -195,7 +242,6 @@ fn is_loopback_host(host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::HeaderValue;
 
     fn headers(pairs: &[(&'static str, &'static str)]) -> HeaderMap {
         let mut h = HeaderMap::new();

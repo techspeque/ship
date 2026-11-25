@@ -12,6 +12,24 @@ use crate::time::Timestamp;
 pub const API_VERSION: &str = "v1";
 /// Path prefix of every versioned endpoint.
 pub const API_PREFIX: &str = "/api/v1";
+/// Request and response header carrying the API version (`v1`). A client
+/// sends the version it speaks; the daemon answers with its own on every
+/// `/api/` response and refuses a different one with `426
+/// unsupported_api_version`.
+pub const API_VERSION_HEADER: &str = "ship-api-version";
+/// Response header carrying the daemon's Ship version on `/api/` responses,
+/// so an incompatible client can name the release to upgrade to.
+pub const SHIP_VERSION_HEADER: &str = "ship-version";
+
+/// The number in an API version string (`v1` → 1); `None` if malformed.
+pub fn api_version_number(version: &str) -> Option<u32> {
+    let digits = version.strip_prefix('v')?;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
 /// `GET`: [`HostInfo`].
 pub const HOST_PATH: &str = "/api/v1/host";
 /// `GET`: [`ProjectList`].
@@ -104,6 +122,25 @@ mod tests {
         assert_eq!(API_PREFIX, format!("/api/{API_VERSION}"));
         assert!(HOST_PATH.starts_with(API_PREFIX));
         assert!(PROJECTS_PATH.starts_with(API_PREFIX));
+    }
+
+    #[test]
+    fn api_version_numbers() {
+        assert_eq!(api_version_number(API_VERSION), Some(1));
+        assert_eq!(api_version_number("v12"), Some(12));
+        for bad in ["", "v", "1", "V1", "v1.0", "v-1", "v1 ", "vx"] {
+            assert_eq!(api_version_number(bad), None, "{bad}");
+        }
+        assert!(
+            API_VERSION_HEADER
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b == b'-')
+        );
+        assert!(
+            SHIP_VERSION_HEADER
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b == b'-')
+        );
     }
 
     #[test]

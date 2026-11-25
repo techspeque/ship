@@ -1,0 +1,398 @@
+//! One HTTP exchange with a daemon over a [`Target`]'s transport.
+//!
+//! `local` opens the unix socket; `ssh://` spawns `ssh` with structured
+//! argv (no shell on this side) running `ship dial-stdio`, and speaks HTTP
+//! over its pipes. The whole exchange, including ssh's connection, is
+//! bounded by a timeout; on timeout the `ssh` child is killed.
+
+use std::fmt;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::process::{ExitStatus, Stdio};
+use std::time::Duration;
+
+use bytes::Bytes;
+use http_body_util::{BodyExt, Empty, Limited};
+use hyper::Request;
+use hyper::header::{CONNECTION, HOST};
+use hyper_util::rt::TokioIo;
+use ship_core::{API_VERSION, API_VERSION_HEADER, SHIP_VERSION_HEADER};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
+use tokio::process::{Child, Command};
+
+use crate::connect::{ConnectError, connect_unix_async};
+use crate::target::{DEFAULT_SOCKET, SshTarget, Target};
+
+/// Largest response body a client accepts.
+pub const MAX_BODY: usize = 16 * 1024 * 1024;
+/// How much of `ssh`'s stderr is kept for messages.
+const MAX_STDERR: usize = 8 * 1024;
+/// How long to wait for `ssh` to exit after the exchange failed, to read
+/// why.
+const SSH_EXIT_GRACE: Duration = Duration::from_secs(3);
+
+/// A daemon's answer.
+#[derive(Debug, Clone)]
+pub struct Response {
+    pub status: u16,
+    /// The daemon's `Ship-Api-Version` header, if it sent one.
+    pub api_version: Option<String>,
+    /// The daemon's `Ship-Version` header, if it sent one.
+    pub daemon_version: Option<String>,
+    pub body: Bytes,
+}
+
+/// Why an exchange failed.
+#[derive(Debug)]
+pub enum TransportError {
+    /// The local socket could not be opened.
+    Connect(ConnectError),
+    /// No complete answer within the timeout.
+    TimedOut { after: Duration },
+    /// `ssh` itself failed (exit 255): host unreachable, auth refused, …
+    SshUnreachable { host: String, stderr: String },
+    /// `ssh` could not be started.
+    SshSpawn(io::Error),
+    /// `ship` is not on the host's PATH for the login user (exit 127).
+    ShipNotInstalled { host: String },
+    /// The remote `ship dial-stdio` failed; `stderr` carries its message.
+    Remote {
+        host: String,
+        status: Option<i32>,
+        stderr: String,
+    },
+    /// The HTTP exchange failed on an open connection.
+    Http(String),
+    /// The response body exceeded [`MAX_BODY`].
+    BodyTooLarge,
+}
+
+impl fmt::Display for TransportError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TransportError::Connect(e) => e.fmt(f),
+            TransportError::TimedOut { after } => write!(
+                f,
+                "timed out after {}s waiting for the daemon; check that the host \
+                 is up and reachable",
+                after.as_secs_f64()
+            ),
+            TransportError::SshUnreachable { host, stderr } => {
+                write!(f, "cannot reach {host} over ssh")?;
+                if !stderr.is_empty() {
+                    write!(f, ": {stderr}")?;
+                }
+                Ok(())
+            }
+            TransportError::SshSpawn(e) => write!(
+                f,
+                "cannot run `ssh`: {e}; install an OpenSSH client and make sure \
+                 it is on PATH"
+            ),
+            TransportError::ShipNotInstalled { host } => write!(
+                f,
+                "`ship` was not found on {host}: install Ship there and make sure \
+                 it is on the PATH of the ssh login user"
+            ),
+            TransportError::Remote {
+                host,
+                status,
+                stderr,
+            } => {
+                write!(f, "on {host}: ")?;
+                match (stderr.is_empty(), status) {
+                    (false, _) => f.write_str(stderr),
+                    (true, Some(code)) => write!(f, "`ship dial-stdio` exited with {code}"),
+                    (true, None) => f.write_str("the connection closed before the daemon answered"),
+                }
+            }
+            TransportError::Http(e) => write!(f, "talking to the daemon: {e}"),
+            TransportError::BodyTooLarge => write!(
+                f,
+                "the daemon's answer is larger than {} MiB",
+                MAX_BODY / (1024 * 1024)
+            ),
+        }
+    }
+}
+
+impl std::error::Error for TransportError {}
+
+impl From<ConnectError> for TransportError {
+    fn from(e: ConnectError) -> Self {
+        TransportError::Connect(e)
+    }
+}
+
+/// `GET path` from the daemon behind `target`, sending this build's API
+/// version, within `timeout`.
+pub async fn get(
+    target: &Target,
+    path: &str,
+    timeout: Duration,
+) -> Result<Response, TransportError> {
+    match target {
+        Target::Local { socket } => {
+            let exchange = async {
+                let stream = connect_unix_async(socket).await?;
+                exchange(stream, path).await
+            };
+            tokio::time::timeout(timeout, exchange)
+                .await
+                .unwrap_or(Err(TransportError::TimedOut { after: timeout }))
+        }
+        Target::Ssh(ssh) => get_over_ssh(ssh, path, timeout).await,
+    }
+}
+
+async fn get_over_ssh(
+    ssh: &SshTarget,
+    path: &str,
+    timeout: Duration,
+) -> Result<Response, TransportError> {
+    let mut child = Command::new("ssh")
+        .args(ssh.ssh_args(timeout))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(TransportError::SshSpawn)?;
+    let (Some(stdin), Some(stdout), Some(stderr)) =
+        (child.stdin.take(), child.stdout.take(), child.stderr.take())
+    else {
+        return Err(TransportError::SshSpawn(io::Error::other(
+            "ssh started without its pipes",
+        )));
+    };
+    let stderr = tokio::spawn(read_bounded(stderr));
+
+    let result =
+        tokio::time::timeout(timeout, exchange(tokio::io::join(stdout, stdin), path)).await;
+    match result {
+        Ok(Ok(response)) => Ok(response),
+        Err(_) => {
+            let _ = child.kill().await;
+            Err(TransportError::TimedOut { after: timeout })
+        }
+        Ok(Err(e)) => {
+            let status = wait_briefly(&mut child).await;
+            let stderr = tokio::time::timeout(SSH_EXIT_GRACE, stderr)
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or_default();
+            Err(ssh_failure(ssh, status, stderr, e))
+        }
+    }
+}
+
+/// The child's exit status if it exits within [`SSH_EXIT_GRACE`]; the child
+/// is killed otherwise.
+async fn wait_briefly(child: &mut Child) -> Option<ExitStatus> {
+    match tokio::time::timeout(SSH_EXIT_GRACE, child.wait()).await {
+        Ok(Ok(status)) => Some(status),
+        _ => {
+            let _ = child.kill().await;
+            None
+        }
+    }
+}
+
+/// Explains a failed exchange over ssh from ssh's exit status and stderr.
+fn ssh_failure(
+    ssh: &SshTarget,
+    status: Option<ExitStatus>,
+    stderr: String,
+    cause: TransportError,
+) -> TransportError {
+    let host = ssh.display_host();
+    let code = status.and_then(|s| s.code());
+    match code {
+        Some(255) => TransportError::SshUnreachable { host, stderr },
+        Some(127) => TransportError::ShipNotInstalled { host },
+        Some(0) | None if stderr.is_empty() => cause,
+        _ => TransportError::Remote {
+            host,
+            status: code,
+            stderr,
+        },
+    }
+}
+
+/// Reads up to [`MAX_STDERR`] bytes, then drains the rest, so `ssh` never
+/// blocks on a full pipe. Returns the text trimmed.
+async fn read_bounded(mut r: impl AsyncRead + Unpin) -> String {
+    let mut kept = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        match r.read(&mut buf).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                let room = MAX_STDERR.saturating_sub(kept.len());
+                kept.extend_from_slice(&buf[..n.min(room)]);
+            }
+        }
+    }
+    String::from_utf8_lossy(&kept).trim().to_owned()
+}
+
+/// One `GET` over an established byte stream.
+async fn exchange<S>(stream: S, path: &str) -> Result<Response, TransportError>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let http = |e: hyper::Error| TransportError::Http(e.to_string());
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+        .await
+        .map_err(http)?;
+    let driver = tokio::spawn(conn);
+
+    let request = Request::get(path)
+        .header(HOST, "localhost")
+        .header(CONNECTION, "close")
+        .header(API_VERSION_HEADER, API_VERSION)
+        .body(Empty::<Bytes>::new())
+        .map_err(|e| TransportError::Http(e.to_string()))?;
+    let response = sender.send_request(request).await.map_err(http)?;
+    let (parts, body) = response.into_parts();
+    let header = |name: &str| {
+        parts
+            .headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned)
+    };
+    let api_version = header(API_VERSION_HEADER);
+    let daemon_version = header(SHIP_VERSION_HEADER);
+    let body = Limited::new(body, MAX_BODY)
+        .collect()
+        .await
+        .map_err(|e| {
+            if e.is::<http_body_util::LengthLimitError>() {
+                TransportError::BodyTooLarge
+            } else {
+                TransportError::Http(e.to_string())
+            }
+        })?
+        .to_bytes();
+    drop(sender);
+    driver.abort();
+    Ok(Response {
+        status: parts.status.as_u16(),
+        api_version,
+        daemon_version,
+        body,
+    })
+}
+
+/// The socket a target reaches, for messages: the local path, or the path
+/// on the ssh host.
+pub fn socket_of(target: &Target) -> PathBuf {
+    target
+        .socket()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_SOCKET))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::process::ExitStatusExt;
+
+    fn target() -> SshTarget {
+        SshTarget {
+            user: Some("adam".into()),
+            host: "lab".into(),
+            port: None,
+            socket: None,
+        }
+    }
+
+    fn exited(code: i32) -> Option<ExitStatus> {
+        Some(ExitStatus::from_raw(code << 8))
+    }
+
+    fn cause() -> TransportError {
+        TransportError::Http("connection closed".into())
+    }
+
+    #[test]
+    fn ssh_exit_codes_are_explained() {
+        let e = ssh_failure(&target(), exited(255), "No route to host".into(), cause());
+        assert!(matches!(e, TransportError::SshUnreachable { .. }), "{e:?}");
+        assert_eq!(
+            e.to_string(),
+            "cannot reach adam@lab over ssh: No route to host"
+        );
+
+        let e = ssh_failure(&target(), exited(127), String::new(), cause());
+        assert!(
+            matches!(e, TransportError::ShipNotInstalled { .. }),
+            "{e:?}"
+        );
+
+        let remote = "ship dial-stdio: permission denied on /run/ship/ship.sock: …";
+        let e = ssh_failure(&target(), exited(1), remote.into(), cause());
+        assert_eq!(e.to_string(), format!("on adam@lab: {remote}"));
+
+        let e = ssh_failure(&target(), exited(0), String::new(), cause());
+        assert!(matches!(e, TransportError::Http(_)), "{e:?}");
+    }
+
+    #[tokio::test]
+    async fn stderr_is_bounded() {
+        let big = vec![b'x'; MAX_STDERR * 3];
+        let got = read_bounded(&big[..]).await;
+        assert_eq!(got.len(), MAX_STDERR);
+    }
+
+    #[tokio::test]
+    async fn local_missing_socket_is_no_daemon() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = Target::Local {
+            socket: dir.path().join("none.sock"),
+        };
+        let e = get(&t, "/api/v1/projects", Duration::from_secs(5))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(e, TransportError::Connect(ConnectError::NoDaemon { .. })),
+            "{e:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exchange_sends_version_and_reads_headers() {
+        use tokio::io::AsyncWriteExt;
+        let (client, mut server) = tokio::io::duplex(64 * 1024);
+        let daemon = tokio::spawn(async move {
+            let mut buf = vec![0u8; 4096];
+            let mut got = Vec::new();
+            while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = server.read(&mut buf).await.unwrap();
+                got.extend_from_slice(&buf[..n]);
+            }
+            server
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nship-api-version: v1\r\nship-version: 9.9.9\r\n\
+                      content-length: 2\r\n\r\n{}",
+                )
+                .await
+                .unwrap();
+            String::from_utf8(got).unwrap()
+        });
+        let r = exchange(client, "/api/v1/projects").await.unwrap();
+        let request = daemon.await.unwrap().to_ascii_lowercase();
+        assert!(
+            request.starts_with("get /api/v1/projects http/1.1\r\n"),
+            "{request}"
+        );
+        assert!(request.contains("host: localhost\r\n"), "{request}");
+        assert!(request.contains("ship-api-version: v1\r\n"), "{request}");
+        assert_eq!(r.status, 200);
+        assert_eq!(r.api_version.as_deref(), Some("v1"));
+        assert_eq!(r.daemon_version.as_deref(), Some("9.9.9"));
+        assert_eq!(&r.body[..], b"{}");
+    }
+}

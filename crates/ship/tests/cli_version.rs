@@ -30,7 +30,7 @@ fn version_flag_prints_version_commit_and_platform() {
 
 #[test]
 fn unknown_arguments_exit_non_zero() {
-    let output = ship().arg("projects").output().expect("run ship");
+    let output = ship().arg("no-such-command").output().expect("run ship");
     assert_eq!(output.status.code(), Some(2));
     assert!(output.stdout.is_empty());
 }

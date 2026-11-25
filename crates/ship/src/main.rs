@@ -1,7 +1,12 @@
 //! The `ship` binary: client commands and `ship daemon` dispatch.
 //!
-//! Phase 0: `--version` / `-V` and `ship daemon`. Client subcommands arrive
-//! with their workstreams.
+//! Phase 0: `--version` / `-V`, `ship daemon`, `ship target`, `ship
+//! projects` and `ship dial-stdio`. Exit codes: 0 success, 1 failure, 2
+//! usage error.
+
+mod client;
+mod commands;
+mod config;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -37,6 +42,15 @@ struct Cli {
 enum Command {
     /// Run the Ship daemon (Linux only).
     Daemon(DaemonArgs),
+    /// Manage the daemons this client talks to.
+    #[command(subcommand)]
+    Target(commands::TargetCommand),
+    /// List the projects on the current target.
+    Projects(commands::ProjectsArgs),
+    /// Bridge stdin and stdout to the daemon's socket (the remote end of
+    /// the ssh transport; not for interactive use).
+    #[command(name = "dial-stdio")]
+    DialStdio(commands::DialStdioArgs),
 }
 
 #[derive(Debug, clap::Args)]
@@ -114,6 +128,9 @@ fn main() -> ExitCode {
     }
     match cli.command {
         Some(Command::Daemon(args)) => daemon(args),
+        Some(Command::Target(command)) => commands::target(command),
+        Some(Command::Projects(args)) => commands::projects(args),
+        Some(Command::DialStdio(args)) => commands::dial_stdio(args),
         None => {
             eprintln!("ship: no command given; see `ship --help`");
             ExitCode::from(2)
