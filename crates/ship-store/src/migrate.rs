@@ -5,7 +5,7 @@
 //! leaves the previous version in place.
 //!
 //! Order on open:
-//! 1. Read the version on a connection that sets no persistent pragma.
+//! 1. Read the version of an existing database on a read-only connection.
 //! 2. Newer than this binary → [`StoreError::SchemaTooNew`], nothing written.
 //! 3. An existing, non-empty database with pending migrations is copied with
 //!    `VACUUM INTO` beside itself first.
@@ -17,7 +17,7 @@ use sqlx::sqlite::SqliteConnection;
 use sqlx::{ConnectOptions, Connection};
 
 use crate::error::{StoreError, db};
-use crate::{base_options, clock};
+use crate::{DATABASE_FILE, base_options, clock};
 
 /// One schema migration.
 #[derive(Debug, Clone, Copy)]
@@ -52,7 +52,17 @@ pub(crate) async fn run(path: &Path, migrations: &[Migration]) -> Result<OpenRep
     let existed = std::fs::metadata(path)
         .map(|m| m.len() > 0)
         .unwrap_or(false);
-    // No journal_mode here: the version check must not alter the file.
+    if existed {
+        let latest = migrations.last().map_or(0, |m| m.version);
+        let found = probe_version(path).await?;
+        if found > latest {
+            return Err(StoreError::SchemaTooNew {
+                found,
+                supported: latest,
+            });
+        }
+    }
+    // No journal_mode here: WAL is switched on only after the backup.
     let mut conn = base_options(path)
         .create_if_missing(true)
         .connect()
@@ -106,6 +116,65 @@ async fn run_on(
         to_version: user_version(conn).await?,
         backup,
     })
+}
+
+/// Reads the schema version of an existing database through a read-only
+/// connection without changing any file in its directory.
+///
+/// Even a read-only SQLite connection creates or writes the `-wal` and `-shm`
+/// sidecars of a WAL database. So without a WAL file the main file is opened
+/// `immutable` (it alone holds every committed page); with one, the database
+/// and its WAL are copied to a private temporary directory and read there.
+async fn probe_version(path: &Path) -> Result<u32, StoreError> {
+    let wal = sidecar(path, "-wal")?;
+    let wal_has_frames = std::fs::metadata(&wal)
+        .map(|m| m.len() > 0)
+        .unwrap_or(false);
+    if !wal_has_frames {
+        return read_only_version(path, true).await;
+    }
+
+    let mut entropy = [0u8; 8];
+    getrandom::fill(&mut entropy).map_err(|_| StoreError::Entropy)?;
+    let tmp = std::env::temp_dir().join(format!(
+        "ship-store-probe-{}-{:016x}",
+        std::process::id(),
+        u64::from_le_bytes(entropy)
+    ));
+    std::fs::create_dir(&tmp).map_err(StoreError::Io)?;
+    let copy = tmp.join(DATABASE_FILE);
+    let result = async {
+        std::fs::copy(path, &copy).map_err(StoreError::Io)?;
+        std::fs::copy(&wal, sidecar(&copy, "-wal")?).map_err(StoreError::Io)?;
+        read_only_version(&copy, false).await
+    }
+    .await;
+    // Best effort: the copy is private and outside the state directory.
+    let _ = std::fs::remove_dir_all(&tmp);
+    result
+}
+
+async fn read_only_version(path: &Path, immutable: bool) -> Result<u32, StoreError> {
+    let mut conn = base_options(path)
+        .read_only(true)
+        .immutable(immutable)
+        .connect()
+        .await
+        .map_err(db)?;
+    let result = user_version(&mut conn).await;
+    let closed = conn.close().await;
+    let version = result?;
+    closed.map_err(db)?;
+    Ok(version)
+}
+
+/// `<path><suffix>`, e.g. the `-wal` file beside a database.
+fn sidecar(path: &Path, suffix: &str) -> Result<PathBuf, StoreError> {
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| invalid_path("database file name is not UTF-8"))?;
+    Ok(path.with_file_name(format!("{file_name}{suffix}")))
 }
 
 pub(crate) async fn user_version(conn: &mut SqliteConnection) -> Result<u32, StoreError> {

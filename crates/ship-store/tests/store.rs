@@ -599,3 +599,49 @@ async fn newer_schema_is_refused_and_untouched() {
     assert_eq!(version, i64::from(newer));
     conn.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn newer_schema_in_committed_wal_is_refused_and_untouched() {
+    // A database whose version bump sits committed in the WAL, copied while
+    // the writer is still open: what an exited process that never
+    // checkpointed leaves behind.
+    let src = tempfile::tempdir().unwrap();
+    let store = Store::open(src.path()).await.unwrap();
+    store.create_project(&slug("app")).await.unwrap();
+    store.close().await;
+
+    let newer = LATEST_VERSION + 5;
+    let mut conn = raw(src.path()).await;
+    sqlx::raw_sql("PRAGMA journal_mode = WAL")
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    sqlx::raw_sql(&format!("PRAGMA user_version = {newer}"))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    for (name, bytes) in snapshot(src.path()) {
+        std::fs::write(dir.path().join(name), bytes).unwrap();
+    }
+    conn.close().await.unwrap();
+
+    let before = snapshot(dir.path());
+    let wal = format!("{DATABASE_FILE}-wal");
+    let shm = format!("{DATABASE_FILE}-shm");
+    assert_eq!(
+        before.keys().collect::<Vec<_>>(),
+        [DATABASE_FILE, shm.as_str(), wal.as_str()]
+    );
+    assert!(!before[&wal].is_empty(), "the version bump is in the WAL");
+
+    match Store::open(dir.path()).await {
+        Err(StoreError::SchemaTooNew { found, supported }) => {
+            assert_eq!(found, newer);
+            assert_eq!(supported, LATEST_VERSION);
+        }
+        other => panic!("expected SchemaTooNew, got {other:?}"),
+    }
+
+    assert_eq!(snapshot(dir.path()), before);
+}
