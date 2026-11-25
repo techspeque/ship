@@ -7,7 +7,8 @@
 //!
 //! Manifests are scanned as text with no TOML dependency: inside any
 //! `dependencies`, `dev-dependencies` or `build-dependencies` section
-//! (including `target.*` and `[dependencies.<name>]` subtables), any
+//! (including `target.*` and `[dependencies.<name>]` subtables, with keys
+//! bare or quoted), any
 //! whole-word mention of a workspace crate outside a comment counts as a
 //! dependency. That covers plain keys, dotted `name.workspace = true` keys,
 //! subtable headers and `package = "<name>"` renames.
@@ -107,10 +108,44 @@ fn package_name(text: &str) -> Option<String> {
     None
 }
 
+/// The keys of a dotted table path, split on `.` outside quotes, each trimmed
+/// and with surrounding `"` or `'` removed, so `"dependencies"` reads as
+/// `dependencies` and `'cfg(a.b)'` stays one key.
+fn table_keys(header: &str) -> Vec<&str> {
+    let mut keys = Vec::new();
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    let mut start = 0;
+    for (index, ch) in header.char_indices() {
+        match quote {
+            Some('"') if escaped => escaped = false,
+            Some('"') if ch == '\\' => escaped = true,
+            Some(open) if ch == open => quote = None,
+            Some(_) => {}
+            None if ch == '"' || ch == '\'' => quote = Some(ch),
+            None if ch == '.' => {
+                keys.push(&header[start..index]);
+                start = index + 1;
+            }
+            None => {}
+        }
+    }
+    keys.push(&header[start..]);
+    keys.into_iter()
+        .map(|key| {
+            let key = key.trim();
+            key.strip_prefix('"')
+                .and_then(|k| k.strip_suffix('"'))
+                .or_else(|| key.strip_prefix('\'').and_then(|k| k.strip_suffix('\'')))
+                .unwrap_or(key)
+        })
+        .collect()
+}
+
 fn is_dependency_table(header: &str) -> bool {
-    header
-        .split('.')
-        .any(|segment| DEPENDENCY_SEGMENTS.contains(&segment.trim()))
+    table_keys(header)
+        .iter()
+        .any(|key| DEPENDENCY_SEGMENTS.contains(key))
 }
 
 fn is_name_char(ch: char) -> bool {
@@ -256,6 +291,28 @@ fn detects_leaf_to_leaf_build_dependency() {
 #[test]
 fn detects_leaf_to_leaf_target_dependency() {
     let text = "[target.'cfg(unix)'.dependencies]\nship-docker = { path = \"x\" }\n";
+    assert_eq!(check_leaf(text), [LEAF_ON_DOCKER]);
+}
+
+#[test]
+fn detects_leaf_to_leaf_quoted_section_names() {
+    for header in [
+        "[\"dependencies\"]",
+        "['dependencies']",
+        "[ \"dev-dependencies\" ]",
+        "['build-dependencies']",
+        "[target.\"cfg(unix)\".\"dependencies\"]",
+        "[target.'cfg(any(a.b))'.'dev-dependencies']",
+        "[\"target\".\"cfg(unix)\".\"build-dependencies\"]",
+    ] {
+        let text = format!("{header}\nship-docker = {{ path = \"../ship-docker\" }}\n");
+        assert_eq!(check_leaf(&text), [LEAF_ON_DOCKER], "header {header}");
+    }
+}
+
+#[test]
+fn detects_leaf_to_leaf_quoted_subtable() {
+    let text = "[\"dependencies\".\"ship-docker\"]\npath = \"../ship-docker\"\n";
     assert_eq!(check_leaf(text), [LEAF_ON_DOCKER]);
 }
 
