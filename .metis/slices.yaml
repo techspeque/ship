@@ -10,7 +10,7 @@ slices:
       reviewer: codex/gpt-6-astra
       plan: .metis/plans/phase-0-plan.md
       plan_section: §0.6
-      coded: false
+      coded: true
       reviewed: false
       review_cycles: 0
       notes: 'Human decision 2026-11-25 after the Phase 0 gate: the gate requires the CLI to report Docker status and no command did (with Docker stopped, ship projects printed an empty list and nothing else). OVERVIEW §6 now lists ''ship host'' in the CLI and in the JSON contract. Build: ''ship host [-o json] [--timeout]'' on the current target (local and ssh), a GET of /api/v1/host through the existing client path with the same API version check. -o json prints exactly the daemon''s HostInfo body shape (api_version, version, os, arch, docker{status, engine_version, compose_version, supported{engine, compose}, message}, capacity{cpus, memory_bytes, disk_free_bytes}); record a fixture for the stable shape and test against it with capacity and versions normalised, as ship projects does with its fixture. Text output: one short block a person can read, with Docker''s status first and, when status is not ready, the daemon''s message verbatim. Exit code: 0 when the daemon answered, whatever Docker''s status (it is a report, not a check); say so in --help. Also in this slice: add to README the idle-daemon figures measured at the gate on the gate host (Ubuntu, x86_64, static musl build, about 3 minutes after start, no projects): 5.7 MB resident memory (VmRSS 5716 kB, peak the same), 10 threads, 0.21 s CPU total since start; and ''ship projects'' over ssh on a LAN 0.12-0.13 s per run with an already-open ssh connection (a bare ''ssh HOST true'' took 0.12 s on the same link). State them as one measurement, not a guarantee.'
