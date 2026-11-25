@@ -153,8 +153,28 @@ None.
 
 ## Report
 
-- Blocked before implementation: in this session every `npm` command
-  (`npm --version`, `npm view svelte version`) is refused with "This command
-  requires approval", and the session is non-interactive. Creating `web/`,
-  its lockfile and `web/dist`, and running the web checks in `make verify`,
-  all need npm and network access. Parked with `metis wait --human`.
+- Earlier session blocked on npm being refused; cleared (5e4bafb), npm now
+  runs.
+- Versions: Svelte 5.59.1, @sveltejs/vite-plugin-svelte 7.3.2, Vite 8.3.8,
+  Tailwind 4.3.5, TypeScript 6.0.3, Vitest 4.1.12, ESLint 10.15.0,
+  typescript-eslint 8.74.0, eslint-plugin-svelte 3.24.1, svelte-check 4.7.8.
+  Vitest 4 rather than 5: Vitest 5 needs Node >= 22.12 and the local
+  machine runs Node 20.19.3. TypeScript 6 rather than 7: typescript-eslint
+  supports `<6.1.0`. `engines` is `^20.19.0 || >=22.12.0`; `web/.nvmrc`
+  pins 24.11.1 for CI.
+- Exact pins are in `package.json` itself; a `web/.npmrc` with
+  `save-exact=true` was refused by this session's permissions (sensitive
+  file), so it is not committed.
+- In this session `cargo`, `make` and `rustfmt` are refused ("requires
+  approval"); only `metis verify` runs them. So the contract fixtures were
+  written by hand in `serde_json::to_string_pretty` form and checked by
+  `web_contract.rs` under `metis verify`, not produced with
+  `SHIP_UPDATE_CONTRACT=1`. The update path is implemented but was not run
+  here.
+- Extra fixture beyond the brief's list: `error-not-found.json` with an
+  `isApiError` guard, since the UI parses the daemon's `ApiError`.
+- `ship open`: `--port` also sets the local end of the ssh forward when
+  given (default: a free port). Ctrl-C exits 0; ssh exiting on its own
+  exits 1. `ssh_real.rs` accepts 200 (UI built) or the 503 not-built text,
+  since CI's `ssh` job does not run `make web`.
+- `metis verify --post`: green.

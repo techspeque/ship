@@ -4,7 +4,8 @@
 //! (OVERVIEW §2.3).
 //!
 //! Phase 0: [`start`] binds the unix socket and the 127.0.0.1 listener
-//! (ADR-0003), opens the store and serves the router in [`http`];
+//! (ADR-0003), opens the store and serves the router in [`http`], with the
+//! embedded UI ([`ui`]) as its fallback;
 //! [`Running::shutdown`] stops it; [`run`] does both around SIGTERM/SIGINT.
 //! `ship daemon` is supported on Linux only (ADR-0002 rule 2); that check
 //! belongs to the `ship` binary, so this library builds and tests on any
@@ -13,6 +14,7 @@
 pub mod host;
 pub mod http;
 pub mod log;
+pub mod ui;
 
 use std::fmt;
 use std::io;

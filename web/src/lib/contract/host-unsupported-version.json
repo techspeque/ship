@@ -1,0 +1,21 @@
+{
+  "api_version": "v1",
+  "version": "0.0.1",
+  "os": "linux",
+  "arch": "x86_64",
+  "docker": {
+    "status": "unsupported_version",
+    "engine_version": "23.0.1",
+    "compose_version": null,
+    "supported": {
+      "engine": ">= 24.0.0, < 30.0.0",
+      "compose": ">= 2.20.0, < 6.0.0"
+    },
+    "message": "Docker Engine 23.0.1 is older than 24.0.0"
+  },
+  "capacity": {
+    "cpus": 1,
+    "memory_bytes": 1073741824,
+    "disk_free_bytes": null
+  }
+}

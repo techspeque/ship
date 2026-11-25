@@ -1,0 +1,21 @@
+{
+  "api_version": "v1",
+  "version": "0.0.1",
+  "os": "linux",
+  "arch": "x86_64",
+  "docker": {
+    "status": "unreachable",
+    "engine_version": null,
+    "compose_version": null,
+    "supported": {
+      "engine": ">= 24.0.0, < 30.0.0",
+      "compose": ">= 2.20.0, < 6.0.0"
+    },
+    "message": "the Docker Engine did not answer; start it with `sudo systemctl start docker`"
+  },
+  "capacity": {
+    "cpus": null,
+    "memory_bytes": null,
+    "disk_free_bytes": null
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "api_version": "v1",
+  "version": "0.0.1",
+  "os": "linux",
+  "arch": "x86_64",
+  "docker": {
+    "status": "ready",
+    "engine_version": "28.3.2",
+    "compose_version": "2.39.1",
+    "supported": {
+      "engine": ">= 24.0.0, < 30.0.0",
+      "compose": ">= 2.20.0, < 6.0.0"
+    },
+    "message": null
+  },
+  "capacity": {
+    "cpus": 4,
+    "memory_bytes": 8589934592,
+    "disk_free_bytes": 107374182400
+  }
+}

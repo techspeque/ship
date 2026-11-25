@@ -986,6 +986,7 @@ version = "0.0.1"
 dependencies = [
  "axum",
  "libc",
+ "serde",
  "serde_json",
  "ship-core",
  "ship-docker",

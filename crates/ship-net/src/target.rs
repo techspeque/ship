@@ -176,6 +176,42 @@ impl SshTarget {
         args
     }
 
+    /// The arguments to `ssh` (not including `ssh` itself) that forward
+    /// `127.0.0.1:local_port` on this machine to the daemon's unix socket on
+    /// the host, running no remote command (`ship open`). The forward is
+    /// to the socket, so no port on the host is assumed; `--` ends ssh's
+    /// options before the host.
+    pub fn forward_args(&self, local_port: u16, connect_timeout: Duration) -> Vec<OsString> {
+        let secs = connect_timeout.as_secs().max(1);
+        let default = Path::new(DEFAULT_SOCKET);
+        let socket = self.socket.as_deref().unwrap_or(default);
+        let mut args: Vec<OsString> = vec![
+            "-N".into(),
+            "-T".into(),
+            "-o".into(),
+            "BatchMode=yes".into(),
+            "-o".into(),
+            "ExitOnForwardFailure=yes".into(),
+            "-o".into(),
+            format!("ConnectTimeout={secs}").into(),
+        ];
+        if let Some(port) = self.port {
+            args.push("-p".into());
+            args.push(port.to_string().into());
+        }
+        if let Some(user) = &self.user {
+            args.push("-l".into());
+            args.push(user.into());
+        }
+        let mut forward = OsString::from(format!("127.0.0.1:{local_port}:"));
+        forward.push(socket);
+        args.push("-L".into());
+        args.push(forward);
+        args.push("--".into());
+        args.push((&self.host).into());
+        args
+    }
+
     /// `USER@HOST` or `HOST`, for messages.
     pub fn display_host(&self) -> String {
         match &self.user {
@@ -475,5 +511,61 @@ mod tests {
             .map(|a| a.into_string().unwrap())
             .collect();
         assert!(a.contains(&"ConnectTimeout=1".to_owned()));
+    }
+
+    fn forward(t: &SshTarget, port: u16) -> Vec<String> {
+        t.forward_args(port, Duration::from_secs(10))
+            .into_iter()
+            .map(|a| a.into_string().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn forward_argv_is_structured() {
+        assert_eq!(
+            forward(&ssh("ssh://lab"), 40123),
+            [
+                "-N",
+                "-T",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ExitOnForwardFailure=yes",
+                "-o",
+                "ConnectTimeout=10",
+                "-L",
+                "127.0.0.1:40123:/run/ship/ship.sock",
+                "--",
+                "lab"
+            ]
+        );
+        let t = match Target::parse("ssh://adam@lab.example:2222", Some("/srv/ship/s.sock")) {
+            Ok(Target::Ssh(t)) => t,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            forward(&t, 7181),
+            [
+                "-N",
+                "-T",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ExitOnForwardFailure=yes",
+                "-o",
+                "ConnectTimeout=10",
+                "-p",
+                "2222",
+                "-l",
+                "adam",
+                "-L",
+                "127.0.0.1:7181:/srv/ship/s.sock",
+                "--",
+                "lab.example"
+            ]
+        );
+        // The host is the last argument, alone, after `--`.
+        let a = forward(&ssh("ssh://[fe80::1]"), 1);
+        assert_eq!(&a[a.len() - 2..], ["--", "fe80::1"]);
     }
 }

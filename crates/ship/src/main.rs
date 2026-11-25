@@ -1,12 +1,13 @@
 //! The `ship` binary: client commands and `ship daemon` dispatch.
 //!
 //! Phase 0: `--version` / `-V`, `ship daemon`, `ship target`, `ship
-//! projects` and `ship dial-stdio`. Exit codes: 0 success, 1 failure, 2
+//! projects`, `ship open` and `ship dial-stdio`. Exit codes: 0 success, 1 failure, 2
 //! usage error.
 
 mod client;
 mod commands;
 mod config;
+mod open;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -47,6 +48,9 @@ enum Command {
     Target(commands::TargetCommand),
     /// List the projects on the current target.
     Projects(commands::ProjectsArgs),
+    /// Open the current target's UI in a browser; over ssh, forward it
+    /// until Ctrl-C.
+    Open(open::OpenArgs),
     /// Bridge stdin and stdout to the daemon's socket (the remote end of
     /// the ssh transport; not for interactive use).
     #[command(name = "dial-stdio")]
@@ -130,6 +134,7 @@ fn main() -> ExitCode {
         Some(Command::Daemon(args)) => daemon(args),
         Some(Command::Target(command)) => commands::target(command),
         Some(Command::Projects(args)) => commands::projects(args),
+        Some(Command::Open(args)) => open::open(args),
         Some(Command::DialStdio(args)) => commands::dial_stdio(args),
         None => {
             eprintln!("ship: no command given; see `ship --help`");

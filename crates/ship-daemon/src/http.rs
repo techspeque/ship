@@ -1,4 +1,5 @@
-//! The daemon's HTTP surface: routes and the origin guard.
+//! The daemon's HTTP surface: routes and the origin guard. Paths no API
+//! route claims fall through to the embedded UI ([`crate::ui`]).
 
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
@@ -49,7 +50,8 @@ pub fn router(store: Store, host: HostProbe) -> Router {
         .route(HEALTHZ_PATH, get(healthz))
         .route(HOST_PATH, get(host_info))
         .route(PROJECTS_PATH, get(projects))
-        .fallback(not_found)
+        // Everything else is the UI, which keeps `/api/*`'s JSON 404.
+        .fallback(crate::ui::fallback)
         .with_state(AppState {
             store,
             host: Arc::new(host),
@@ -102,7 +104,8 @@ async fn projects(State(state): State<AppState>) -> Response {
     }
 }
 
-async fn not_found() -> Response {
+/// The API's answer for a path no route claims.
+pub(crate) fn not_found() -> Response {
     error_response(ApiError::new(ErrorCode::NotFound, "no such endpoint"))
 }
 

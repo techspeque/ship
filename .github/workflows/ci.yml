@@ -26,6 +26,11 @@ jobs:
         run: |
           rustup toolchain install
           rustup show active-toolchain
+      # The UI is built with the Node version web/.nvmrc pins; Node is a
+      # build tool only, never needed at runtime.
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: web/.nvmrc
       - name: make verify
         run: make verify
 

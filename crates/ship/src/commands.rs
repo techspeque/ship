@@ -1,4 +1,5 @@
-//! Client subcommands: `target`, `projects` and `dial-stdio`.
+//! Client subcommands: `target`, `projects` and `dial-stdio`; `open` is in
+//! [`crate::open`].
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -14,7 +15,7 @@ use crate::client::{self, ClientError, Endpoint};
 use crate::config::{self, Config, ConfigError};
 
 /// Exit code for a failed command.
-const FAILURE: u8 = 1;
+pub(crate) const FAILURE: u8 = 1;
 /// Exit code for a usage error.
 const USAGE: u8 = 2;
 
@@ -65,7 +66,7 @@ pub struct DialStdioArgs {
     socket: PathBuf,
 }
 
-fn fail(message: impl std::fmt::Display, code: u8) -> ExitCode {
+pub(crate) fn fail(message: impl std::fmt::Display, code: u8) -> ExitCode {
     eprintln!("ship: {message}");
     ExitCode::from(code)
 }
@@ -171,7 +172,7 @@ fn render_targets(cfg: &Config, output: Output) -> String {
 
 /// The endpoint commands talk to: the current target, or the local daemon
 /// at the default socket.
-fn endpoint() -> Result<Endpoint, ExitCode> {
+pub(crate) fn endpoint() -> Result<Endpoint, ExitCode> {
     let path = config::default_location().map_err(config_failure)?;
     let cfg = Config::load(&path).map_err(config_failure)?;
     match cfg.current().map_err(config_failure)? {
@@ -188,7 +189,7 @@ fn endpoint() -> Result<Endpoint, ExitCode> {
     }
 }
 
-fn runtime() -> Result<tokio::runtime::Runtime, ExitCode> {
+pub(crate) fn runtime() -> Result<tokio::runtime::Runtime, ExitCode> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
