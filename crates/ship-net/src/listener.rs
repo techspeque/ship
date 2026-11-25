@@ -366,11 +366,12 @@ mod tests {
         // A crashed daemon: the file stays, nothing listens.
         drop(UnixListener::bind(&path).unwrap());
         assert!(path.exists());
-        let old_ino = fs::symlink_metadata(&path).unwrap().ino();
+        let refused = UnixStream::connect(&path).unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::ConnectionRefused);
 
+        // Linux may give the new socket the stale one's inode number, so
+        // replacement is shown by a live listener at the path, not by `ino`.
         let (_listener, _file) = bind_unix(&path).unwrap();
-        let meta = fs::symlink_metadata(&path).unwrap();
-        assert_ne!(meta.ino(), old_ino);
         assert_eq!(mode(&path), SOCKET_MODE);
         UnixStream::connect(&path).unwrap();
     }
