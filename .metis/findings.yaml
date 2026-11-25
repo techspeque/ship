@@ -29,9 +29,12 @@ findings:
       severity: P2
       category: tests
       finding: 'crates/ship-net/src/listener.rs:162-165 — Independent metis verify --post --slice phase-0-ws-0.4 --force exits 1: socket_has_mode_0660_and_accepts, remove_leaves_a_successor_socket, stale_socket_is_replaced, regular_file_is_refused_and_untouched, and remove_deletes_own_socket fail with PermissionDenied. The process-wide 0177 umask removes owner directory-search permission from concurrently created temporary directories; overlapping calls can also restore masks out of order. Make socket creation preserve the brief’s restrictive permissions without corrupting concurrent filesystem creation or leaving the process mask changed, add concurrency regression coverage, and restore a green verification run.'
-      status: open
+      status: resolved
+      resolved_by: commit 34d3fc1883eb; test concurrent_file_creation_is_unaffected; Independent forced metis verify --post passed.
       cycle: 1
       file: crates/ship-net/src/listener.rs
+      commit: 34d3fc1883ebc29b2900e42efcc3b281dda6562f
+      evidence: test concurrent_file_creation_is_unaffected
     - id: f-004
       date: "2026-11-25"
       slice: phase-0-ws-0.4
