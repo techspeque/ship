@@ -14,6 +14,10 @@ slices:
       reviewed: false
       review_cycles: 0
       created: ""
+      waiting:
+        reason: npm is refused in this session ("This command requires approval", non-interactive); web/ deps, lockfile, build and make-verify web checks need npm + network — allow npm (and registry access) for the Coder, or decide another approach
+        since: "2026-11-25T05:48:44Z"
+        human: true
     - id: phase-0-ws-0.8
       title: Service install
       type: feat
