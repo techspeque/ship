@@ -1,7 +1,8 @@
 //! `ship projects -o json` over a real sshd returns the same bytes as over
 //! the local socket, and both equal the recorded fixture (ADR-0003,
-//! ADR-0004 rule 4). `ship open --no-browser` over the same sshd forwards a
-//! 127.0.0.1 port that serves the UI, and SIGINT closes it.
+//! ADR-0004 rule 4). `ship open --no-browser` over the same sshd serves the
+//! UI on a 127.0.0.1 port, each connection carried by `ssh … ship
+//! dial-stdio`, and SIGINT closes it.
 //!
 //! Ignored by default: it needs an sshd that accepts this user with a key
 //! (BatchMode, host key already known) and `ship` from this build on the

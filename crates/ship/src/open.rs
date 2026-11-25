@@ -6,11 +6,15 @@
 //! exist).
 //!
 //! - local target: the daemon's own listener on port N (default 7180).
-//! - ssh target: `ssh -N -L 127.0.0.1:P:<remote socket>` forwards a free
-//!   local port to the daemon's unix socket on the host, so no port on the
-//!   host is assumed. `ship open` stays in the foreground until Ctrl-C
-//!   (SIGINT or SIGTERM), when it kills and reaps `ssh`, closing the
-//!   forward, or until `ssh` exits.
+//! - ssh target: `ship open` listens on a free 127.0.0.1 port itself and
+//!   carries each connection over its own `ssh … HOST ship dial-stdio`
+//!   child to the daemon's unix socket on the host ([`forward::serve`]).
+//!   No ssh port forwarding is used, so servers that refuse it (Tailscale
+//!   SSH) work, and no port on the host is assumed. The URL is printed once
+//!   `/healthz` has answered over the same transport; a refusal prints
+//!   ssh's own reason. `ship open` stays in the foreground until Ctrl-C
+//!   (SIGINT or SIGTERM), when it stops accepting and kills and reaps every
+//!   `ssh` child.
 //!
 //! `PROJECT` arrives with projects in Phase 1.
 
@@ -18,23 +22,19 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::process::{ExitCode, Stdio};
 use std::time::Duration;
 
-use ship_net::{SshTarget, Target};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
-use tokio::process::{Child, Command};
+use ship_net::forward::{self, Dialer, Forward};
+use ship_net::{SshTarget, Target, client};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
-use tokio::task::JoinHandle;
-use tokio::time::Instant;
 
 use crate::commands::{self, FAILURE, fail};
 
-/// How long one `/healthz` attempt may take.
-const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
-/// Pause between `/healthz` attempts while the ssh forward comes up.
-const RETRY: Duration = Duration::from_millis(100);
 /// Largest `/healthz` answer read.
 const MAX_PROBE: u64 = 64 * 1024;
-/// How much of `ssh`'s stderr is kept for messages.
-const MAX_STDERR: usize = 8 * 1024;
+/// Most `ssh` children carrying browser connections at once; a browser
+/// opens about six per origin.
+const MAX_CONNECTIONS: usize = 16;
 
 #[derive(Debug, clap::Args)]
 pub struct OpenArgs {
@@ -95,127 +95,88 @@ async fn local(args: &OpenArgs) -> ExitCode {
 }
 
 async fn over_ssh(ssh: &SshTarget, args: &OpenArgs) -> ExitCode {
-    // Installed before ssh starts, so an early Ctrl-C still reaps it.
+    // Installed before any ssh starts, so an early Ctrl-C still reaps it.
     let int = signal(SignalKind::interrupt());
     let term = signal(SignalKind::terminate());
     let (mut int, mut term) = match (int, term) {
         (Ok(i), Ok(t)) => (i, t),
         (Err(e), _) | (_, Err(e)) => return fail(format!("signal handler: {e}"), FAILURE),
     };
-    let port = match args.port {
-        Some(p) => p,
-        None => match free_port() {
-            Ok(p) => p,
-            Err(e) => return fail(format!("cannot pick a free local port: {e}"), FAILURE),
-        },
+    // Bound here, before ssh runs, so an occupied port fails now and
+    // whatever answers on it afterwards is this process.
+    let listener = match listen(args.port) {
+        Ok(l) => l,
+        Err(e) => return fail(e, FAILURE),
     };
-    // The forward's local end must be free before ssh starts, so whatever
-    // answers on it afterwards is ssh's forward and not some other
-    // listener already there.
-    if let Err(e) = port_is_free(port) {
-        return fail(
-            format!(
-                "port {port} on 127.0.0.1 is not free for the ssh forward ({e}); \
-                 pick another with --port, or leave it out"
-            ),
-            FAILURE,
-        );
-    }
+    let port = match listener.local_addr() {
+        Ok(addr) => addr.port(),
+        Err(e) => return fail(format!("cannot read the local port: {e}"), FAILURE),
+    };
     let timeout = Duration::from_secs(args.timeout);
     let host = ssh.display_host();
-    let spawned = Command::new("ssh")
-        .args(ssh.forward_args(port, timeout))
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn();
-    let mut child = match spawned {
-        Ok(c) => c,
-        Err(e) => {
-            let why = format!("cannot run `ssh`: {e}; install an OpenSSH client");
-            return fail(why, FAILURE);
-        }
-    };
-    let mut stderr = tokio::spawn(read_bounded(child.stderr.take()));
 
-    // Wait for the daemon to answer through the forward.
-    let deadline = Instant::now() + timeout;
-    loop {
-        if let Ok(Some(status)) = child.try_wait() {
-            let why = ssh_stderr(&mut stderr).await;
-            return fail(
-                format!("ssh to {host} exited ({status}) before the forward was up{why}"),
-                FAILURE,
-            );
+    // The first connection, on its own: it fails with ssh's reason (or
+    // dial-stdio's) rather than a timeout, and no URL is printed before
+    // the daemon has answered over this transport.
+    let target = Target::Ssh(ssh.clone());
+    tokio::select! {
+        probe = client::get(&target, "/healthz", timeout) => {
+            if let Err(why) = probe.map_err(|e| e.to_string()).and_then(check_response) {
+                return fail(
+                    format!("the daemon on {host} did not answer through ssh: {why}"),
+                    FAILURE,
+                );
+            }
         }
-        // An answer counts only while ssh still holds the forward.
-        if let Ok(Ok(())) = tokio::time::timeout(PROBE_TIMEOUT, healthz(port)).await
-            && matches!(child.try_wait(), Ok(None))
-        {
-            break;
-        }
-        if Instant::now() >= deadline {
-            stop(&mut child, &stderr).await;
-            return fail(
-                format!(
-                    "the daemon on {host} did not answer through the ssh forward within {}s",
-                    args.timeout
-                ),
-                FAILURE,
-            );
-        }
-        tokio::select! {
-            _ = tokio::time::sleep(RETRY) => {}
-            _ = int.recv() => { stop(&mut child, &stderr).await; return ExitCode::SUCCESS; }
-            _ = term.recv() => { stop(&mut child, &stderr).await; return ExitCode::SUCCESS; }
-        }
+        _ = int.recv() => return ExitCode::SUCCESS,
+        _ = term.recv() => return ExitCode::SUCCESS,
     }
 
     show(&url(port), args.no_browser);
     eprintln!("ship: forwarding to the daemon on {host} over ssh; press Ctrl-C to stop.");
-    tokio::select! {
-        status = child.wait() => {
-            let why = ssh_stderr(&mut stderr).await;
-            let status = status.map_or_else(|e| e.to_string(), |s| s.to_string());
-            fail(format!("ssh to {host} exited ({status}); the forward is closed{why}"), FAILURE)
+    let forward = Forward {
+        dialer: Dialer::ssh(ssh, timeout),
+        limit: MAX_CONNECTIONS,
+        drain: ship_net::DRAIN_AFTER_INPUT_EOF,
+    };
+    let shutdown = async move {
+        tokio::select! {
+            _ = int.recv() => {}
+            _ = term.recv() => {}
         }
-        _ = int.recv() => { stop(&mut child, &stderr).await; ExitCode::SUCCESS }
-        _ = term.recv() => { stop(&mut child, &stderr).await; ExitCode::SUCCESS }
+    };
+    forward::serve(listener, forward, shutdown, |why| {
+        eprintln!("ship: a connection to the daemon failed: {why}");
+    })
+    .await;
+    ExitCode::SUCCESS
+}
+
+/// The 127.0.0.1 listener `ship open` serves over ssh: `port`, or a free
+/// one.
+fn listen(port: Option<u16>) -> Result<TcpListener, String> {
+    let bound = ship_net::bind_loopback(port.unwrap_or(0)).and_then(|l| {
+        l.set_nonblocking(true)?;
+        TcpListener::from_std(l)
+    });
+    bound.map_err(|e| match port {
+        Some(port) => format!(
+            "port {port} on 127.0.0.1 is not free ({e}); \
+             pick another with --port, or leave it out"
+        ),
+        None => format!("cannot listen on a free 127.0.0.1 port: {e}"),
+    })
+}
+
+/// `Ok` only for the daemon's `200 {"status":"ok"}`.
+fn check_response(r: client::Response) -> Result<(), String> {
+    if r.status != 200 {
+        return Err(format!("answered with status {}", r.status));
     }
-}
-
-/// Kills `ssh` and waits for it, so the forward is closed and no process
-/// is left behind.
-async fn stop(child: &mut Child, stderr: &JoinHandle<String>) {
-    let _ = child.kill().await;
-    stderr.abort();
-}
-
-/// `: <ssh's stderr>`, or nothing, for a message.
-async fn ssh_stderr(stderr: &mut JoinHandle<String>) -> String {
-    match tokio::time::timeout(Duration::from_secs(1), stderr).await {
-        Ok(Ok(text)) if !text.is_empty() => format!(": {text}"),
-        _ => String::new(),
+    if r.body.trim_ascii() != br#"{"status":"ok"}"# {
+        return Err("answered, but not as a Ship daemon".to_owned());
     }
-}
-
-/// A port on 127.0.0.1 that was free a moment ago.
-fn free_port() -> std::io::Result<u16> {
-    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
-    let listener = std::net::TcpListener::bind(addr)?;
-    Ok(listener.local_addr()?.port())
-}
-
-/// `Ok` when nothing listens on, or holds, `127.0.0.1:port` now.
-fn port_is_free(port: u16) -> Result<(), String> {
-    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
-    if std::net::TcpStream::connect_timeout(&addr, PROBE_TIMEOUT).is_ok() {
-        return Err("something is already listening on it".to_owned());
-    }
-    std::net::TcpListener::bind(addr)
-        .map(drop)
-        .map_err(|e| e.to_string())
+    Ok(())
 }
 
 /// `GET /healthz` on `127.0.0.1:port`; `Ok` only for the daemon's `200
@@ -284,26 +245,6 @@ fn show(url: &str, no_browser: bool) {
     }
 }
 
-/// Reads up to [`MAX_STDERR`] bytes, then drains the rest, so `ssh` never
-/// blocks on a full pipe.
-async fn read_bounded(r: Option<impl AsyncRead + Unpin>) -> String {
-    let Some(mut r) = r else {
-        return String::new();
-    };
-    let mut kept = Vec::new();
-    let mut buf = [0u8; 4096];
-    loop {
-        match r.read(&mut buf).await {
-            Ok(0) | Err(_) => break,
-            Ok(n) => {
-                let room = MAX_STDERR.saturating_sub(kept.len());
-                kept.extend_from_slice(&buf[..n.min(room)]);
-            }
-        }
-    }
-    String::from_utf8_lossy(&kept).trim().to_owned()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,9 +269,37 @@ mod tests {
         assert_eq!(url(7180), "http://127.0.0.1:7180/");
     }
 
+    #[test]
+    fn probe_responses() {
+        let response = |status, body: &'static [u8]| client::Response {
+            status,
+            api_version: None,
+            daemon_version: None,
+            body: body.into(),
+        };
+        assert_eq!(
+            check_response(response(200, b"{\"status\":\"ok\"}\n")),
+            Ok(())
+        );
+        assert!(check_response(response(503, b"{\"status\":\"ok\"}")).is_err());
+        assert!(check_response(response(200, b"<html>")).is_err());
+    }
+
+    #[tokio::test]
+    async fn an_occupied_port_is_refused_by_name() {
+        let held = ship_net::bind_loopback(0).unwrap();
+        let port = held.local_addr().unwrap().port();
+        let e = listen(Some(port)).unwrap_err();
+        assert!(e.contains(&format!("port {port}")), "{e}");
+    }
+
     #[tokio::test]
     async fn nothing_listening_is_an_error() {
-        let port = free_port().unwrap();
+        let port = ship_net::bind_loopback(0)
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
         assert!(healthz(port).await.is_err());
     }
 }

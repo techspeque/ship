@@ -10,13 +10,16 @@
 //! or any other interface.
 //!
 //! Client side: [`Target`] (`local` or `ssh://`), [`client::get`] for one
-//! HTTP exchange over either transport, and [`dial_stdio`], the host end of
-//! the ssh transport. Ship adds no authentication of its own: socket access
-//! is the whole authorisation (ADR-0003 rule 2).
+//! HTTP exchange over either transport, [`forward::serve`], which carries a
+//! 127.0.0.1 port's connections over `ssh … ship dial-stdio` children for
+//! `ship open`, and [`dial_stdio`], the host end of the ssh transport. Ship
+//! adds no authentication of its own: socket access is the whole
+//! authorisation (ADR-0003 rule 2).
 
 pub mod client;
 mod connect;
 mod dial;
+pub mod forward;
 mod listener;
 mod target;
 

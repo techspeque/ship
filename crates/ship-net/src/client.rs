@@ -225,7 +225,7 @@ fn ssh_failure(
 
 /// Reads up to [`MAX_STDERR`] bytes, then drains the rest, so `ssh` never
 /// blocks on a full pipe. Returns the text trimmed.
-async fn read_bounded(mut r: impl AsyncRead + Unpin) -> String {
+pub(crate) async fn read_bounded(mut r: impl AsyncRead + Unpin) -> String {
     let mut kept = Vec::new();
     let mut buf = [0u8; 4096];
     loop {

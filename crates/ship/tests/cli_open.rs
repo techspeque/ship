@@ -2,10 +2,11 @@
 //!
 //! The daemon runs in-process on a free 127.0.0.1 port. Local: the URL is
 //! printed only once `/healthz` answers, and with nothing listening the
-//! command exits 1 and prints no URL. ssh: a fake `ssh` (Python 3) records
-//! its argv and runs the `-L 127.0.0.1:P:SOCKET` forward itself, so the
-//! printed URL serves the UI through it; SIGINT then ends `ship` and leaves
-//! no `ssh` behind. `ssh_real.rs` does the same against a real sshd.
+//! command exits 1 and prints no URL. ssh: a fake `ssh` (the one
+//! `cli_client.rs` uses) records its argv and pid and execs the remote
+//! `ship dial-stdio …` locally, so every connection to the printed URL is
+//! carried by its own dial-stdio child; SIGINT then ends `ship` and leaves
+//! no child behind. `ssh_real.rs` does the same against a real sshd.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -17,53 +18,26 @@ use std::time::{Duration, Instant};
 
 const SHIP: &str = env!("CARGO_BIN_EXE_ship");
 
-/// A fake `ssh`: records argv one per line and its pid, then serves the
-/// `-L 127.0.0.1:PORT:SOCKET` forward until killed. With
-/// `FAKE_SSH_NO_FORWARD` set it opens no forward and just waits.
-const FAKE_SSH: &str = r#"#!/usr/bin/env python3
-import os, socket, sys, threading
+/// What Tailscale SSH says when refusing a streamlocal forward; the fake
+/// ssh in `refuse` mode prints it and exits 255, as ssh does.
+const REFUSAL: &str = "channel 1: open failed: administratively prohibited: \
+                       socket path is not in an allowed directory: ssh: rejected";
 
-with open(os.environ["FAKE_SSH_ARGV"], "w") as f:
-    f.write("".join(a + "\n" for a in sys.argv[1:]))
-with open(os.environ["FAKE_SSH_PID"], "w") as f:
-    f.write(str(os.getpid()))
-
-if os.environ.get("FAKE_SSH_NO_FORWARD"):
-    import time
-    while True:
-        time.sleep(60)
-
-args = sys.argv[1:]
-spec = args[args.index("-L") + 1]
-host, port, path = spec.split(":", 2)
-assert host == "127.0.0.1", spec
-
-def pump(a, b):
-    try:
-        while True:
-            data = a.recv(65536)
-            if not data:
-                break
-            b.sendall(data)
-    except OSError:
-        pass
-    finally:
-        for s in (a, b):
-            try:
-                s.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-
-server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-server.bind((host, int(port)))
-server.listen(16)
-while True:
-    conn, _ = server.accept()
-    upstream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    upstream.connect(path)
-    threading.Thread(target=pump, args=(conn, upstream), daemon=True).start()
-    threading.Thread(target=pump, args=(upstream, conn), daemon=True).start()
+/// A fake `ssh`: records its arguments one per line and appends its pid,
+/// then runs the remote command's `ship …` words with the real binary. In
+/// `refuse` mode it prints [`REFUSAL`] and exits 255.
+const FAKE_SSH: &str = r#"#!/bin/sh
+printf '%s\n' "$@" > "$FAKE_SSH_ARGV"
+echo $$ >> "$FAKE_SSH_PID"
+if [ "$FAKE_SSH_MODE" = refuse ]; then
+  echo "$FAKE_SSH_REFUSAL" >&2
+  exit 255
+fi
+while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done
+shift 2
+[ "$1" = ship ] || exit 97
+shift
+exec "$SHIP_BIN" "$@"
 "#;
 
 /// A daemon running in-process on its own runtime; shut down on drop.
@@ -94,6 +68,10 @@ impl Daemon {
 
     fn running(&self) -> &ship_daemon::Running {
         self.running.as_ref().unwrap()
+    }
+
+    fn socket(&self) -> String {
+        self.running().socket_path().display().to_string()
     }
 }
 
@@ -140,13 +118,30 @@ impl Env {
         );
         c.env("PATH", path)
             .env("SHIP_CONFIG", self.file("config.json"))
+            .env("SHIP_BIN", SHIP)
             .env("FAKE_SSH_ARGV", self.file("ssh-argv"))
-            .env("FAKE_SSH_PID", self.file("ssh-pid"));
+            .env("FAKE_SSH_PID", self.file("ssh-pid"))
+            .env("FAKE_SSH_REFUSAL", REFUSAL)
+            .env_remove("FAKE_SSH_MODE");
         c
     }
 
     fn run(&self, args: &[&str]) -> Output {
         self.ship().args(args).output().unwrap()
+    }
+
+    fn add(&self, url: &str, socket: &str) {
+        let out = self.run(&["target", "add", "lab", url, "--socket", socket]);
+        assert!(out.status.success(), "{}", show(&out));
+    }
+
+    /// Every pid the fake ssh recorded, in start order.
+    fn ssh_pids(&self) -> Vec<i32> {
+        fs::read_to_string(self.file("ssh-pid"))
+            .unwrap_or_default()
+            .lines()
+            .map(|l| l.trim().parse().unwrap())
+            .collect()
     }
 }
 
@@ -165,24 +160,40 @@ fn free_port() -> u16 {
     l.local_addr().unwrap().port()
 }
 
-/// `GET path` over TCP; (status, body).
-fn http_get(url: &str, path: &str) -> (u16, String) {
-    let authority = url
-        .strip_prefix("http://")
-        .and_then(|r| r.strip_suffix('/'))
-        .unwrap();
-    let mut s = TcpStream::connect(authority).unwrap();
-    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-    write!(
-        s,
-        "GET {path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n"
-    )
-    .unwrap();
+/// Sends `METHOD path` with `Host: 127.0.0.1:port` (unless `headers`
+/// names another) on a fresh connection, without reading the answer.
+fn send(port: u16, method: &str, path: &str, headers: &[&str]) -> TcpStream {
+    let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+    let mut request = format!("{method} {path} HTTP/1.1\r\n");
+    if !headers
+        .iter()
+        .any(|h| h.to_ascii_lowercase().starts_with("host:"))
+    {
+        request.push_str(&format!("Host: 127.0.0.1:{port}\r\n"));
+    }
+    for h in headers {
+        request.push_str(h);
+        request.push_str("\r\n");
+    }
+    request.push_str("Content-Length: 0\r\nConnection: close\r\n\r\n");
+    s.write_all(request.as_bytes()).unwrap();
+    s
+}
+
+/// Reads a whole `Connection: close` answer; (status, body).
+fn answer(mut s: TcpStream) -> (u16, String) {
     let mut raw = String::new();
     s.read_to_string(&mut raw).unwrap();
-    let (head, body) = raw.split_once("\r\n\r\n").unwrap();
+    let (head, body) = raw
+        .split_once("\r\n\r\n")
+        .unwrap_or_else(|| panic!("not HTTP: {raw:?}"));
     let status = head.split(' ').nth(1).unwrap().parse().unwrap();
     (status, body.to_owned())
+}
+
+fn request(port: u16, method: &str, path: &str, headers: &[&str]) -> (u16, String) {
+    answer(send(port, method, path, headers))
 }
 
 fn is_alive(pid: i32) -> bool {
@@ -204,18 +215,67 @@ fn wait_exit(child: &mut Child, within: Duration) -> std::process::ExitStatus {
     }
 }
 
+/// `ship open --no-browser` in the background, once it has printed its
+/// URL; (child, port).
+fn open(env: &Env) -> (Child, u16) {
+    let mut child = env
+        .ship()
+        .args(["open", "--no-browser", "--timeout", "20"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut line = String::new();
+    stdout.read_line(&mut line).unwrap();
+    if line.is_empty() {
+        let status = wait_exit(&mut child, Duration::from_secs(5));
+        let mut err = String::new();
+        child
+            .stderr
+            .take()
+            .unwrap()
+            .read_to_string(&mut err)
+            .unwrap();
+        panic!("ship open printed no URL ({status}): {err}");
+    }
+    let url = line.trim_end();
+    let port = url
+        .strip_prefix("http://127.0.0.1:")
+        .and_then(|r| r.strip_suffix('/'))
+        .and_then(|p| p.parse().ok())
+        .unwrap_or_else(|| panic!("not a 127.0.0.1 URL: {url:?}"));
+    (child, port)
+}
+
+/// SIGINT to `ship open`; it must exit 0 and leave no ssh child or port.
+fn interrupt(env: &Env, mut child: Child, port: u16) {
+    // SAFETY: sending a signal to our own child has no memory effects.
+    let rc = unsafe { libc::kill(child.id() as i32, libc::SIGINT) };
+    assert_eq!(rc, 0);
+    let status = wait_exit(&mut child, Duration::from_secs(10));
+    assert!(status.success(), "{status}");
+    for pid in env.ssh_pids() {
+        assert!(!is_alive(pid), "ssh {pid} is still running");
+    }
+    assert!(
+        TcpStream::connect(("127.0.0.1", port)).is_err(),
+        "port {port} is still open"
+    );
+}
+
 #[test]
 fn local_prints_the_url_once_healthz_answers() {
     let env = Env::new();
     let daemon = Daemon::start(env.path());
-    let port = daemon.running().tcp_addr().port().to_string();
+    let port = daemon.running().tcp_addr().port();
 
-    let out = env.run(&["open", "--no-browser", "--port", &port]);
+    let out = env.run(&["open", "--no-browser", "--port", &port.to_string()]);
     assert!(out.status.success(), "{}", show(&out));
     let url = format!("http://127.0.0.1:{port}/");
     assert_eq!(String::from_utf8(out.stdout).unwrap(), format!("{url}\n"));
 
-    let (status, body) = http_get(&url, "/healthz");
+    let (status, body) = request(port, "GET", "/healthz", &[]);
     assert_eq!(status, 200);
     assert_eq!(body, r#"{"status":"ok"}"#);
 }
@@ -234,144 +294,149 @@ fn local_with_nothing_listening_prints_no_url() {
 }
 
 // f-010: a Ship-shaped `/healthz` already answering on the requested port
-// is not the ssh forward. With a fake ssh that opens no forward, `ship
-// open` must refuse the port, print no URL and fail.
+// is not this `ship open`. The port is bound before ssh runs, so it is
+// refused, no URL is printed and no ssh is started.
 #[test]
 fn ssh_refuses_an_occupied_port() {
-    if Command::new("python3").arg("--version").output().is_err() {
-        eprintln!("skipped: python3 is needed for the fake ssh");
-        return;
-    }
     let env = Env::new();
     let daemon = Daemon::start(env.path());
     let port = daemon.running().tcp_addr().port().to_string();
-    let socket = daemon.running().socket_path().display().to_string();
-    let add = env.run(&[
-        "target",
-        "add",
-        "lab",
-        "ssh://lab.example",
-        "--socket",
-        &socket,
-    ]);
-    assert!(add.status.success(), "{}", show(&add));
+    env.add("ssh://lab.example", &daemon.socket());
 
-    let out = env
-        .ship()
-        .env("FAKE_SSH_NO_FORWARD", "1")
-        .args(["open", "--no-browser", "--port", &port, "--timeout", "5"])
-        .output()
-        .unwrap();
+    let out = env.run(&["open", "--no-browser", "--port", &port, "--timeout", "5"]);
     assert_eq!(out.status.code(), Some(1), "{}", show(&out));
     assert!(out.stdout.is_empty(), "{}", show(&out));
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains(&format!("port {port}")), "{err}");
     assert!(!err.contains("http://"), "{err}");
     assert!(!err.contains("forwarding"), "{err}");
-    if let Ok(pid) = fs::read_to_string(env.file("ssh-pid")) {
-        let pid: i32 = pid.trim().parse().unwrap();
-        assert!(!is_alive(pid), "ssh {pid} is still running");
-    }
+    assert!(env.ssh_pids().is_empty(), "ssh was run");
 }
 
+// fix-0005: every connection is carried by `ssh … HOST ship dial-stdio`;
+// no ssh port forwarding, which Tailscale SSH refuses.
 #[test]
-fn ssh_forwards_the_ui_until_sigint() {
-    if Command::new("python3").arg("--version").output().is_err() {
-        eprintln!("skipped: python3 is needed for the fake ssh");
-        return;
-    }
+fn ssh_serves_the_ui_through_dial_stdio_until_sigint() {
     let env = Env::new();
     let daemon = Daemon::start(env.path());
-    let socket = daemon.running().socket_path().display().to_string();
-    let add = env.run(&[
-        "target",
-        "add",
-        "lab",
-        "ssh://tester@lab.example:2222",
-        "--socket",
-        &socket,
-    ]);
-    assert!(add.status.success(), "{}", show(&add));
+    let socket = daemon.socket();
+    env.add("ssh://tester@lab.example:2222", &socket);
+    let (child, port) = open(&env);
 
-    let mut child = env
-        .ship()
-        .args(["open", "--no-browser", "--timeout", "20"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut stdout = BufReader::new(child.stdout.take().unwrap());
-    let mut line = String::new();
-    stdout.read_line(&mut line).unwrap();
-    if line.is_empty() {
-        let status = wait_exit(&mut child, Duration::from_secs(5));
-        let mut err = String::new();
-        let mut stderr = child.stderr.take().unwrap();
-        stderr.read_to_string(&mut err).unwrap();
-        panic!("ship open printed no URL ({status}): {err}");
-    }
-    let url = line.trim_end().to_owned();
-    let port: u16 = url
-        .strip_prefix("http://127.0.0.1:")
-        .and_then(|r| r.strip_suffix('/'))
-        .and_then(|p| p.parse().ok())
-        .unwrap_or_else(|| panic!("not a 127.0.0.1 URL: {url:?}"));
-
-    // The URL serves the UI through the forward.
-    let (status, body) = http_get(&url, "/");
+    let (status, body) = request(port, "GET", "/healthz", &[]);
+    assert_eq!((status, body.as_str()), (200, r#"{"status":"ok"}"#));
+    let (status, body) = request(port, "GET", "/", &[]);
     if ship_daemon::ui::is_built() {
         assert_eq!(status, 200, "{body}");
-        let lower = body.to_ascii_lowercase();
-        assert!(lower.starts_with("<!doctype html>"), "{body}");
+        assert!(
+            body.to_ascii_lowercase().starts_with("<!doctype html>"),
+            "{body}"
+        );
     } else {
         assert_eq!(status, 503);
         assert_eq!(body, ship_daemon::ui::NOT_BUILT);
     }
 
-    // The exact argv, with HOST alone after `--`.
+    // The exact argv: `ssh_args`, HOST alone after `--`, then the remote
+    // command. No -L, no -N.
     let argv: Vec<String> = fs::read_to_string(env.file("ssh-argv"))
         .unwrap()
         .lines()
         .map(str::to_owned)
         .collect();
-    let forward = format!("127.0.0.1:{port}:{socket}");
     assert_eq!(
         argv,
         [
-            "-N",
             "-T",
             "-o",
             "BatchMode=yes",
-            "-o",
-            "ExitOnForwardFailure=yes",
             "-o",
             "ConnectTimeout=20",
             "-p",
             "2222",
             "-l",
             "tester",
-            "-L",
-            &forward,
             "--",
             "lab.example",
+            "ship",
+            "dial-stdio",
+            "--socket",
+            &socket,
         ]
     );
-    let ssh_pid: i32 = fs::read_to_string(env.file("ssh-pid"))
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
-    assert!(is_alive(ssh_pid));
 
-    // SIGINT ends ship, which kills and reaps ssh.
-    // SAFETY: sending a signal to our own child has no memory effects.
-    let rc = unsafe { libc::kill(child.id() as i32, libc::SIGINT) };
-    assert_eq!(rc, 0);
-    let status = wait_exit(&mut child, Duration::from_secs(10));
-    assert!(status.success(), "{status}");
-    assert!(!is_alive(ssh_pid), "ssh {ssh_pid} is still running");
-    assert!(
-        TcpStream::connect(("127.0.0.1", port)).is_err(),
-        "the forward on {port} is still open"
+    // Concurrent requests: all sent before any answer is read, each on its
+    // own connection and its own child.
+    let before = env.ssh_pids().len();
+    let held: Vec<TcpStream> = (0..4).map(|_| send(port, "GET", "/healthz", &[])).collect();
+    for s in held {
+        assert_eq!(answer(s), (200, r#"{"status":"ok"}"#.to_owned()));
+    }
+    assert!(env.ssh_pids().len() >= before + 4, "{:?}", env.ssh_pids());
+
+    // An open connection holds a live child; SIGINT must still end it.
+    let before = env.ssh_pids().len();
+    let idle = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while env.ssh_pids().len() == before {
+        assert!(
+            Instant::now() < deadline,
+            "no child for the idle connection"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let live = *env.ssh_pids().last().unwrap();
+    assert!(is_alive(live));
+
+    interrupt(&env, child, port);
+    drop(idle);
+}
+
+// The daemon sees what the browser sent, so its Host and origin guard
+// behaves as it did through the old ssh forward.
+#[test]
+fn ssh_keeps_the_host_and_origin_guard() {
+    let env = Env::new();
+    let daemon = Daemon::start(env.path());
+    env.add("ssh://lab.example", &daemon.socket());
+    let (child, port) = open(&env);
+
+    let (status, body) = request(port, "GET", "/api/v1/host", &[]);
+    assert_eq!(status, 200, "{body}");
+    let (status, _) = request(
+        port,
+        "POST",
+        "/api/v1/projects",
+        &["Origin: http://evil.example"],
     );
+    assert_eq!(status, 403);
+    let (status, _) = request(port, "GET", "/api/v1/host", &["Host: evil.example"]);
+    assert_eq!(status, 403);
+
+    interrupt(&env, child, port);
+}
+
+// fix-0005 (3): a refused first connection prints ssh's own reason, not a
+// timeout, and no URL.
+#[test]
+fn ssh_refusal_prints_ssh_reason() {
+    let env = Env::new();
+    let daemon = Daemon::start(env.path());
+    env.add("ssh://tester@lab.example", &daemon.socket());
+
+    let out = env
+        .ship()
+        .env("FAKE_SSH_MODE", "refuse")
+        .args(["open", "--no-browser", "--timeout", "20"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1), "{}", show(&out));
+    assert!(out.stdout.is_empty(), "{}", show(&out));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains(REFUSAL), "{err}");
+    assert!(err.contains("tester@lab.example"), "{err}");
+    assert!(!err.contains("http://"), "{err}");
+    for pid in env.ssh_pids() {
+        assert!(!is_alive(pid), "ssh {pid} is still running");
+    }
 }
