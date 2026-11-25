@@ -1,0 +1,15 @@
+[package]
+name = "ship"
+description = "Ship: turn a folder into a running, observable application on a Linux machine you own"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+[[bin]]
+name = "ship"
+path = "src/main.rs"
+
+[dependencies]

@@ -1,0 +1,10 @@
+[package]
+name = "ship-daemon"
+description = "Ship daemon: HTTP API, operation queue, reconciler and UI serving"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]

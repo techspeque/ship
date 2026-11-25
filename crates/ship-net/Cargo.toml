@@ -1,0 +1,10 @@
+[package]
+name = "ship-net"
+description = "Ship listeners, ssh dial-stdio and tailscaled local-API client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]

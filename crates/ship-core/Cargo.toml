@@ -1,0 +1,10 @@
+[package]
+name = "ship-core"
+description = "Ship domain types, state machines, config precedence and trust profile"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
