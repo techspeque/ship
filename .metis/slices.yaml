@@ -18,6 +18,10 @@ slices:
 
         SUPERVISOR EVIDENCE at a68d30f, 2026-11-25, on the gate host (Ubuntu, kernel 7.0, x86_64) in a rust:1.94 container with musl-tools: (a) cargo build --release --locked -p ship --target x86_64-unknown-linux-musl succeeds and that binary's daemon now starts and answers: curl --unix-socket SOCK http://localhost/healthz -> 200, http://127.0.0.1/healthz -> 200. The pin fix works. (b) cargo test --locked --workspace --target x86_64-unknown-linux-musl: every test binary 'test result: ok', no failures. (c) shellcheck (koalaman/shellcheck:stable) on all five scripts/*.sh exits 0 with no output; the reviewer session has no shellcheck, so take this as the shellcheck evidence and do not stop for it. (d) DEFECT to fix in rework: scripts/daemon-smoke.sh exits 1 against the working daemon: 'FAIL: GET /healthz over .../ship.sock: status 403'. The daemon log says 'request rejected by origin guard ... Host must name a loopback address': the script's curl URL host is not a loopback name (http://ship/healthz -> 403, http://localhost/healthz -> 200). As committed, the new CI and release steps that call the script would fail on a good binary. Use a loopback Host in the URL; keep the rest. Reviewer: please record (d) as the blocking finding so the coder reworks it; the supervisor reruns the script on the host afterwards.
       created: "2026-11-25"
+      waiting:
+        reason: 'auto: session_failed'
+        since: "2026-11-25T12:08:49Z"
+        human: true
     - id: phase-0-gate
       title: 'Phase 0 gate: composed-system validation'
       type: gate
