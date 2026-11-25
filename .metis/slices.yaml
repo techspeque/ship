@@ -1,5 +1,20 @@
 version: 1
 slices:
+    - id: fix-0004
+      title: 'Daemon cannot start in the musl release build: the socket pin loses O_PATH'
+      type: fix
+      priority: p0
+      risk: high
+      stage: foundation
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-0-plan.md
+      plan_section: §0.4
+      coded: false
+      reviewed: false
+      review_cycles: 0
+      notes: 'Found at the Phase 0 gate on a real host (Ubuntu, kernel 7.0, x86_64): the static x86_64-unknown-linux-musl build of dev d530172 crash-loops under systemd with ''unix socket: pin /run/ship/ship.sock: No such device or address (os error 6)''. The same sources built for gnu pass every listener test on the same kernel. strace of the musl binary: open("/s/s.sock", O_RDONLY|O_LARGEFILE|O_NOFOLLOW|O_CLOEXEC) = -1 ENXIO: O_PATH is missing from the call. crates/ship-net/src/listener.rs identify() passes libc::O_PATH through fs::OpenOptions::custom_flags; std masks custom flags with !O_ACCMODE, and on musl O_ACCMODE is 0o10000003, which includes the O_PATH bit (O_SEARCH == O_PATH there), so the flag is silently dropped. Likely cause, confirm it rather than assume. Required: (1) open the pin without going through OpenOptions::custom_flags for O_PATH (for example libc::open/openat directly, wrapped in an OwnedFd, with O_PATH|O_NOFOLLOW|O_CLOEXEC), keeping every property fix-0002 established. (2) The gap that let this through: CI builds and tests gnu only while the release ships musl. Add CI coverage that runs the workspace tests for x86_64-unknown-linux-musl (musl-tools, CC_x86_64_unknown_linux_musl=musl-gcc as release.yml does) and, in the release workflow''s per-Linux-arch checks, starts ''ship daemon'' from the built release binary on a temp state dir and socket and requires GET /healthz over the unix socket to answer before the archive is packaged. (3) Search the workspace for any other custom_flags use or libc flag that overlaps O_ACCMODE on musl. The coder session cannot run Linux or musl; the supervisor builds the musl binary on a Linux host and runs the daemon and the listener tests there after the change, and CI runs on push. Do not park for that.'
+      created: "2026-11-25"
     - id: phase-0-gate
       title: 'Phase 0 gate: composed-system validation'
       type: gate
