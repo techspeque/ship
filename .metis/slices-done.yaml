@@ -127,3 +127,17 @@ slices:
       reviewed: true
       review_cycles: 1
       created: ""
+    - id: phase-0-ws-0.9
+      title: Release pipeline and install script
+      type: feat
+      priority: p2
+      risk: medium
+      stage: foundation
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-0-plan.md
+      plan_section: §0.9
+      coded: true
+      reviewed: true
+      review_cycles: 1
+      created: ""
