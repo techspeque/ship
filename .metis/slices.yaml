@@ -1,23 +1,5 @@
 version: 1
 slices:
-    - id: fix-0003
-      title: 'CI: SQLite advisory RUSTSEC-2026-0459 fails the audit; shellcheck SC2115 in install-selftest.sh'
-      type: fix
-      priority: p1
-      risk: medium
-      stage: foundation
-      coder: claude-code/opus-5-5
-      reviewer: codex/gpt-6-astra
-      plan: .metis/plans/phase-0-plan.md
-      plan_section: §0.9
-      coded: true
-      reviewed: true
-      review_cycles: 0
-      notes: |-
-        First CI run of dev. (1) cargo deny: RUSTSEC-2026-0459 / CVE-2026-119375, bundled SQLite before 3.54.0 via libsqlite3-sys 0.30.1 <- sqlx-sqlite 0.8.6 <- ship-store. sqlx 0.9.1 and libsqlite3-sys 0.40.0 exist on crates.io; check whether sqlx 0.9 pulls a fixed libsqlite3-sys and upgrade if so, keeping ship-store's tests and migrations green. Prefer the upgrade. Only if no fixed version is reachable, add a deny.toml ignore with the advisory id and a reason that states the real exposure (the advisory needs a database or -wal file written by a less trusted party; Ship's database lives in the daemon-owned state directory) and say so plainly in the report: an ignore is a person's decision to accept. (2) shellcheck SC2115 at scripts/install-selftest.sh:131: rm -rf "$work/$1" needs ${work:?} / ${1:?}. (3) The macOS install.sh self-test job was cancelled when the ubuntu one failed, so its result is unknown: make sure both run to completion (fail-fast off) so the next run reports both.
-
-        HUMAN DECISION 2026-11-25: upgrade, do not ignore the advisory. Approved and in scope for this slice (add them to the brief's owned_paths): rust-toolchain.toml channel 1.91.0 -> 1.94.0, workspace Cargo.toml rust-version 1.91 -> 1.94, and any docs or CI that name the Rust version. Then sqlx 0.9.1 and libsqlite3-sys 0.40.0 in Cargo.lock. Facts checked on crates.io by the supervisor: the advisory is patched in libsqlite3-sys >= 0.39.0; sqlx-sqlite 0.9.1 requires libsqlite3-sys >=0.30.1, <0.41.0 and rustc 1.94.0. Toolchain 1.94.0 with rustfmt and clippy is already installed on this machine. Cargo.lock kept libsqlite3-sys at 0.30.1 last time because the lock entry was still there: remove the libsqlite3-sys and sqlx* [[package]] entries from Cargo.lock (or the whole file) so the build under metis verify re-resolves them to the newest compatible versions, then confirm in Cargo.lock that libsqlite3-sys is >= 0.39.0 and that no unrelated crate moved more than necessary (say which did). Fix any sqlx 0.9 API changes in ship-store and any new clippy/rustfmt findings from 1.94 anywhere in the workspace (in scope). deny.toml ignore stays empty. cargo deny and shellcheck cannot run in the coder session; CI is the check and the supervisor pushes and reads it after review. Do not park for that.
-      created: "2026-11-25"
     - id: phase-0-gate
       title: 'Phase 0 gate: composed-system validation'
       type: gate
