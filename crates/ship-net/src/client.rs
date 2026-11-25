@@ -19,6 +19,8 @@ use hyper_util::rt::TokioIo;
 use ship_core::{API_VERSION, API_VERSION_HEADER, SHIP_VERSION_HEADER};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tokio::process::{Child, Command};
+use tokio::task::JoinHandle;
+use tokio::time::Instant;
 
 use crate::connect::{ConnectError, connect_unix_async};
 use crate::target::{DEFAULT_SOCKET, SshTarget, Target};
@@ -27,9 +29,6 @@ use crate::target::{DEFAULT_SOCKET, SshTarget, Target};
 pub const MAX_BODY: usize = 16 * 1024 * 1024;
 /// How much of `ssh`'s stderr is kept for messages.
 const MAX_STDERR: usize = 8 * 1024;
-/// How long to wait for `ssh` to exit after the exchange failed, to read
-/// why.
-const SSH_EXIT_GRACE: Duration = Duration::from_secs(3);
 
 /// A daemon's answer.
 #[derive(Debug, Clone)]
@@ -165,38 +164,42 @@ async fn get_over_ssh(
             "ssh started without its pipes",
         )));
     };
-    let stderr = tokio::spawn(read_bounded(stderr));
+    let mut stderr = tokio::spawn(read_bounded(stderr));
 
+    // One deadline bounds the exchange and, when it fails, collecting ssh's
+    // exit status and stderr to explain why.
+    let deadline = Instant::now() + timeout;
+    let timed_out = || TransportError::TimedOut { after: timeout };
     let result =
-        tokio::time::timeout(timeout, exchange(tokio::io::join(stdout, stdin), path)).await;
+        tokio::time::timeout_at(deadline, exchange(tokio::io::join(stdout, stdin), path)).await;
     match result {
         Ok(Ok(response)) => Ok(response),
         Err(_) => {
-            let _ = child.kill().await;
-            Err(TransportError::TimedOut { after: timeout })
+            kill_and_reap(&mut child, &stderr).await;
+            Err(timed_out())
         }
         Ok(Err(e)) => {
-            let status = wait_briefly(&mut child).await;
-            let stderr = tokio::time::timeout(SSH_EXIT_GRACE, stderr)
-                .await
-                .ok()
-                .and_then(Result::ok)
-                .unwrap_or_default();
-            Err(ssh_failure(ssh, status, stderr, e))
+            let Ok(status) = tokio::time::timeout_at(deadline, child.wait()).await else {
+                kill_and_reap(&mut child, &stderr).await;
+                return Err(timed_out());
+            };
+            let stderr = match tokio::time::timeout_at(deadline, &mut stderr).await {
+                Ok(read) => read.unwrap_or_default(),
+                Err(_) => {
+                    stderr.abort();
+                    String::new()
+                }
+            };
+            Err(ssh_failure(ssh, status.ok(), stderr, e))
         }
     }
 }
 
-/// The child's exit status if it exits within [`SSH_EXIT_GRACE`]; the child
-/// is killed otherwise.
-async fn wait_briefly(child: &mut Child) -> Option<ExitStatus> {
-    match tokio::time::timeout(SSH_EXIT_GRACE, child.wait()).await {
-        Ok(Ok(status)) => Some(status),
-        _ => {
-            let _ = child.kill().await;
-            None
-        }
-    }
+/// Kills `ssh`, waits for it so no process is left behind, and stops
+/// reading its stderr.
+async fn kill_and_reap(child: &mut Child, stderr: &JoinHandle<String>) {
+    let _ = child.kill().await;
+    stderr.abort();
 }
 
 /// Explains a failed exchange over ssh from ssh's exit status and stderr.

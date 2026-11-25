@@ -28,6 +28,10 @@ echo $$ > "$FAKE_SSH_PID"
 if [ "$FAKE_SSH_MODE" = hang ]; then
   exec sleep 60
 fi
+if [ "$FAKE_SSH_MODE" = eof ]; then
+  exec >&-
+  exec sleep 60
+fi
 while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do shift; done
 shift 2
 [ "$1" = ship ] || exit 97
@@ -260,6 +264,33 @@ fn unreachable_host_times_out_and_ssh_is_killed() {
     let elapsed = start.elapsed();
     assert_eq!(out.status.code(), Some(1), "{}", show(&out));
     assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+    let err = stderr(&out);
+    assert!(err.contains("timed out after 1s"), "{err}");
+
+    let pid: i32 = fs::read_to_string(env.path().join("ssh-pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    // SAFETY: signal 0 only checks whether the process exists.
+    let alive = unsafe { libc::kill(pid, 0) } == 0;
+    assert!(!alive, "ssh (pid {pid}) is still running");
+}
+
+#[test]
+fn early_eof_with_ssh_still_running_times_out_within_the_deadline() {
+    let env = Env::new();
+    env.add("lab", "ssh://lab.invalid", None);
+    let start = Instant::now();
+    let out = env
+        .ship()
+        .env("FAKE_SSH_MODE", "eof")
+        .args(["projects", "--timeout", "1"])
+        .output()
+        .unwrap();
+    let elapsed = start.elapsed();
+    assert_eq!(out.status.code(), Some(1), "{}", show(&out));
+    assert!(elapsed < Duration::from_millis(2500), "{elapsed:?}");
     let err = stderr(&out);
     assert!(err.contains("timed out after 1s"), "{err}");
 
