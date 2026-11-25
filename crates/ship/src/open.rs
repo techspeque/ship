@@ -109,6 +109,18 @@ async fn over_ssh(ssh: &SshTarget, args: &OpenArgs) -> ExitCode {
             Err(e) => return fail(format!("cannot pick a free local port: {e}"), FAILURE),
         },
     };
+    // The forward's local end must be free before ssh starts, so whatever
+    // answers on it afterwards is ssh's forward and not some other
+    // listener already there.
+    if let Err(e) = port_is_free(port) {
+        return fail(
+            format!(
+                "port {port} on 127.0.0.1 is not free for the ssh forward ({e}); \
+                 pick another with --port, or leave it out"
+            ),
+            FAILURE,
+        );
+    }
     let timeout = Duration::from_secs(args.timeout);
     let host = ssh.display_host();
     let spawned = Command::new("ssh")
@@ -137,7 +149,10 @@ async fn over_ssh(ssh: &SshTarget, args: &OpenArgs) -> ExitCode {
                 FAILURE,
             );
         }
-        if let Ok(Ok(())) = tokio::time::timeout(PROBE_TIMEOUT, healthz(port)).await {
+        // An answer counts only while ssh still holds the forward.
+        if let Ok(Ok(())) = tokio::time::timeout(PROBE_TIMEOUT, healthz(port)).await
+            && matches!(child.try_wait(), Ok(None))
+        {
             break;
         }
         if Instant::now() >= deadline {
@@ -190,6 +205,17 @@ fn free_port() -> std::io::Result<u16> {
     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
     let listener = std::net::TcpListener::bind(addr)?;
     Ok(listener.local_addr()?.port())
+}
+
+/// `Ok` when nothing listens on, or holds, `127.0.0.1:port` now.
+fn port_is_free(port: u16) -> Result<(), String> {
+    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    if std::net::TcpStream::connect_timeout(&addr, PROBE_TIMEOUT).is_ok() {
+        return Err("something is already listening on it".to_owned());
+    }
+    std::net::TcpListener::bind(addr)
+        .map(drop)
+        .map_err(|e| e.to_string())
 }
 
 /// `GET /healthz` on `127.0.0.1:port`; `Ok` only for the daemon's `200

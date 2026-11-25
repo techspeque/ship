@@ -18,7 +18,8 @@ use std::time::{Duration, Instant};
 const SHIP: &str = env!("CARGO_BIN_EXE_ship");
 
 /// A fake `ssh`: records argv one per line and its pid, then serves the
-/// `-L 127.0.0.1:PORT:SOCKET` forward until killed.
+/// `-L 127.0.0.1:PORT:SOCKET` forward until killed. With
+/// `FAKE_SSH_NO_FORWARD` set it opens no forward and just waits.
 const FAKE_SSH: &str = r#"#!/usr/bin/env python3
 import os, socket, sys, threading
 
@@ -26,6 +27,11 @@ with open(os.environ["FAKE_SSH_ARGV"], "w") as f:
     f.write("".join(a + "\n" for a in sys.argv[1:]))
 with open(os.environ["FAKE_SSH_PID"], "w") as f:
     f.write(str(os.getpid()))
+
+if os.environ.get("FAKE_SSH_NO_FORWARD"):
+    import time
+    while True:
+        time.sleep(60)
 
 args = sys.argv[1:]
 spec = args[args.index("-L") + 1]
@@ -225,6 +231,47 @@ fn local_with_nothing_listening_prints_no_url() {
     assert!(err.contains("127.0.0.1 listener"), "{err}");
     assert!(err.contains(&format!("port {port}")), "{err}");
     assert!(!err.contains("http://"), "{err}");
+}
+
+// f-009: a Ship-shaped `/healthz` already answering on the requested port
+// is not the ssh forward. With a fake ssh that opens no forward, `ship
+// open` must refuse the port, print no URL and fail.
+#[test]
+fn ssh_refuses_an_occupied_port() {
+    if Command::new("python3").arg("--version").output().is_err() {
+        eprintln!("skipped: python3 is needed for the fake ssh");
+        return;
+    }
+    let env = Env::new();
+    let daemon = Daemon::start(env.path());
+    let port = daemon.running().tcp_addr().port().to_string();
+    let socket = daemon.running().socket_path().display().to_string();
+    let add = env.run(&[
+        "target",
+        "add",
+        "lab",
+        "ssh://lab.example",
+        "--socket",
+        &socket,
+    ]);
+    assert!(add.status.success(), "{}", show(&add));
+
+    let out = env
+        .ship()
+        .env("FAKE_SSH_NO_FORWARD", "1")
+        .args(["open", "--no-browser", "--port", &port, "--timeout", "5"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1), "{}", show(&out));
+    assert!(out.stdout.is_empty(), "{}", show(&out));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains(&format!("port {port}")), "{err}");
+    assert!(!err.contains("http://"), "{err}");
+    assert!(!err.contains("forwarding"), "{err}");
+    if let Ok(pid) = fs::read_to_string(env.file("ssh-pid")) {
+        let pid: i32 = pid.trim().parse().unwrap();
+        assert!(!is_alive(pid), "ssh {pid} is still running");
+    }
 }
 
 #[test]
