@@ -77,6 +77,9 @@ findings:
       severity: P2
       category: protocol
       finding: crates/ship-daemon/src/http.rs:57 — origin_guard wraps api_version and returns forbidden directly at line 132, so /api/ requests rejected for Host or origin omit both version headers, contrary to the brief requirement for every API response. Ensure API response headers also decorate guard rejections while retaining authorization checks and header-free /healthz; add regression coverage for rejected API requests.
-      status: open
+      status: resolved
+      resolved_by: commit d987b0ef5252; test origin_guard_rejections_on_api_carry_versions; d987b0e; independently verified with metis verify --post --force
       cycle: 1
       file: crates/ship-daemon/src/http.rs
+      commit: d987b0ef52527080a90e920f2fc3a1f7f147d401
+      evidence: test origin_guard_rejections_on_api_carry_versions
