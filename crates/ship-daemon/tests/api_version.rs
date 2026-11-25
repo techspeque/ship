@@ -85,3 +85,39 @@ async fn other_api_version_is_refused_with_426() {
 
     running.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn origin_guard_rejections_on_api_carry_versions() {
+    let dir = tempfile::tempdir().unwrap();
+    let running = ship_daemon::start(&common::config(dir.path()))
+        .await
+        .unwrap();
+    let via = Via::Tcp(running.tcp_addr());
+
+    // Rejected for Host, and for a cross-origin mutation: still refused,
+    // and still carrying both version headers.
+    for (method, headers) in [
+        ("GET", &["Host: evil.example"][..]),
+        (
+            "POST",
+            &["Host: localhost", "Origin: http://evil.example"][..],
+        ),
+    ] {
+        let r = send(&via, method, "/api/v1/projects", headers).await;
+        assert_eq!(r.status, 403, "{method} {headers:?}: {}", r.head);
+        assert_eq!(r.json()["code"], "forbidden", "{}", r.body);
+        assert_eq!(header(&r.head, "ship-api-version"), Some(API_VERSION));
+        assert_eq!(
+            header(&r.head, "ship-version"),
+            Some(env!("CARGO_PKG_VERSION"))
+        );
+    }
+
+    // A rejected non-API request stays free of version headers.
+    let r = send(&via, "GET", "/healthz", &["Host: evil.example"]).await;
+    assert_eq!(r.status, 403, "{}", r.head);
+    assert_eq!(header(&r.head, "ship-api-version"), None, "{}", r.head);
+    assert_eq!(header(&r.head, "ship-version"), None, "{}", r.head);
+
+    running.shutdown().await.unwrap();
+}

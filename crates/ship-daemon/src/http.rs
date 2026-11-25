@@ -129,7 +129,11 @@ async fn origin_guard(request: Request, next: Next) -> Response {
                 reason,
                 "request rejected by origin guard"
             );
-            forbidden(reason)
+            let mut response = forbidden(reason);
+            if request.uri().path().starts_with("/api/") {
+                add_version_headers(&mut response);
+            }
+            response
         }
     }
 }
@@ -168,10 +172,16 @@ async fn api_version(request: Request, next: Next) -> Response {
         }
         _ => next.run(request).await,
     };
+    add_version_headers(&mut response);
+    response
+}
+
+/// Adds the daemon's API and Ship versions to an `/api/` response,
+/// including one the origin guard refused before `api_version` ran.
+fn add_version_headers(response: &mut Response) {
     let headers = response.headers_mut();
     headers.insert(API_VERSION_HEADER, HeaderValue::from_static(API_VERSION));
     headers.insert(SHIP_VERSION_HEADER, HeaderValue::from_static(SHIP_VERSION));
-    response
 }
 
 fn is_mutating(method: &Method) -> bool {
