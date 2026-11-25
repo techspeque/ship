@@ -645,3 +645,40 @@ async fn newer_schema_in_committed_wal_is_refused_and_untouched() {
 
     assert_eq!(snapshot(dir.path()), before);
 }
+
+/// Regression for fix-0001: reopening straight after close failed about one
+/// run in five with `Io(NotFound)`, because `close` returned while a
+/// connection was still open and the next open's probe read a WAL that then
+/// vanished. 200 rounds would have hit that with near certainty.
+#[tokio::test]
+async fn close_then_reopen_never_fails() {
+    const ROUNDS: usize = 200;
+    let dir = tempfile::tempdir().unwrap();
+    let wal = dir.path().join(format!("{DATABASE_FILE}-wal"));
+    let shm = dir.path().join(format!("{DATABASE_FILE}-shm"));
+    for round in 0..ROUNDS {
+        let store = Store::open(dir.path())
+            .await
+            .unwrap_or_else(|e| panic!("open in round {round}: {e:?}"));
+        store
+            .create_project(&slug(&format!("app-{round}")))
+            .await
+            .unwrap();
+        // Hold several pool connections at once so close has more than one
+        // to shut down.
+        let (a, b, c) = tokio::join!(
+            store.list_projects(),
+            store.list_projects(),
+            store.schema_version()
+        );
+        assert_eq!(a.unwrap().len(), round + 1);
+        assert_eq!(b.unwrap().len(), round + 1);
+        assert_eq!(c.unwrap(), LATEST_VERSION);
+        store.close().await;
+        assert!(!wal.exists(), "round {round}: -wal left after close");
+        assert!(!shm.exists(), "round {round}: -shm left after close");
+    }
+    let store = Store::open(dir.path()).await.unwrap();
+    assert_eq!(store.list_projects().await.unwrap().len(), ROUNDS);
+    store.close().await;
+}

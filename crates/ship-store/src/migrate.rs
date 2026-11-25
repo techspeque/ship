@@ -125,15 +125,46 @@ async fn run_on(
 /// sidecars of a WAL database. So without a WAL file the main file is opened
 /// `immutable` (it alone holds every committed page); with one, the database
 /// and its WAL are copied to a private temporary directory and read there.
+///
+/// A connection still closing elsewhere can checkpoint and unlink the WAL
+/// between the size check and the copy. A WAL that has gone was fully
+/// checkpointed into the main file, so a `NotFound` while copying sends the
+/// probe back to the check, which then takes the `immutable` path.
 async fn probe_version(path: &Path) -> Result<u32, StoreError> {
-    let wal = sidecar(path, "-wal")?;
-    let wal_has_frames = std::fs::metadata(&wal)
-        .map(|m| m.len() > 0)
-        .unwrap_or(false);
-    if !wal_has_frames {
-        return read_only_version(path, true).await;
-    }
+    probe_version_with(path, |from, to| std::fs::copy(from, to)).await
+}
 
+/// Attempts at reading a WAL database before a vanishing WAL is an error.
+const PROBE_ATTEMPTS: usize = 3;
+
+async fn probe_version_with(
+    path: &Path,
+    copy: impl Fn(&Path, &Path) -> std::io::Result<u64>,
+) -> Result<u32, StoreError> {
+    let wal = sidecar(path, "-wal")?;
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let wal_has_frames = std::fs::metadata(&wal)
+            .map(|m| m.len() > 0)
+            .unwrap_or(false);
+        if !wal_has_frames {
+            return read_only_version(path, true).await;
+        }
+        match probe_copy(path, &wal, &copy).await {
+            Err(StoreError::Io(e))
+                if e.kind() == std::io::ErrorKind::NotFound && attempt < PROBE_ATTEMPTS => {}
+            other => return other,
+        }
+    }
+}
+
+/// Reads the version from a private copy of the database and its WAL.
+async fn probe_copy(
+    path: &Path,
+    wal: &Path,
+    copy: &impl Fn(&Path, &Path) -> std::io::Result<u64>,
+) -> Result<u32, StoreError> {
     let mut entropy = [0u8; 8];
     getrandom::fill(&mut entropy).map_err(|_| StoreError::Entropy)?;
     let tmp = std::env::temp_dir().join(format!(
@@ -142,11 +173,11 @@ async fn probe_version(path: &Path) -> Result<u32, StoreError> {
         u64::from_le_bytes(entropy)
     ));
     std::fs::create_dir(&tmp).map_err(StoreError::Io)?;
-    let copy = tmp.join(DATABASE_FILE);
+    let dest = tmp.join(DATABASE_FILE);
     let result = async {
-        std::fs::copy(path, &copy).map_err(StoreError::Io)?;
-        std::fs::copy(&wal, sidecar(&copy, "-wal")?).map_err(StoreError::Io)?;
-        read_only_version(&copy, false).await
+        copy(path, &dest).map_err(StoreError::Io)?;
+        copy(wal, &sidecar(&dest, "-wal")?).map_err(StoreError::Io)?;
+        read_only_version(&dest, false).await
     }
     .await;
     // Best effort: the copy is private and outside the state directory.
@@ -169,7 +200,7 @@ async fn read_only_version(path: &Path, immutable: bool) -> Result<u32, StoreErr
 }
 
 /// `<path><suffix>`, e.g. the `-wal` file beside a database.
-fn sidecar(path: &Path, suffix: &str) -> Result<PathBuf, StoreError> {
+pub(crate) fn sidecar(path: &Path, suffix: &str) -> Result<PathBuf, StoreError> {
     let file_name = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -314,6 +345,53 @@ mod tests {
         assert_eq!(store.open_report().backup, None);
         store.close().await;
         assert_eq!(backups(dir.path()).len(), 1);
+    }
+
+    /// A closed store's directory with a non-empty `-wal` beside the database,
+    /// so the probe takes the copy path.
+    async fn closed_store_with_wal() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        Store::open(dir.path()).await.unwrap().close().await;
+        let db = dir.path().join(DATABASE_FILE);
+        let wal = sidecar(&db, "-wal").unwrap();
+        std::fs::write(&wal, b"not yet checkpointed").unwrap();
+        (dir, db, wal)
+    }
+
+    #[tokio::test]
+    async fn probe_tolerates_wal_vanishing_mid_copy() {
+        let (_dir, db, wal) = closed_store_with_wal().await;
+        // The WAL is checkpointed and unlinked just as the probe reads it.
+        let copy = |from: &Path, to: &Path| {
+            if from == wal {
+                std::fs::remove_file(&wal).unwrap();
+            }
+            std::fs::copy(from, to)
+        };
+        assert_eq!(probe_version_with(&db, copy).await.unwrap(), LATEST_VERSION);
+        assert!(!wal.exists());
+    }
+
+    #[tokio::test]
+    async fn probe_propagates_other_copy_errors() {
+        let (_dir, db, _wal) = closed_store_with_wal().await;
+        let denied = |_: &Path, _: &Path| -> std::io::Result<u64> {
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        };
+        match probe_version_with(&db, denied).await {
+            Err(StoreError::Io(e)) => assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied),
+            other => panic!("expected Io(PermissionDenied), got {other:?}"),
+        }
+
+        // A WAL that keeps reporting NotFound while still present gives up
+        // after a bounded number of attempts.
+        let missing = |_: &Path, _: &Path| -> std::io::Result<u64> {
+            Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+        };
+        match probe_version_with(&db, missing).await {
+            Err(StoreError::Io(e)) => assert_eq!(e.kind(), std::io::ErrorKind::NotFound),
+            other => panic!("expected Io(NotFound), got {other:?}"),
+        }
     }
 
     #[tokio::test]

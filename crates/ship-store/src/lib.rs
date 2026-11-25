@@ -12,7 +12,7 @@ mod repo;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use sqlx::ConnectOptions;
+use sqlx::{ConnectOptions, Connection};
 use sqlx::sqlite::{
     SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous,
 };
@@ -29,6 +29,7 @@ pub const DATABASE_FILE: &str = "ship.db";
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const POOL_SIZE: u32 = 4;
+const CLOSE_POLL: Duration = Duration::from_millis(10);
 
 /// The open database.
 ///
@@ -92,9 +93,39 @@ impl Store {
     }
 
     /// Closes every connection. Clones of this store stop working.
+    ///
+    /// Returns once no connection to the database is open, which SQLite
+    /// shows by removing the `-wal` and `-shm` sidecars when the last one
+    /// closes. Until they are gone, a short-lived barrier connection is
+    /// opened and closed: whichever connection closes last checkpoints and
+    /// removes them. The wait is bounded by the busy timeout, after which
+    /// the sidecars are left for the next open to deal with.
     pub async fn close(self) {
         self.pool.close().await;
+        let deadline = tokio::time::Instant::now() + BUSY_TIMEOUT;
+        while sidecars_present(&self.path) && tokio::time::Instant::now() < deadline {
+            // Errors are not fatal here: a failed barrier only means another
+            // round, and `open` copes with leftover sidecars.
+            if let Ok(mut conn) = base_options(&self.path).connect().await {
+                let _ = sqlx::query("SELECT count(*) FROM sqlite_schema")
+                    .execute(&mut conn)
+                    .await;
+                let _ = conn.close().await;
+            }
+            if sidecars_present(&self.path) {
+                tokio::time::sleep(CLOSE_POLL).await;
+            }
+        }
     }
+}
+
+/// Whether the `-wal` or `-shm` file beside `path` exists.
+fn sidecars_present(path: &Path) -> bool {
+    ["-wal", "-shm"].iter().any(|suffix| {
+        migrate::sidecar(path, suffix)
+            .map(|p| p.exists())
+            .unwrap_or(false)
+    })
 }
 
 /// Options every connection shares. Sets no persistent pragma.

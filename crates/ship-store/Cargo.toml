@@ -11,6 +11,8 @@ publish.workspace = true
 ship-core = { path = "../ship-core" }
 getrandom = "0.3"
 sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio"] }
+# Already in the graph through sqlx's runtime-tokio; used for the bounded wait in `Store::close`.
+tokio = { version = "1", features = ["time"] }
 
 [dev-dependencies]
 tempfile = "3"
