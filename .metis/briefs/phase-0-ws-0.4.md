@@ -129,7 +129,7 @@ None.
   `DaemonError`, defaults), `src/http.rs` (router, origin guard,
   `error_response`, `HEALTHZ_PATH`), `src/log.rs` (`Redactor`,
   `RedactingMakeWriter`, `subscriber`, `init`, `error`); tests
-  `tests/{common/mod.rs,http.rs,listeners.rs,sigterm.rs,log_stderr.rs}`.
+  `tests/{common/mod.rs,http.rs,listeners.rs,sigterm.rs,log_stderr.rs,shutdown.rs}`.
   `Cargo.toml` adds `ship-core`, `ship-net`, `ship-store`, `axum` 0.8
   (`http1`, `json`, `tokio`), `tokio`, `tracing`, `tracing-subscriber`
   (`fmt`, `json`), `serde_json`; dev `tempfile`, `tokio` `io-util`.

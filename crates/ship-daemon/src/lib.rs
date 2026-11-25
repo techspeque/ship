@@ -18,10 +18,13 @@ use std::io;
 use std::net::SocketAddr;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use ship_net::{BindError, SocketFile};
 use ship_store::{Store, StoreError};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -99,6 +102,8 @@ pub struct Running {
     tcp_addr: SocketAddr,
     store: Store,
     stop: watch::Sender<bool>,
+    /// Fails every open connection's I/O once the drain deadline passes.
+    kill: watch::Sender<bool>,
     servers: Vec<JoinHandle<io::Result<()>>>,
 }
 
@@ -136,9 +141,14 @@ pub async fn start(config: &Config) -> Result<Running, DaemonError> {
 
     let router = http::router(store.clone());
     let (stop, stopped) = watch::channel(false);
+    let (kill, killed) = watch::channel(false);
     let servers = vec![
-        tokio::spawn(serve(unix, router.clone(), stopped.clone())),
-        tokio::spawn(serve(tcp, router, stopped)),
+        tokio::spawn(serve(
+            Killable::new(unix, killed.clone()),
+            router.clone(),
+            stopped.clone(),
+        )),
+        tokio::spawn(serve(Killable::new(tcp, killed), router, stopped)),
     ];
 
     tracing::info!(
@@ -152,6 +162,7 @@ pub async fn start(config: &Config) -> Result<Running, DaemonError> {
         tcp_addr,
         store,
         stop,
+        kill,
         servers,
     })
 }
@@ -172,30 +183,42 @@ impl Running {
         &self.store
     }
 
-    /// Stops accepting, drains open connections for up to 10 s, closes the
-    /// database and removes the socket file.
+    /// Stops accepting, drains open connections on both listeners for up
+    /// to 10 s in total, closes whatever is still open and waits for those
+    /// connections to end, closes the database and removes the socket file.
     pub async fn shutdown(self) -> Result<(), DaemonError> {
         let Running {
             socket,
             store,
             stop,
+            kill,
             servers,
             ..
         } = self;
         let _ = stop.send(true);
+        // One deadline for every listener, not one per listener.
+        let deadline = tokio::time::Instant::now() + DRAIN_TIMEOUT;
         let mut first_error = None;
         for mut server in servers {
-            match tokio::time::timeout(DRAIN_TIMEOUT, &mut server).await {
-                Ok(Ok(Ok(()))) => {}
-                Ok(Ok(Err(e))) => {
+            let joined = match tokio::time::timeout_at(deadline, &mut server).await {
+                Ok(joined) => joined,
+                Err(_) => {
+                    if !*kill.borrow() {
+                        tracing::warn!("connections still open after drain timeout; closing them");
+                        let _ = kill.send(true);
+                    }
+                    // The server returns once every connection task has
+                    // ended; killed connections end at their next I/O.
+                    server.await
+                }
+            };
+            match joined {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
                     first_error.get_or_insert(DaemonError::Serve(e));
                 }
-                Ok(Err(join)) => {
+                Err(join) => {
                     first_error.get_or_insert(DaemonError::Serve(io::Error::other(join)));
-                }
-                Err(_) => {
-                    tracing::warn!("connections still open after drain timeout; closing them");
-                    server.abort();
                 }
             }
         }
@@ -259,6 +282,103 @@ fn into_tokio_unix(
 fn into_tokio_tcp(listener: std::net::TcpListener) -> io::Result<tokio::net::TcpListener> {
     listener.set_nonblocking(true)?;
     tokio::net::TcpListener::from_std(listener)
+}
+
+/// A listener whose accepted connections all fail their I/O once `kill`
+/// is set, so their tasks end and graceful shutdown can join them.
+struct Killable<L> {
+    inner: L,
+    kill: watch::Receiver<bool>,
+}
+
+impl<L> Killable<L> {
+    fn new(inner: L, kill: watch::Receiver<bool>) -> Self {
+        Killable { inner, kill }
+    }
+}
+
+impl<L: axum::serve::Listener> axum::serve::Listener for Killable<L> {
+    type Io = KillableIo<L::Io>;
+    type Addr = L::Addr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        let (io, addr) = self.inner.accept().await;
+        let mut kill = self.kill.clone();
+        let killed = Box::pin(async move {
+            // A dropped sender also ends the connection.
+            let _ = kill.wait_for(|k| *k).await;
+        });
+        (
+            KillableIo {
+                io,
+                killed,
+                dead: false,
+            },
+            addr,
+        )
+    }
+
+    fn local_addr(&self) -> io::Result<Self::Addr> {
+        self.inner.local_addr()
+    }
+}
+
+/// One accepted connection; see [`Killable`].
+struct KillableIo<T> {
+    io: T,
+    killed: Pin<Box<dyn Future<Output = ()> + Send>>,
+    dead: bool,
+}
+
+impl<T> KillableIo<T> {
+    /// Registers the task for wake-up on kill; errors once killed.
+    fn check(&mut self, cx: &mut Context<'_>) -> io::Result<()> {
+        if !self.dead && self.killed.as_mut().poll(cx).is_ready() {
+            self.dead = true;
+        }
+        if self.dead {
+            Err(io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                "daemon shutting down",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl<T: AsyncRead + Unpin> AsyncRead for KillableIo<T> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        this.check(cx)?;
+        Pin::new(&mut this.io).poll_read(cx, buf)
+    }
+}
+
+impl<T: AsyncWrite + Unpin> AsyncWrite for KillableIo<T> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let this = self.get_mut();
+        this.check(cx)?;
+        Pin::new(&mut this.io).poll_write(cx, buf)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        this.check(cx)?;
+        Pin::new(&mut this.io).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().io).poll_shutdown(cx)
+    }
 }
 
 async fn serve<L>(
