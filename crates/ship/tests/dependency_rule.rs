@@ -96,7 +96,12 @@ fn package_name(text: &str) -> Option<String> {
             continue;
         };
         if key.trim() == "name" {
-            return Some(value.trim().trim_matches(|c| c == '"' || c == '\'').to_string());
+            return Some(
+                value
+                    .trim()
+                    .trim_matches(|c| c == '"' || c == '\'')
+                    .to_string(),
+            );
         }
     }
     None
