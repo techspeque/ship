@@ -105,9 +105,13 @@ async fn run_on(
     for m in pending {
         let mut tx = conn.begin().await.map_err(db)?;
         sqlx::raw_sql(m.sql).execute(&mut *tx).await.map_err(db)?;
-        // `user_version` cannot be bound; `m.version` is a compiled-in u32.
+        // `user_version` cannot be bound; `m.version` is a compiled-in u32,
+        // so the formatted statement carries no outside input.
         let bump = format!("PRAGMA user_version = {}", m.version);
-        sqlx::raw_sql(&bump).execute(&mut *tx).await.map_err(db)?;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(bump))
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
         tx.commit().await.map_err(db)?;
     }
 

@@ -573,7 +573,8 @@ async fn newer_schema_is_refused_and_untouched() {
 
     let newer = LATEST_VERSION + 5;
     let mut conn = raw(dir.path()).await;
-    sqlx::raw_sql(&format!("PRAGMA user_version = {newer}"))
+    let bump = format!("PRAGMA user_version = {newer}");
+    sqlx::raw_sql(sqlx::AssertSqlSafe(bump))
         .execute(&mut conn)
         .await
         .unwrap();
@@ -616,7 +617,8 @@ async fn newer_schema_in_committed_wal_is_refused_and_untouched() {
         .execute(&mut conn)
         .await
         .unwrap();
-    sqlx::raw_sql(&format!("PRAGMA user_version = {newer}"))
+    let bump = format!("PRAGMA user_version = {newer}");
+    sqlx::raw_sql(sqlx::AssertSqlSafe(bump))
         .execute(&mut conn)
         .await
         .unwrap();

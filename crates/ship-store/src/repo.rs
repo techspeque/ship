@@ -7,6 +7,7 @@ use ship_core::{
     DesiredState, EnvironmentId, OperationId, OperationPhase, OperationStatus, ProjectId,
     RecoveryPolicy, ServiceId, ServiceKind, Slug, Timestamp, compose_project_name,
 };
+use sqlx::AssertSqlSafe;
 use sqlx::Row;
 use sqlx::sqlite::SqliteRow;
 
@@ -437,8 +438,9 @@ impl Store {
         .map_err(write_err("operation"))?;
         let created = result.rows_affected() == 1;
 
+        // Built from a compile-time constant only; values are bound.
         let sql = format!("SELECT {OPERATION_COLUMNS} FROM operation WHERE idempotency_key = ?");
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(AssertSqlSafe(sql))
             .bind(new.idempotency_key)
             .fetch_optional(&self.pool)
             .await
@@ -459,8 +461,9 @@ impl Store {
 
     /// The operation with `id`.
     pub async fn get_operation(&self, id: OperationId) -> Result<Operation, StoreError> {
+        // Built from a compile-time constant only; values are bound.
         let sql = format!("SELECT {OPERATION_COLUMNS} FROM operation WHERE id = ?");
-        let row = sqlx::query(&sql)
+        let row = sqlx::query(AssertSqlSafe(sql))
             .bind(id.to_string())
             .fetch_optional(&self.pool)
             .await
