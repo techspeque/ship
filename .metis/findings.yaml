@@ -59,3 +59,12 @@ findings:
       file: crates/ship-daemon/src/log.rs
       commit: 69d4cd94540b3f69c035772a1e500b5e78b95647
       evidence: test json_syntax_and_numeric_secrets_keep_records_parseable
+    - id: f-006
+      date: "2026-11-25"
+      slice: phase-0-ws-0.6
+      severity: P2
+      category: behavior
+      finding: 'crates/ship-net/src/client.rs:178 — SSH failure cleanup waits outside the configured whole-exchange timeout (brief lines 74-85): a fake ssh that closes stdout then execs sleep 60 makes projects --timeout 1 take 3.145 seconds and report HTTP EOF instead of timeout. Bound exchange, exit-status collection and stderr collection by one deadline, kill/reap ssh on expiry, and add an early-EOF-but-still-running regression test.'
+      status: open
+      cycle: 1
+      file: crates/ship-net/src/client.rs
