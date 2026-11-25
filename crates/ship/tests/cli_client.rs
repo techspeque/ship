@@ -333,7 +333,7 @@ fn permission_denied_names_the_group() {
 #[test]
 fn hostile_targets_are_rejected_and_nothing_changes() {
     let env = Env::new();
-    env.add("lab", "ssh://adam@lab", None);
+    env.add("lab", "ssh://deploy@lab", None);
     let before = fs::read(env.config()).unwrap();
     for url in [
         "ssh://lab;touch${IFS}pwned",
@@ -380,7 +380,7 @@ fn target_add_use_list() {
     assert!(out.status.success(), "{}", show(&out));
     assert!(String::from_utf8_lossy(&out.stdout).starts_with("No targets."));
 
-    env.add("lab", "ssh://adam@lab", None);
+    env.add("lab", "ssh://deploy@lab", None);
     let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode(&env.config()), 0o600);
     assert_eq!(mode(env.config().parent().unwrap()), 0o700);
@@ -393,7 +393,7 @@ fn target_add_use_list() {
         v,
         serde_json::json!({ "targets": [
             { "name": "gpu", "url": "ssh://gpu:2200", "socket": null, "current": false },
-            { "name": "lab", "url": "ssh://adam@lab", "socket": null, "current": true },
+            { "name": "lab", "url": "ssh://deploy@lab", "socket": null, "current": true },
         ]})
     );
 
@@ -407,7 +407,7 @@ fn target_add_use_list() {
     let out = env.run(&["target", "list"]);
     assert_eq!(
         String::from_utf8(out.stdout).unwrap(),
-        "* gpu  ssh://gpu:2200\n  lab  ssh://adam@lab\n"
+        "* gpu  ssh://gpu:2200\n  lab  ssh://deploy@lab\n"
     );
     assert_eq!(mode(&env.config()), 0o600);
 }

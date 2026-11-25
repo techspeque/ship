@@ -305,7 +305,7 @@ mod tests {
 
     fn target() -> SshTarget {
         SshTarget {
-            user: Some("adam".into()),
+            user: Some("deploy".into()),
             host: "lab".into(),
             port: None,
             socket: None,
@@ -326,7 +326,7 @@ mod tests {
         assert!(matches!(e, TransportError::SshUnreachable { .. }), "{e:?}");
         assert_eq!(
             e.to_string(),
-            "cannot reach adam@lab over ssh: No route to host"
+            "cannot reach deploy@lab over ssh: No route to host"
         );
 
         let e = ssh_failure(&target(), exited(127), String::new(), cause());
@@ -337,7 +337,7 @@ mod tests {
 
         let remote = "ship dial-stdio: permission denied on /run/ship/ship.sock: …";
         let e = ssh_failure(&target(), exited(1), remote.into(), cause());
-        assert_eq!(e.to_string(), format!("on adam@lab: {remote}"));
+        assert_eq!(e.to_string(), format!("on deploy@lab: {remote}"));
 
         let e = ssh_failure(&target(), exited(0), String::new(), cause());
         assert!(matches!(e, TransportError::Http(_)), "{e:?}");

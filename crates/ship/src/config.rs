@@ -269,7 +269,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("a").join("b").join("config.json");
         let mut c = Config::default();
-        assert!(c.add("lab", "ssh://adam@lab:2222", None).unwrap());
+        assert!(c.add("lab", "ssh://deploy@lab:2222", None).unwrap());
         assert!(!c.add("here", "local", Some("/tmp/s.sock")).unwrap());
         c.save(&path).unwrap();
         assert_eq!(mode(&path), FILE_MODE);

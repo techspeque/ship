@@ -345,8 +345,8 @@ mod tests {
 
     #[test]
     fn ssh_forms() {
-        let t = ssh("ssh://adam@lab.example");
-        assert_eq!(t.user.as_deref(), Some("adam"));
+        let t = ssh("ssh://deploy@lab.example");
+        assert_eq!(t.user.as_deref(), Some("deploy"));
         assert_eq!(t.host, "lab.example");
         assert_eq!(t.port, None);
 
@@ -361,7 +361,7 @@ mod tests {
         assert_eq!(t.display_host(), "u_1@fe80::1");
 
         for url in [
-            "ssh://adam@lab.example",
+            "ssh://deploy@lab.example",
             "ssh://lab:2222",
             "ssh://u_1@[fe80::1]:22",
             "ssh://10.0.0.5",
@@ -402,7 +402,7 @@ mod tests {
     fn hostile_values_are_rejected() {
         let cases = [
             ("ssh://", TargetError::MissingHost),
-            ("ssh://adam@", TargetError::MissingHost),
+            ("ssh://deploy@", TargetError::MissingHost),
             ("ssh://-oProxyCommand=sh", TargetError::InvalidHost),
             ("ssh://lab;id", TargetError::InvalidHost),
             ("ssh://lab$(id)", TargetError::InvalidHost),
@@ -480,7 +480,7 @@ mod tests {
                 "dial-stdio"
             ]
         );
-        let t = match Target::parse("ssh://adam@lab.example:2222", Some("/srv/ship/s.sock")) {
+        let t = match Target::parse("ssh://deploy@lab.example:2222", Some("/srv/ship/s.sock")) {
             Ok(Target::Ssh(t)) => t,
             other => panic!("{other:?}"),
         };
@@ -495,7 +495,7 @@ mod tests {
                 "-p",
                 "2222",
                 "-l",
-                "adam",
+                "deploy",
                 "--",
                 "lab.example",
                 "ship",
@@ -539,7 +539,7 @@ mod tests {
                 "lab"
             ]
         );
-        let t = match Target::parse("ssh://adam@lab.example:2222", Some("/srv/ship/s.sock")) {
+        let t = match Target::parse("ssh://deploy@lab.example:2222", Some("/srv/ship/s.sock")) {
             Ok(Target::Ssh(t)) => t,
             other => panic!("{other:?}"),
         };
@@ -557,7 +557,7 @@ mod tests {
                 "-p",
                 "2222",
                 "-l",
-                "adam",
+                "deploy",
                 "-L",
                 "127.0.0.1:7181:/srv/ship/s.sock",
                 "--",

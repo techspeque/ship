@@ -311,11 +311,11 @@ mod tests {
     fn targets_render() {
         let mut cfg = Config::default();
         assert!(render_targets(&cfg, Output::Text).starts_with("No targets."));
-        cfg.add("lab", "ssh://adam@lab", None).unwrap();
+        cfg.add("lab", "ssh://deploy@lab", None).unwrap();
         cfg.add("here", "local", Some("/tmp/s.sock")).unwrap();
         assert_eq!(
             render_targets(&cfg, Output::Text),
-            "  here  local  (socket /tmp/s.sock)\n* lab   ssh://adam@lab\n"
+            "  here  local  (socket /tmp/s.sock)\n* lab   ssh://deploy@lab\n"
         );
         let v: serde_json::Value =
             serde_json::from_str(&render_targets(&cfg, Output::Json)).unwrap();
@@ -323,7 +323,7 @@ mod tests {
             v,
             serde_json::json!({ "targets": [
                 { "name": "here", "url": "local", "socket": "/tmp/s.sock", "current": false },
-                { "name": "lab", "url": "ssh://adam@lab", "socket": null, "current": true },
+                { "name": "lab", "url": "ssh://deploy@lab", "socket": null, "current": true },
             ]})
         );
     }
