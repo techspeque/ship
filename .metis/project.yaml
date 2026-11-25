@@ -12,12 +12,12 @@ agents:
     label: Human
   claude-code/opus-5-5:
     surface: claude-code
-    model: opus-5-5
+    model: claude-opus-5-5
     label: Claude Code (Opus 5.5)
   codex/gpt-6-astra:
-    surface: codex
-    model: gpt-6-astra
-    label: Codex (GPT-6 Astra)
+    surface: opencode
+    model: openai/gpt-6-astra
+    label: opencode (GPT-6 Astra)
 routing:
   review: codex/gpt-6-astra
 review_checklist:
