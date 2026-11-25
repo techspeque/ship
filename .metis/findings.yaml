@@ -179,3 +179,12 @@ findings:
       file: metis/briefs/fix-0002.md
       commit: dbb70fbb4068fa5f2cfed1408e0836f0ced8df0e
       evidence: .metis/briefs/fix-0002.md:114
+    - id: f-016
+      date: "2026-11-25"
+      slice: fix-0004
+      severity: P1
+      category: correctness
+      finding: 'scripts/daemon-smoke.sh:50 — http://ship/healthz sends Host: ship, which the daemon origin guard rejects with 403 even over the unix socket; supervisor Linux/musl execution confirms the smoke test fails on a working binary, blocking both Linux release packages before Package. Change the URL to http://localhost/healthz (or http://127.0.0.1/healthz) and rerun the smoke script against the musl release binary to verify HTTP 200 and successful SIGTERM/socket cleanup.'
+      status: open
+      cycle: 1
+      file: scripts/daemon-smoke.sh
