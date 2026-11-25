@@ -34,6 +34,43 @@ jobs:
       - name: make verify
         run: make verify
 
+  # The workspace tests against the static musl target the release ships
+  # (release.yml). gnu and musl differ in libc constants: musl's O_ACCMODE
+  # includes O_PATH, which once broke the daemon in the musl build only
+  # (fix-0004). musl-gcc compiles the bundled SQLite, as in release.yml.
+  musl:
+    name: cargo test (linux amd64 musl)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TARGET: x86_64-unknown-linux-musl
+      CC_x86_64_unknown_linux_musl: musl-gcc
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install pinned toolchain and target
+        run: |
+          rustup toolchain install
+          rustup target add "$TARGET"
+          rustup show active-toolchain
+      - name: Install musl tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+      # As in `make verify`: the UI is built before any cargo step, so the
+      # tests run against an embedded UI.
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: web/.nvmrc
+      - name: Build the UI
+        run: |
+          cd web
+          npm ci --no-audit --no-fund
+          npm run build
+      - name: Workspace tests (musl)
+        run: cargo test --workspace --locked --target "$TARGET"
+
   # The tests `make verify` ignores because they need a real Docker Engine:
   # preflight against the runner's Engine and Compose plugin, and the
   # supported range checked against them (ADR-0001 rule 6).
@@ -186,6 +223,6 @@ jobs:
           persist-credentials: false
       - name: shellcheck
         if: runner.os == 'Linux'
-        run: shellcheck scripts/install.sh scripts/install-selftest.sh scripts/no-network-smoke.sh
+        run: shellcheck scripts/install.sh scripts/install-selftest.sh scripts/no-network-smoke.sh scripts/daemon-smoke.sh
       - name: Self-test
         run: sh scripts/install-selftest.sh

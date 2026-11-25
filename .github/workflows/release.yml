@@ -148,6 +148,11 @@ jobs:
       - name: No network request on any Phase 0 command
         if: matrix.os == 'linux'
         run: bash scripts/no-network-smoke.sh "$BIN"
+      # The release binary itself must run the daemon: GET /healthz over the
+      # unix socket answers, SIGTERM removes the socket (fix-0004).
+      - name: Daemon starts and answers /healthz
+        if: matrix.os == 'linux'
+        run: bash scripts/daemon-smoke.sh "$BIN"
       - name: Package
         run: |
           name="ship-$TAG-${{ matrix.os }}-${{ matrix.arch }}"

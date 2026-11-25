@@ -183,19 +183,14 @@ pub fn bind_unix(path: &Path) -> Result<(UnixListener, SocketFile), BindError> {
 /// Records the identity of the socket just bound at `path`. Call it only
 /// while the bound socket is open.
 ///
-/// On Linux the path is opened `O_PATH | O_NOFOLLOW` (std adds
-/// `O_CLOEXEC`), and that pin is checked to be a socket and to be the inode
+/// On Linux the path is opened `O_PATH | O_NOFOLLOW | O_CLOEXEC` (see
+/// [`open_pin`]), and that pin is checked to be a socket and to be the inode
 /// the path names. Elsewhere the identity is the path's device and inode.
 fn identify(path: &Path) -> Result<SocketFile, BindError> {
     let meta = fs::symlink_metadata(path).map_err(io_err("stat", path))?;
     #[cfg(target_os = "linux")]
     let pin = {
-        use std::os::unix::fs::OpenOptionsExt;
-        let pin = fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_PATH | libc::O_NOFOLLOW)
-            .open(path)
-            .map_err(io_err("pin", path))?;
+        let pin = open_pin(path).map_err(io_err("pin", path))?;
         let pinned = pin.metadata().map_err(io_err("stat pin of", path))?;
         if !pinned.file_type().is_socket()
             || (pinned.dev(), pinned.ino()) != (meta.dev(), meta.ino())
@@ -216,6 +211,32 @@ fn identify(path: &Path) -> Result<SocketFile, BindError> {
         pin,
         removed: false,
     })
+}
+
+/// Opens `path` `O_PATH | O_NOFOLLOW | O_CLOEXEC`: an fd to the inode
+/// itself, which is the only way `open` accepts a socket.
+///
+/// This calls `open(2)` directly rather than `OpenOptions::custom_flags`.
+/// std clears the `O_ACCMODE` bits from custom flags, and on musl
+/// `O_ACCMODE` includes `O_PATH` (there `O_SEARCH == O_PATH`), so std would
+/// drop the flag and the open would fail with `ENXIO`.
+#[cfg(target_os = "linux")]
+fn open_pin(path: &Path) -> io::Result<fs::File> {
+    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains NUL"))?;
+    // SAFETY: `c_path` is a valid NUL-terminated string; the result is
+    // checked before use.
+    let raw = unsafe {
+        libc::open(
+            c_path.as_ptr(),
+            libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+    };
+    if raw < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `raw` is a fresh fd this function owns.
+    Ok(fs::File::from(unsafe { OwnedFd::from_raw_fd(raw) }))
 }
 
 /// A unix socket bound at a path but not yet listening: a connection
@@ -494,6 +515,26 @@ mod tests {
         assert_eq!(check_existing(&path).unwrap(), Existing::Stale);
         drop(file);
         assert!(!path.exists());
+    }
+
+    /// The pin really is `O_PATH` and close-on-exec. On musl, opening it
+    /// through `OpenOptions::custom_flags` silently dropped `O_PATH`
+    /// (fix-0004); the musl CI job runs this.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pin_is_o_path_and_cloexec() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = sock_path(&dir);
+        let (_listener, file) = bind_unix(&path).unwrap();
+        let fd = file.pin.as_raw_fd();
+        // SAFETY: `fd` is a valid open fd owned by `file`.
+        let fl = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        assert!(fl >= 0, "{}", io::Error::last_os_error());
+        assert_eq!(fl & libc::O_PATH, libc::O_PATH, "flags {fl:#o}");
+        // SAFETY: as above.
+        let fd_flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        assert!(fd_flags >= 0, "{}", io::Error::last_os_error());
+        assert_ne!(fd_flags & libc::FD_CLOEXEC, 0);
     }
 
     /// Binding never changes the process umask, so directories and files
