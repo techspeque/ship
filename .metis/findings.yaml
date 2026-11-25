@@ -23,3 +23,12 @@ findings:
       file: crates/ship-store/src/migrate.rs
       commit: 753a65e017947f7766d0e7649dd4a23bdb3f0ea3
       evidence: test newer_schema_in_committed_wal_is_refused_and_untouched
+    - id: f-003
+      date: "2026-11-25"
+      slice: phase-0-ws-0.4
+      severity: P2
+      category: tests
+      finding: 'crates/ship-net/src/listener.rs:162-165 — Independent metis verify --post --slice phase-0-ws-0.4 --force exits 1: socket_has_mode_0660_and_accepts, remove_leaves_a_successor_socket, stale_socket_is_replaced, regular_file_is_refused_and_untouched, and remove_deletes_own_socket fail with PermissionDenied. The process-wide 0177 umask removes owner directory-search permission from concurrently created temporary directories; overlapping calls can also restore masks out of order. Make socket creation preserve the brief’s restrictive permissions without corrupting concurrent filesystem creation or leaving the process mask changed, add concurrency regression coverage, and restore a green verification run.'
+      status: open
+      cycle: 1
+      file: crates/ship-net/src/listener.rs
