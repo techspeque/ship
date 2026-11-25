@@ -32,3 +32,12 @@ findings:
       status: open
       cycle: 1
       file: crates/ship-net/src/listener.rs
+    - id: f-004
+      date: "2026-11-25"
+      slice: phase-0-ws-0.4
+      severity: P2
+      category: behavior
+      finding: 'crates/ship-daemon/src/lib.rs:187-198 — Shutdown applies a separate 10-second timeout to each listener and aborts only the Axum serving tasks, leaving their connection tasks alive. Reproduced with a partial GET header on each transport: shutdown returned after 20.005 seconds, then completing the TCP request returned HTTP 200 after shutdown. This violates the brief’s up-to-10-second drain and connection closure. Use a shared drain deadline and ensure remaining connection tasks are terminated and joined before shutdown returns; add a regression with incomplete requests on both transports.'
+      status: open
+      cycle: 1
+      file: crates/ship-daemon/src/lib.rs
