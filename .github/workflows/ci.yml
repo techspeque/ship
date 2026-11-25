@@ -104,3 +104,25 @@ jobs:
           ssh -o BatchMode=yes localhost ship --version
       - name: Real-sshd test
         run: SHIP_TEST_SSH="$USER@localhost" cargo test -p ship --test ssh_real -- --ignored
+
+  # `ship service install` / `uninstall` against the runner's real systemd
+  # and Docker: user, group, directories, unit, socket group and mode,
+  # idempotence, restart after kill, and an uninstall that leaves state,
+  # containers and volumes in place. Reboot survival is checked as
+  # `is-enabled` here and by an actual reboot on the gate VM.
+  service:
+    name: systemd service install (linux amd64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install pinned toolchain
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
+      - name: Build ship
+        run: cargo build -p ship
+      - name: Service smoke test
+        run: bash scripts/service-smoke.sh target/debug/ship

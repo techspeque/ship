@@ -85,6 +85,18 @@ findings:
       evidence: test origin_guard_rejections_on_api_carry_versions
     - id: f-008
       date: "2026-11-25"
+      slice: phase-0-ws-0.8
+      severity: P2
+      category: correctness
+      finding: crates/ship/src/service.rs:427-468 — An existing ship user with a primary GID different from the ship group is accepted, and that passwd GID is used to chown both directories, violating the brief requirement of ship:ship ownership. Reinstall while running changes /run/ship (0750) to the other group and denies socket traversal to ship-group clients. Resolve the ship group GID via getent group ship and use it for both directory owners; add a regression covering an existing user with a different primary group and repeat install.
+      status: resolved
+      resolved_by: commit f5d135f538c2; test service::tests::existing_user_with_another_primary_group_gets_ship_group_dirs
+      cycle: 1
+      file: crates/ship/src/service.rs
+      commit: f5d135f538c2af50e20696871283ba9e3c125cdc
+      evidence: test service::tests::existing_user_with_another_primary_group_gets_ship_group_dirs
+    - id: f-009
+      date: "2026-11-25"
       slice: phase-0-ws-0.7
       severity: P2
       category: behavior
@@ -95,7 +107,7 @@ findings:
       file: web/src/App.svelte
       commit: 18a7907c195db9a9e0e186f65a45d203830132d7
       evidence: 'test web/src/lib/poller.svelte.test.ts: sends no second request before the polling interval'
-    - id: f-009
+    - id: f-010
       date: "2026-11-25"
       slice: phase-0-ws-0.7
       severity: P2
@@ -107,7 +119,7 @@ findings:
       file: crates/ship/src/open.rs
       commit: cbc2cbc0bc29614bca3feb7953d4d4ce49ddb62e
       evidence: test ssh_refuses_an_occupied_port
-    - id: f-010
+    - id: f-011
       date: "2026-11-25"
       slice: phase-0-ws-0.7
       severity: P2

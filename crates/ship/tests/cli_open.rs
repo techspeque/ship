@@ -233,7 +233,7 @@ fn local_with_nothing_listening_prints_no_url() {
     assert!(!err.contains("http://"), "{err}");
 }
 
-// f-009: a Ship-shaped `/healthz` already answering on the requested port
+// f-010: a Ship-shaped `/healthz` already answering on the requested port
 // is not the ssh forward. With a fake ssh that opens no forward, `ship
 // open` must refuse the port, print no URL and fail.
 #[test]

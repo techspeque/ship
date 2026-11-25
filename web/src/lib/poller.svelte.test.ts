@@ -16,7 +16,7 @@ describe('Poller', () => {
     vi.useRealTimers();
   });
 
-  // f-008: started from an effect, the end of each run must not rerun the
+  // f-009: started from an effect, the end of each run must not rerun the
   // effect; the second request waits for the interval.
   it('sends no second request before the polling interval', async () => {
     let calls = 0;

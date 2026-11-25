@@ -18,11 +18,11 @@ ship-daemon = { path = "../ship-daemon" }
 ship-net = { path = "../ship-net" }
 bytes = "1"
 clap = { version = "4", default-features = false, features = ["derive", "error-context", "help", "std", "suggestions", "usage"] }
+libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt", "signal", "time"] }
 
 [dev-dependencies]
-libc = "0.2"
 tempfile = "3"
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "time"] }
