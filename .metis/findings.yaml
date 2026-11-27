@@ -304,3 +304,12 @@ findings:
       status: open
       cycle: 1
       file: crates/ship-daemon/src/http.rs
+    - id: f-027
+      date: "2026-11-27"
+      slice: phase-1-ws-1.5
+      severity: P2
+      category: behavior
+      finding: 'crates/ship-daemon/src/upload.rs:392 — stream_unpack awaits the next body chunk without observing unpacker completion. Reproduced by sending a complete compressed symlink archive in a chunked body and keeping the sender open: the unpacker rejects it but the operation stays uploading and no 422 arrives until EOF. Select on unpacker completion while feeding the body, stop reading on rejection, and test rejection with the body held open; no idle timeout is needed.'
+      status: open
+      cycle: 1
+      file: crates/ship-daemon/src/upload.rs
