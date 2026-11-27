@@ -517,9 +517,12 @@ findings:
       severity: P2
       category: security
       finding: 'crates/ship/src/vars.rs:118 — The secret-argument refusal runs only after Clap succeeds. Reproduced ship secrets set TOKEN --review-canary --project app: exit 2 prints the entire extra value twice in the unexpected-argument error and suggestion, violating the brief requirement to refuse any extra value without echoing it. Sanitize secret-set parse failures or reject value arguments before Clap formats diagnostics; cover leading-hyphen secret values in CLI tests.'
-      status: open
+      status: resolved
+      resolved_by: commit 4e885c45a22a; test a_secret_given_as_an_argument_is_refused_before_anything_is_sent; 4e885c4; independently verified in re-review
       cycle: 1
       file: crates/ship/src/vars.rs
+      commit: 4e885c45a22abe60cec642da3855877dd79d22aa
+      evidence: test a_secret_given_as_an_argument_is_refused_before_anything_is_sent
     - id: f-045
       date: "2026-11-27"
       slice: phase-1-ws-1.10
