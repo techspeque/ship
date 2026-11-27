@@ -373,9 +373,12 @@ findings:
       severity: P1
       category: data
       finding: 'crates/ship-daemon/src/deploy.rs:618-641 — Volume names depend on the other paths in the current image: reproduced /data -> data, then adding /DATA yields /DATA -> data and /data -> data-2. A redeploy mounts existing data at a different path and gives the original path a new volume, violating data preservation. Use a stable collision-resistant identity per exact volume path (or persist the mapping) and test adding/removing colliding paths across releases.'
-      status: open
+      status: resolved
+      resolved_by: commit daa1f9a59b4a; test a_volume_keeps_its_name_as_colliding_paths_come_and_go
       cycle: 1
       file: crates/ship-daemon/src/deploy.rs
+      commit: daa1f9a59b4a7155ed82151e275751a0a5547b04
+      evidence: test a_volume_keeps_its_name_as_colliding_paths_come_and_go
     - id: f-033
       date: "2026-11-27"
       slice: phase-1-ws-1.7
