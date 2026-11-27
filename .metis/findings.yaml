@@ -478,3 +478,12 @@ findings:
       status: open
       cycle: 1
       file: crates/ship/src/push.rs
+    - id: f-042
+      date: "2026-11-27"
+      slice: phase-1-ws-1.9
+      severity: P2
+      category: tests
+      finding: crates/ship/tests/ssh_real.rs:212-215 — The brief Definition of Done at lines 147-150 requires Dockerfile and Compose pushes over local and SSH transports, but both push_over_real_ssh_deploys and cli_push.rs:a_push_over_ssh_deploys exercise only Dockerfile; the Compose test uses only the local target. Add successful Compose push coverage through fake SSH and the CI real-sshd path, asserting the operation result and service outcomes.
+      status: open
+      cycle: 1
+      file: crates/ship/tests/ssh_real.rs
