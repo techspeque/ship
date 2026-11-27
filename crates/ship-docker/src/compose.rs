@@ -180,7 +180,7 @@ pub async fn config(
     ComposeConfig::parse(&out.stdout)
 }
 
-/// `compose build`, streaming its output to `sink`.
+/// `compose build`, after the label check, streaming its output to `sink`.
 pub async fn build<S: AsRef<str>>(
     runner: &Runner,
     project: &ComposeProject,
@@ -190,6 +190,7 @@ pub async fn build<S: AsRef<str>>(
     sink: &mut (dyn FnMut(Line) + Send),
 ) -> Result<(), DockerError> {
     let argv = argv::compose_build(project, files, services)?;
+    ensure_only_ours(runner, project).await?;
     run_streamed(runner, &argv, Some(timeout), sink).await
 }
 

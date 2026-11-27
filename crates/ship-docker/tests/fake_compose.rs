@@ -5,19 +5,23 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use ship_core::EnvironmentId;
+use ship_core::{EnvironmentId, ProjectId, ReleaseId, ServiceId};
 use ship_docker::argv::{
-    DENIED, compose_down, compose_stop, project_container_ids, project_network_ids,
+    DENIED, compose_build, compose_down, compose_stop, project_container_ids, project_network_ids,
 };
 use ship_docker::compose;
+use ship_docker::labels::ShipLabels;
 use ship_docker::{
-    ComposeProject, DockerError, Line, LogOptions, Runner, Selector, Stream, containers,
+    ComposeFiles, ComposeProject, DockerError, Line, LogOptions, Runner, Selector, Stream,
+    containers,
 };
 
 /// A fake `docker`: appends each invocation's arguments, one `[arg]` each,
 /// as one line to `$FAKE_DOCKER_LOG`. With `$FAKE_STDERR` set it prints it
 /// to stderr and exits 1. For `logs` it prints one line to each stream.
-/// Anything else succeeds with no output (an empty project).
+/// A container listing (`ps`, not `network ls`) prints `$FAKE_IDS` and
+/// `container inspect` prints `$FAKE_INSPECT`. Anything else succeeds with
+/// no output (an empty project).
 const SCRIPT: &str = r#"#!/bin/sh
 line=""
 for a in "$@"; do line="$line[$a]"; done
@@ -26,12 +30,20 @@ if [ -n "$FAKE_STDERR" ]; then
   echo "$FAKE_STDERR" >&2
   exit 1
 fi
+first="$1"
 for a in "$@"; do
-  if [ "$a" = "logs" ]; then
-    echo "web-1  | out-line"
-    echo "web-1  | err-line" >&2
-    exit 0
-  fi
+  case "$a" in
+    logs)
+      echo "web-1  | out-line"
+      echo "web-1  | err-line" >&2
+      exit 0;;
+    ps)
+      [ -n "$FAKE_IDS" ] && printf '%s\n' "$FAKE_IDS"
+      exit 0;;
+    inspect)
+      [ "$first" = container ] && printf '%s\n' "${FAKE_INSPECT:-[]}"
+      exit 0;;
+  esac
 done
 exit 0
 "#;
@@ -77,6 +89,85 @@ fn project() -> ComposeProject {
 
 const T: Duration = Duration::from_secs(10);
 const NO: &[&str] = &[];
+
+const OURS: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const FOREIGN: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+/// One running container of `service`; with Ship's labels for the
+/// project's environment when `ours`, with Compose's labels only otherwise.
+fn container_json(id: &str, service: &str, ours: bool) -> serde_json::Value {
+    let p = project();
+    let mut labels = serde_json::json!({
+        "com.docker.compose.project": p.name(),
+        "com.docker.compose.service": service,
+    });
+    if ours {
+        let ship = ShipLabels {
+            project: ProjectId::from_parts(1_700_000_000_000, 1).unwrap(),
+            environment: p.environment(),
+            service: Some(ServiceId::from_parts(1_700_000_000_000, 3).unwrap()),
+            release: ReleaseId::from_parts(1_700_000_000_000, 4).unwrap(),
+        };
+        for (k, v) in ship.pairs() {
+            labels[k] = v.into();
+        }
+    }
+    serde_json::json!({
+        "Id": id,
+        "Name": format!("/{}-{service}-1", p.name()),
+        "State": { "Status": "running", "ExitCode": 0 },
+        "Config": { "Labels": labels },
+    })
+}
+
+/// A fake whose project holds one container of Ship's (`web`) and, when
+/// `foreign`, one without Ship's labels (`intruder`).
+fn mixed_runner(log: &Path, foreign: bool) -> Runner {
+    let mut ids = vec![OURS];
+    let mut items = vec![container_json(OURS, "web", true)];
+    if foreign {
+        ids.push(FOREIGN);
+        items.push(container_json(FOREIGN, "intruder", false));
+    }
+    runner(log, "")
+        .env("FAKE_IDS", ids.join("\n"))
+        .env("FAKE_INSPECT", serde_json::Value::Array(items).to_string())
+}
+
+fn files() -> ComposeFiles {
+    ComposeFiles::new(
+        "/srv/ship/snap",
+        [PathBuf::from("/srv/ship/snap/compose.yaml")],
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_foreign_container_prevents_the_build() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("argv.log");
+    let p = project();
+    let err = compose::build(&mixed_runner(&log, true), &p, &files(), NO, T, &mut |_| {})
+        .await
+        .unwrap_err();
+    match err {
+        DockerError::Foreign { kind, id } => {
+            assert_eq!(kind, "container");
+            assert_eq!(id, FOREIGN);
+        }
+        other => panic!("{other:?}"),
+    }
+    let build = bracketed(&compose_build(&p, &files(), NO).unwrap());
+    let calls = invocations(&log);
+    assert!(!calls.contains(&build), "{calls:?}");
+
+    // With only Ship's containers the build runs.
+    let log = dir.path().join("argv-ours.log");
+    compose::build(&mixed_runner(&log, false), &p, &files(), NO, T, &mut |_| {})
+        .await
+        .unwrap();
+    assert_eq!(invocations(&log).last(), Some(&build));
+}
 
 #[tokio::test]
 async fn stop_checks_labels_then_stops() {
