@@ -14,10 +14,6 @@ slices:
       reviewed: false
       review_cycles: 0
       created: ""
-      waiting:
-        reason: 'Dockerfile --port N: which host address does the published port bind (0.0.0.0, 127.0.0.1, or the host''s tailnet IP; OVERVIEW forbids 0.0.0.0 listeners and self-enabled public exposure, but the push fixture shows a LAN address 192.0.2.10:8080), and is it N:N or N:<EXPOSE port>?'
-        since: "2026-11-27T17:22:43Z"
-        human: true
     - id: phase-1-ws-1.8
       title: Compose import under the trust profile
       type: feat
