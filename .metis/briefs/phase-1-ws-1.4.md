@@ -147,9 +147,11 @@ None.
 - Decisions:
   - Entry order: a directory's entries in byte order, then each
     subdirectory's (parents precede children).
-  - A named include lifts the block on that exact path only; its blocked
-    ancestors are entered restricted (only the way to the named path is
-    sent) and still reported as excluded. It also overrides ignore rules,
+  - A named include lifts the block on that path and everything under
+    it (default exclusions and ignore rules); a sibling it is only a
+    string prefix of is not covered. Its blocked ancestors are entered
+    restricted (only the way to the named path is sent) and still
+    reported as excluded. It also overrides ignore rules,
     since `.env.*` files are usually gitignored. An include that matches
     nothing sendable is `IncludeNotFound`.
   - A file that is tracked by Git but matches `.gitignore` is excluded:

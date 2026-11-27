@@ -340,6 +340,73 @@ fn a_named_path_is_included() {
     ));
 }
 
+#[test]
+fn a_named_directory_includes_its_descendants() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    write(root, ".gitignore", "*.log\n");
+    write(root, "secrets/.env", "A=1\n");
+    write(root, "secrets/app.log", "ignored\n");
+    write(root, "secrets/inner/id_rsa", "key\n");
+    write(root, "secrets/inner/run.log", "ignored\n");
+
+    let options = Options {
+        include: vec![PathBuf::from("secrets")],
+        ..opts()
+    };
+    let sel = scan(root, &options).unwrap();
+    assert_eq!(
+        paths(&sel),
+        [
+            ".gitignore",
+            "secrets",
+            "secrets/.env",
+            "secrets/app.log",
+            "secrets/inner",
+            "secrets/inner/id_rsa",
+            "secrets/inner/run.log",
+        ]
+    );
+    assert_eq!(excluded(&sel), vec![]);
+}
+
+#[test]
+fn a_named_path_does_not_include_a_sibling_it_prefixes() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    write(root, ".gitignore", "*.log\n");
+    write(root, "secrets/.env", "A=1\n");
+    write(root, "secrets-old/.env", "B=2\n");
+    write(root, "secrets-old/app.log", "ignored\n");
+    write(root, "secrets-old/keep.txt", "kept\n");
+    write(root, ".env", "C=3\n");
+    write(root, ".env.local", "D=4\n");
+
+    let options = Options {
+        include: vec![PathBuf::from("secrets"), PathBuf::from(".env")],
+        ..opts()
+    };
+    let sel = scan(root, &options).unwrap();
+    assert_eq!(
+        paths(&sel),
+        [
+            ".env",
+            ".gitignore",
+            "secrets",
+            "secrets-old",
+            "secrets/.env",
+            "secrets-old/keep.txt",
+        ]
+    );
+    assert_eq!(
+        excluded(&sel),
+        vec![
+            (".env.local".to_string(), Exclusion::EnvFile),
+            ("secrets-old/.env".to_string(), Exclusion::EnvFile),
+        ]
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn symlinks_are_skipped_and_never_followed() {

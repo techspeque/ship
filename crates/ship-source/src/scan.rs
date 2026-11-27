@@ -357,6 +357,8 @@ struct Pending {
     matchers: Vec<Arc<Gitignore>>,
     /// Inside a blocked directory, entered only to reach a named path.
     restricted: bool,
+    /// At or under a named path: everything in it is kept.
+    covered: bool,
 }
 
 /// Select the files of the tree at `root` that a snapshot sends.
@@ -395,6 +397,7 @@ pub fn scan(root: &Path, options: &Options) -> Result<Selection, ScanError> {
         rel: String::new(),
         matchers: Vec::new(),
         restricted: false,
+        covered: false,
     }];
 
     while let Some(dir) = stack.pop() {
@@ -427,16 +430,17 @@ pub fn scan(root: &Path, options: &Options) -> Result<Selection, ScanError> {
             let is_dir = ft.is_dir();
 
             let named = includes.contains(&rel);
+            let kept = named || dir.covered;
             let leads = is_dir && {
                 let prefix = format!("{rel}/");
                 includes.iter().any(|i| i.starts_with(&prefix))
             };
-            if dir.restricted && !named && !leads {
+            if dir.restricted && !kept && !leads {
                 continue;
             }
 
             let mut blocked = false;
-            if !named {
+            if !kept {
                 if let Some(kind) = exclude::classify(name, is_dir) {
                     excluded.push(Excluded {
                         path: rel.clone(),
@@ -499,7 +503,8 @@ pub fn scan(root: &Path, options: &Options) -> Result<Selection, ScanError> {
                     abs,
                     rel,
                     matchers: matchers.clone(),
-                    restricted: (dir.restricted || blocked) && !named,
+                    restricted: (dir.restricted || blocked) && !kept,
+                    covered: kept,
                 });
             }
         }
