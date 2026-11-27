@@ -5,7 +5,9 @@
 //!
 //! [`start`] binds the unix socket and the 127.0.0.1 listener (ADR-0003),
 //! opens the store, marks operations a previous daemon left unfinished as
-//! `interrupted` ([`queue::recover`]), starts the operation [`queue`] and
+//! `interrupted` ([`queue::recover`]), removes the staging directories of
+//! uploads it left half-written ([`upload::clean_staging`]), starts the
+//! operation [`queue`] and
 //! serves the router in [`http`], with the embedded UI ([`ui`]) as its
 //! fallback; [`Running::shutdown`] stops it; [`run`] does both around
 //! SIGTERM/SIGINT.
@@ -18,6 +20,7 @@ pub mod http;
 pub mod log;
 pub mod queue;
 pub mod ui;
+pub mod upload;
 
 use std::fmt;
 use std::io;
@@ -38,6 +41,7 @@ use tokio::task::JoinHandle;
 
 pub use log::Redactor;
 pub use queue::{Limits, Queue};
+pub use ship_source::UnpackLimits;
 
 /// Default state directory.
 pub const DEFAULT_STATE_DIR: &str = "/var/lib/ship";
@@ -65,6 +69,9 @@ pub struct Config {
     /// Queue length, build slots, build timeout, disk watermark and log
     /// size (ADR-0011 rule 10).
     pub limits: Limits,
+    /// Size, entry-count and expansion limits of an uploaded snapshot
+    /// (ADR-0005 rule 5).
+    pub upload_limits: UnpackLimits,
 }
 
 impl Config {
@@ -77,6 +84,7 @@ impl Config {
             redactor,
             docker: Runner::docker(),
             limits: Limits::default(),
+            upload_limits: UnpackLimits::default(),
         }
     }
 }
@@ -167,6 +175,17 @@ pub async fn start(config: &Config) -> Result<Running, DaemonError> {
     if interrupted > 0 {
         tracing::warn!(interrupted, "operations left unfinished were interrupted");
     }
+    // Uploads a dead daemon left half-written: their operations were just
+    // interrupted, and nothing of them may remain (ADR-0005 rule 7).
+    let uploads = match upload::clean_staging(&config.state_dir)
+        .and_then(|_| upload::Uploads::new(&config.state_dir, config.upload_limits))
+    {
+        Ok(uploads) => uploads,
+        Err(e) => {
+            store.close().await;
+            return Err(DaemonError::StateDir(config.state_dir.clone(), e));
+        }
+    };
     let queue = match Queue::new(
         store.clone(),
         config.redactor.clone(),
@@ -187,6 +206,7 @@ pub async fn start(config: &Config) -> Result<Running, DaemonError> {
             state_dir: config.state_dir.clone(),
         },
         queue.clone(),
+        uploads,
     );
     let (stop, stopped) = watch::channel(false);
     let (kill, killed) = watch::channel(false);

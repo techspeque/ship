@@ -8,17 +8,21 @@
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::process::{ExitStatus, Stdio};
+use std::task::Poll;
 use std::time::Duration;
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Empty, Limited};
-use hyper::Request;
+use hyper::body::{Frame, SizeHint};
 use hyper::header::{CONNECTION, HOST};
+use hyper::{Method, Request};
 use hyper_util::rt::TokioIo;
 use ship_core::{API_VERSION, API_VERSION_HEADER, SHIP_VERSION_HEADER};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tokio::process::{Child, Command};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
@@ -123,6 +127,66 @@ impl From<ConnectError> for TransportError {
     }
 }
 
+/// A request body for [`post`]: bytes held whole, or chunks fed through a
+/// bounded channel, so a large body streams in bounded memory. A chunk
+/// that is an error aborts the request.
+#[derive(Debug)]
+pub struct RequestBody {
+    inner: BodyInner,
+}
+
+#[derive(Debug)]
+enum BodyInner {
+    Bytes(Option<Bytes>),
+    Channel(mpsc::Receiver<io::Result<Bytes>>),
+}
+
+impl RequestBody {
+    /// A body of `bytes`.
+    pub fn bytes(bytes: impl Into<Bytes>) -> Self {
+        RequestBody {
+            inner: BodyInner::Bytes(Some(bytes.into())),
+        }
+    }
+
+    /// A body fed through the returned sender, holding at most `capacity`
+    /// chunks; it ends when the sender is dropped.
+    pub fn channel(capacity: usize) -> (mpsc::Sender<io::Result<Bytes>>, RequestBody) {
+        let (tx, rx) = mpsc::channel(capacity.max(1));
+        (
+            tx,
+            RequestBody {
+                inner: BodyInner::Channel(rx),
+            },
+        )
+    }
+}
+
+impl hyper::body::Body for RequestBody {
+    type Data = Bytes;
+    type Error = io::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, io::Error>>> {
+        match &mut self.get_mut().inner {
+            BodyInner::Bytes(bytes) => Poll::Ready(bytes.take().map(|b| Ok(Frame::data(b)))),
+            BodyInner::Channel(rx) => rx
+                .poll_recv(cx)
+                .map(|chunk| chunk.map(|r| r.map(Frame::data))),
+        }
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        match &self.inner {
+            BodyInner::Bytes(Some(b)) => SizeHint::with_exact(b.len() as u64),
+            BodyInner::Bytes(None) => SizeHint::with_exact(0),
+            BodyInner::Channel(_) => SizeHint::default(),
+        }
+    }
+}
+
 /// `GET path` from the daemon behind `target`, sending this build's API
 /// version, within `timeout`.
 pub async fn get(
@@ -130,25 +194,78 @@ pub async fn get(
     path: &str,
     timeout: Duration,
 ) -> Result<Response, TransportError> {
+    let request = request(Method::GET, path, &[], Empty::<Bytes>::new())?;
+    send(target, request, timeout).await
+}
+
+/// `POST path` with `headers` and `body` to the daemon behind `target`,
+/// sending this build's API version; the whole exchange, body included,
+/// within `timeout`.
+pub async fn post(
+    target: &Target,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: RequestBody,
+    timeout: Duration,
+) -> Result<Response, TransportError> {
+    let request = request(Method::POST, path, headers, body)?;
+    send(target, request, timeout).await
+}
+
+/// A request to the daemon: `Host: localhost`, one exchange per
+/// connection, this build's API version, then `headers`.
+fn request<B>(
+    method: Method,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: B,
+) -> Result<Request<B>, TransportError> {
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(path)
+        .header(HOST, "localhost")
+        .header(CONNECTION, "close")
+        .header(API_VERSION_HEADER, API_VERSION);
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+    builder
+        .body(body)
+        .map_err(|e| TransportError::Http(e.to_string()))
+}
+
+async fn send<B>(
+    target: &Target,
+    request: Request<B>,
+    timeout: Duration,
+) -> Result<Response, TransportError>
+where
+    B: hyper::body::Body<Data = Bytes> + Send + 'static,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
     match target {
         Target::Local { socket } => {
             let exchange = async {
                 let stream = connect_unix_async(socket).await?;
-                exchange(stream, path).await
+                exchange(stream, request).await
             };
             tokio::time::timeout(timeout, exchange)
                 .await
                 .unwrap_or(Err(TransportError::TimedOut { after: timeout }))
         }
-        Target::Ssh(ssh) => get_over_ssh(ssh, path, timeout).await,
+        Target::Ssh(ssh) => over_ssh(ssh, request, timeout).await,
     }
 }
 
-async fn get_over_ssh(
+async fn over_ssh<B>(
     ssh: &SshTarget,
-    path: &str,
+    request: Request<B>,
     timeout: Duration,
-) -> Result<Response, TransportError> {
+) -> Result<Response, TransportError>
+where
+    B: hyper::body::Body<Data = Bytes> + Send + 'static,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
     let mut child = Command::new("ssh")
         .args(ssh.ssh_args(timeout))
         .stdin(Stdio::piped())
@@ -171,7 +288,7 @@ async fn get_over_ssh(
     let deadline = Instant::now() + timeout;
     let timed_out = || TransportError::TimedOut { after: timeout };
     let result =
-        tokio::time::timeout_at(deadline, exchange(tokio::io::join(stdout, stdin), path)).await;
+        tokio::time::timeout_at(deadline, exchange(tokio::io::join(stdout, stdin), request)).await;
     match result {
         Ok(Ok(response)) => Ok(response),
         Err(_) => {
@@ -240,10 +357,12 @@ pub(crate) async fn read_bounded(mut r: impl AsyncRead + Unpin) -> String {
     String::from_utf8_lossy(&kept).trim().to_owned()
 }
 
-/// One `GET` over an established byte stream.
-async fn exchange<S>(stream: S, path: &str) -> Result<Response, TransportError>
+/// One request over an established byte stream.
+async fn exchange<S, B>(stream: S, request: Request<B>) -> Result<Response, TransportError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    B: hyper::body::Body<Data = Bytes> + Send + 'static,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
     let http = |e: hyper::Error| TransportError::Http(e.to_string());
     let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
@@ -251,12 +370,6 @@ where
         .map_err(http)?;
     let driver = tokio::spawn(conn);
 
-    let request = Request::get(path)
-        .header(HOST, "localhost")
-        .header(CONNECTION, "close")
-        .header(API_VERSION_HEADER, API_VERSION)
-        .body(Empty::<Bytes>::new())
-        .map_err(|e| TransportError::Http(e.to_string()))?;
     let response = sender.send_request(request).await.map_err(http)?;
     let (parts, body) = response.into_parts();
     let header = |name: &str| {
@@ -385,7 +498,8 @@ mod tests {
                 .unwrap();
             String::from_utf8(got).unwrap()
         });
-        let r = exchange(client, "/api/v1/projects").await.unwrap();
+        let get = request(Method::GET, "/api/v1/projects", &[], Empty::<Bytes>::new()).unwrap();
+        let r = exchange(client, get).await.unwrap();
         let request = daemon.await.unwrap().to_ascii_lowercase();
         assert!(
             request.starts_with("get /api/v1/projects http/1.1\r\n"),
@@ -397,5 +511,62 @@ mod tests {
         assert_eq!(r.api_version.as_deref(), Some("v1"));
         assert_eq!(r.daemon_version.as_deref(), Some("9.9.9"));
         assert_eq!(&r.body[..], b"{}");
+    }
+
+    #[tokio::test]
+    async fn post_streams_a_channel_body_with_headers() {
+        use tokio::io::AsyncWriteExt;
+        let (client, mut server) = tokio::io::duplex(64 * 1024);
+        let daemon = tokio::spawn(async move {
+            let mut buf = vec![0u8; 4096];
+            let mut got = Vec::new();
+            // A chunked body ends with an empty chunk.
+            while !got.windows(5).any(|w| w == b"0\r\n\r\n") {
+                let n = server.read(&mut buf).await.unwrap();
+                assert!(n > 0, "request ended early");
+                got.extend_from_slice(&buf[..n]);
+            }
+            server
+                .write_all(b"HTTP/1.1 201 Created\r\ncontent-length: 2\r\n\r\n{}")
+                .await
+                .unwrap();
+            got
+        });
+        let (tx, body) = RequestBody::channel(2);
+        let feeder = tokio::spawn(async move {
+            for chunk in [&b"first-"[..], b"second"] {
+                tx.send(Ok(Bytes::from_static(chunk))).await.unwrap();
+            }
+        });
+        let post = request(
+            Method::POST,
+            "/api/v1/projects/a/uploads",
+            &[("idempotency-key", "k1"), ("ship-snapshot-sha256", "ab")],
+            body,
+        )
+        .unwrap();
+        let r = exchange(client, post).await.unwrap();
+        feeder.await.unwrap();
+        let raw = daemon.await.unwrap();
+        let text = String::from_utf8_lossy(&raw).to_ascii_lowercase();
+        assert!(
+            text.starts_with("post /api/v1/projects/a/uploads http/1.1\r\n"),
+            "{text}"
+        );
+        assert!(text.contains("idempotency-key: k1\r\n"), "{text}");
+        assert!(text.contains("ship-snapshot-sha256: ab\r\n"), "{text}");
+        assert!(text.contains("transfer-encoding: chunked\r\n"), "{text}");
+        assert!(text.contains("first-"), "{text}");
+        assert!(text.contains("second"), "{text}");
+        assert_eq!(r.status, 201);
+    }
+
+    #[test]
+    fn a_bytes_body_has_an_exact_size() {
+        use hyper::body::Body;
+        let body = RequestBody::bytes(&b"hello"[..]);
+        assert_eq!(body.size_hint().exact(), Some(5));
+        let (_tx, body) = RequestBody::channel(1);
+        assert_eq!(body.size_hint().exact(), None);
     }
 }

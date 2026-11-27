@@ -2,7 +2,8 @@
 //! the local socket, and both equal the recorded fixture (ADR-0003,
 //! ADR-0004 rule 4). `ship open --no-browser` over the same sshd serves the
 //! UI on a 127.0.0.1 port, each connection carried by `ssh … ship
-//! dial-stdio`, and SIGINT closes it.
+//! dial-stdio`, and SIGINT closes it. A snapshot uploaded over the same
+//! sshd becomes the same revision as over the local socket.
 //!
 //! Ignored by default: it needs an sshd that accepts this user with a key
 //! (BatchMode, host key already known) and `ship` from this build on the
@@ -78,6 +79,85 @@ fn projects_over_real_ssh_match_local_and_fixture() {
 
     assert_eq!(over_ssh.stdout, local.stdout);
     assert_eq!(String::from_utf8(over_ssh.stdout).unwrap(), FIXTURE);
+
+    rt.block_on(running.shutdown()).unwrap();
+}
+
+/// A snapshot uploaded over the real sshd (`ssh … ship dial-stdio`) is
+/// received like one over the local socket: the same tree is the same
+/// revision whichever transport carried it (ADR-0005, ADR-0003).
+#[test]
+#[ignore = "needs a real sshd; run by CI's ssh job with SHIP_TEST_SSH=user@host"]
+fn upload_over_real_ssh_matches_local() {
+    use ship_net::client::{self, RequestBody};
+
+    let remote = std::env::var("SHIP_TEST_SSH").expect("SHIP_TEST_SSH=user@host");
+    let dir = tempfile::tempdir().unwrap();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let config = ship_daemon::Config {
+        state_dir: dir.path().join("state"),
+        socket_path: dir.path().join("ship.sock"),
+        port: 0,
+        ..ship_daemon::Config::new(ship_daemon::Redactor::new())
+    };
+    let running = rt.block_on(ship_daemon::start(&config)).unwrap();
+    let socket = running.socket_path().display().to_string();
+
+    let tree = dir.path().join("tree");
+    std::fs::create_dir_all(tree.join("src")).unwrap();
+    std::fs::write(tree.join("Dockerfile"), b"FROM scratch\n").unwrap();
+    // Large enough to take many chunks through the ssh pipes.
+    let mut x = 0x9e37_79b9_7f4a_7c15u64;
+    let noise: Vec<u8> = (0..300_000)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x >> 32) as u8
+        })
+        .collect();
+    std::fs::write(tree.join("src/data.bin"), noise).unwrap();
+    let options = ship_source::Options {
+        home: Some(dir.path().join("no-home")),
+        ..ship_source::Options::default()
+    };
+    let selection = ship_source::scan(&tree, &options).unwrap();
+    let mut stream = Vec::new();
+    let packed = ship_source::pack(&selection, &mut stream).unwrap();
+
+    let upload = |target: &ship_net::Target, key: &str| {
+        let headers = [
+            ("idempotency-key", key),
+            ("ship-snapshot-sha256", packed.sha256.as_str()),
+        ];
+        let r = rt
+            .block_on(client::post(
+                target,
+                "/api/v1/projects/ssh-app/uploads",
+                &headers,
+                RequestBody::bytes(stream.clone()),
+                Duration::from_secs(30),
+            ))
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+        (r.status, json)
+    };
+
+    let local = ship_net::Target::parse("local", Some(&socket)).unwrap();
+    let (status, first) = upload(&local, "over-local");
+    assert_eq!(status, 201, "{first}");
+
+    let url = format!("ssh://{remote}");
+    let over_ssh = ship_net::Target::parse(&url, Some(&socket)).unwrap();
+    let (status, second) = upload(&over_ssh, "over-ssh");
+    assert_eq!(status, 200, "{second}");
+    assert_eq!(second["revision_id"], first["revision_id"]);
+    assert_eq!(second["sha256"], packed.sha256.as_str());
+    assert_ne!(second["operation_id"], first["operation_id"]);
 
     rt.block_on(running.shutdown()).unwrap();
 }

@@ -1071,6 +1071,7 @@ dependencies = [
  "ship-daemon",
  "ship-docker",
  "ship-net",
+ "ship-source",
  "tempfile",
  "tokio",
 ]
@@ -1095,6 +1096,7 @@ dependencies = [
  "ship-core",
  "ship-docker",
  "ship-net",
+ "ship-source",
  "ship-store",
  "tempfile",
  "tokio",

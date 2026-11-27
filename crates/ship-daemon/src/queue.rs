@@ -549,6 +549,9 @@ async fn run(inner: &Arc<Inner>, pending: Pending) {
     if let Err(e) = finish(inner, operation, result).await {
         tracing::error!(operation = %operation, error = %e, "could not record the end of an operation");
     }
+    // Wakes readers waiting for the terminal phase, which is stored after
+    // the terminal event's announcement.
+    inner.announce();
     let mut state = inner.state();
     state.in_flight = state.in_flight.saturating_sub(1);
 }

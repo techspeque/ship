@@ -142,6 +142,28 @@ jobs:
       - name: Real-sshd test
         run: SHIP_TEST_SSH="$USER@localhost" cargo test -p ship --test ssh_real -- --ignored
 
+  # The snapshot unpacker under libFuzzer for a fixed budget (ADR-0005
+  # rule 5). The target (crates/ship-source/fuzz, its own workspace) runs
+  # the shared harness `ship_source::fuzzing::check_unpack`, which panics
+  # if a byte lands outside the staging directory or a failure leaves it
+  # behind. cargo-fuzz needs nightly; the pinned toolchain builds the rest.
+  fuzz:
+    name: unpacker fuzz, 5 minutes (linux amd64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install nightly and cargo-fuzz
+        run: |
+          rustup toolchain install nightly --profile minimal
+          cargo +nightly install cargo-fuzz --locked
+      - name: Fuzz the unpacker
+        run: |
+          cd crates/ship-source
+          cargo +nightly fuzz run unpack -- -max_total_time=300 -rss_limit_mb=2048
+
   # `ship service install` / `uninstall` against the runner's real systemd
   # and Docker: user, group, directories, unit, socket group and mode,
   # idempotence, restart after kill, and an uninstall that leaves state,

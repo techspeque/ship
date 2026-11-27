@@ -16,9 +16,10 @@ use axum::routing::post;
 use common::{SseStream, Via, body_text, send, sse_events};
 use ship_core::secret::REDACTED;
 use ship_core::{EnvironmentId, OperationId, OperationPhase, SecretValue, Slug};
-use ship_daemon::Redactor;
 use ship_daemon::http::{self, HostProbe};
 use ship_daemon::queue::{Limits, Queue};
+use ship_daemon::upload::Uploads;
+use ship_daemon::{Redactor, UnpackLimits};
 use ship_docker::Runner;
 use ship_store::Store;
 use tokio::sync::Semaphore;
@@ -99,7 +100,8 @@ async fn serve(limits: Limits) -> Server {
             post(|State(s): State<TestState>, h: HeaderMap| mutate("other", s, h)),
         )
         .with_state(state.clone());
-    let app = http::router(store.clone(), probe, queue).merge(test_routes);
+    let uploads = Uploads::new(dir.path(), UnpackLimits::default()).unwrap();
+    let app = http::router(store.clone(), probe, queue, uploads).merge(test_routes);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });

@@ -10,7 +10,7 @@ use axum::extract::{Path, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, Uri, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::json;
 use std::collections::VecDeque;
@@ -19,11 +19,11 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::watch;
+use tokio::sync::{oneshot, watch};
 
 use ship_core::api::{
     HOST_PATH, IDEMPOTENCY_KEY_HEADER, LAST_EVENT_ID_HEADER, OperationEventView,
-    OperationFailureView, OperationView, PROJECTS_PATH,
+    OperationFailureView, OperationView, PROJECTS_PATH, UPLOAD_KIND, UploadView,
 };
 use ship_core::{
     API_VERSION, API_VERSION_HEADER, ApiError, EnvironmentId, ErrorCode, HostInfo, OperationId,
@@ -33,7 +33,10 @@ use ship_docker::Runner;
 use ship_store::{Operation, OperationEvent, Store, StoreError};
 
 use crate::queue::{Context, JobFailure, Queue, QueueError, Submission};
+use crate::upload::Uploads;
 
+/// `POST`: a snapshot upload, answered with [`UploadView`].
+const UPLOADS_ROUTE: &str = "/api/v1/projects/{project}/uploads";
 /// `GET`: [`OperationView`].
 const OPERATION_ROUTE: &str = "/api/v1/operations/{id}";
 /// `GET`: SSE stream of [`OperationEventView`].
@@ -70,15 +73,18 @@ struct AppState {
     store: Store,
     host: Arc<HostProbe>,
     queue: Queue,
+    uploads: Arc<Uploads>,
 }
 
-/// The daemon's router over `store`, inspecting the host through `host`
-/// and following operations of `queue`.
-pub fn router(store: Store, host: HostProbe, queue: Queue) -> Router {
+/// The daemon's router over `store`, inspecting the host through `host`,
+/// following operations of `queue` and receiving snapshots under
+/// `uploads`.
+pub fn router(store: Store, host: HostProbe, queue: Queue, uploads: Arc<Uploads>) -> Router {
     Router::new()
         .route(HEALTHZ_PATH, get(healthz))
         .route(HOST_PATH, get(host_info))
         .route(PROJECTS_PATH, get(projects))
+        .route(UPLOADS_ROUTE, post(upload))
         .route(OPERATION_ROUTE, get(operation))
         .route(OPERATION_EVENTS_ROUTE, get(operation_events))
         // Everything else is the UI, which keeps `/api/*`'s JSON 404.
@@ -87,6 +93,7 @@ pub fn router(store: Store, host: HostProbe, queue: Queue) -> Router {
             store,
             host: Arc::new(host),
             queue,
+            uploads,
         })
         .layer(middleware::from_fn(api_version))
         .layer(middleware::from_fn(origin_guard))
@@ -133,6 +140,107 @@ async fn projects(State(state): State<AppState>) -> Response {
                 "the daemon could not read its database",
             ))
         }
+    }
+}
+
+// ---- uploads ----
+
+/// Receives a snapshot (ADR-0005) as an `upload` operation and answers
+/// once it is stored or has failed: `201` with the [`UploadView`] for a
+/// new revision, `200` for one the project already had, else the failure
+/// code's status with `operation_id`. A malformed request is refused
+/// before any operation; a replayed key is answered without reading the
+/// body ([`crate::upload::replay`]).
+async fn upload(
+    State(state): State<AppState>,
+    Path(project): Path<String>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let request = match crate::upload::parse_request(&project, &headers) {
+        Ok(request) => request,
+        Err(e) => return error_response(e),
+    };
+    let Some(key) = headers
+        .get(IDEMPOTENCY_KEY_HEADER)
+        .and_then(|v| v.to_str().ok())
+    else {
+        return error_response(QueueError::InvalidKey.to_api());
+    };
+    let (reply, outcome) = oneshot::channel::<Result<UploadView, JobFailure>>();
+    let job = {
+        let store = state.store.clone();
+        let uploads = Arc::clone(&state.uploads);
+        let request = request.clone();
+        move |ctx: Context| async move {
+            let received = crate::upload::receive(&ctx, &store, &uploads, &request, body).await;
+            let _ = reply.send(
+                received
+                    .as_ref()
+                    .map(|r| r.view(ctx.operation_id()))
+                    .map_err(Clone::clone),
+            );
+            received.map(|_| ())
+        }
+    };
+    let submission = Submission {
+        idempotency_key: key,
+        kind: UPLOAD_KIND,
+        environment_id: None,
+    };
+    let submitted = match state.queue.submit(submission, job).await {
+        Ok(submitted) => submitted,
+        Err(e) => {
+            if let QueueError::Store(err) = &e {
+                tracing::error!(error = %err, "operation could not be created");
+            }
+            return error_response(e.to_api());
+        }
+    };
+    let op = submitted.operation;
+    if !submitted.created {
+        return match crate::upload::replay(&state.store, &op, &request).await {
+            crate::upload::Replay::Done(view) => (StatusCode::OK, Json(view)).into_response(),
+            crate::upload::Replay::Failed(e) => error_response(e),
+        };
+    }
+    if admission_refusal(&op).is_some() {
+        return submitted_response(&op);
+    }
+    let outcome = outcome.await;
+    // Answer once the operation's end is stored, so a client that reads it
+    // next finds it finished.
+    wait_finished(&state, op.id).await;
+    match outcome {
+        Ok(Ok(view)) => {
+            let status = if view.new_revision {
+                StatusCode::CREATED
+            } else {
+                StatusCode::OK
+            };
+            (status, Json(view)).into_response()
+        }
+        Ok(Err(failure)) => {
+            error_response(ApiError::new(failure.code, failure.message).with_operation(op.id))
+        }
+        Err(_) => error_response(
+            ApiError::new(ErrorCode::Internal, "the upload ended inside the daemon")
+                .with_operation(op.id),
+        ),
+    }
+}
+
+/// Returns once `id` is in a terminal phase (or cannot be read). The queue
+/// announces after storing a terminal phase; the poll is a fallback.
+async fn wait_finished(state: &AppState, id: OperationId) {
+    let mut events = state.queue.subscribe_events();
+    loop {
+        events.borrow_and_update();
+        match state.store.get_operation(id).await {
+            Ok(op) if !op.phase.is_terminal() => {}
+            _ => return,
+        }
+        let _ = tokio::time::timeout(FOLLOW_POLL, events.changed()).await;
     }
 }
 

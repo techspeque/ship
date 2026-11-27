@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::ReceivedCode;
-use crate::id::{EnvironmentId, OperationId, ProjectId};
+use crate::id::{EnvironmentId, OperationId, ProjectId, RevisionId};
 use crate::slug::Slug;
 use crate::state::{OperationPhase, OperationStatus};
 use crate::time::Timestamp;
@@ -57,6 +57,38 @@ pub fn operation_path(id: OperationId) -> String {
 /// `GET /api/v1/operations/{id}/events`; `?after=N` resumes after `N`.
 pub fn operation_events_path(id: OperationId) -> String {
     format!("{OPERATIONS_PATH}/{id}/events")
+}
+
+/// `POST`: the body is a tar + zstd snapshot of `project` (ADR-0005),
+/// answered with an [`UploadView`]. Needs an idempotency key and
+/// [`SNAPSHOT_SHA256_HEADER`]; the project is created if it is new.
+pub fn uploads_path(project: &Slug) -> String {
+    format!("{PROJECTS_PATH}/{}/uploads", project.as_str())
+}
+
+/// Request header of an upload: the SHA-256 of the compressed stream, 64
+/// lowercase hex digits. The daemon checks it once the stream has ended.
+pub const SNAPSHOT_SHA256_HEADER: &str = "ship-snapshot-sha256";
+/// Optional request header of an upload: the client's Git commit, 7 to 64
+/// lowercase hex digits. Information only (ADR-0005 rule 8).
+pub const GIT_COMMIT_HEADER: &str = "ship-git-commit";
+/// Optional request header of an upload: `true` when the working tree had
+/// uncommitted changes, else `false`. Information only.
+pub const GIT_DIRTY_HEADER: &str = "ship-git-dirty";
+/// The operation kind of an upload.
+pub const UPLOAD_KIND: &str = "upload";
+
+/// A snapshot received and stored as a revision: `201` when the revision
+/// is new, `200` when the project already had one with this hash.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UploadView {
+    pub operation_id: OperationId,
+    pub project_id: ProjectId,
+    pub revision_id: RevisionId,
+    /// The revision's content hash: the stream's SHA-256.
+    pub sha256: String,
+    /// `false` when the project already had a revision with this hash.
+    pub new_revision: bool,
 }
 
 /// Whether `key` is an acceptable idempotency key: 1 to
@@ -209,6 +241,35 @@ mod tests {
         assert_eq!(API_PREFIX, format!("/api/{API_VERSION}"));
         assert!(HOST_PATH.starts_with(API_PREFIX));
         assert!(PROJECTS_PATH.starts_with(API_PREFIX));
+        let slug = Slug::parse("my-app").unwrap();
+        assert_eq!(uploads_path(&slug), "/api/v1/projects/my-app/uploads");
+        let token = |b: u8| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-';
+        for h in [SNAPSHOT_SHA256_HEADER, GIT_COMMIT_HEADER, GIT_DIRTY_HEADER] {
+            assert!(h.bytes().all(token), "{h}");
+        }
+    }
+
+    #[test]
+    fn upload_view_shape() {
+        let v = UploadView {
+            operation_id: "op_01aryz6s41tsv4rrffq69g5fav".parse().unwrap(),
+            project_id: "prj_01aryz6s41tsv4rrffq69g5fav".parse().unwrap(),
+            revision_id: "rev_01aryz6s41tsv4rrffq69g5fav".parse().unwrap(),
+            sha256: "ab".repeat(32),
+            new_revision: true,
+        };
+        let json = serde_json::to_value(&v).unwrap();
+        assert_eq!(
+            json,
+            json!({
+                "operation_id": "op_01aryz6s41tsv4rrffq69g5fav",
+                "project_id": "prj_01aryz6s41tsv4rrffq69g5fav",
+                "revision_id": "rev_01aryz6s41tsv4rrffq69g5fav",
+                "sha256": "ab".repeat(32),
+                "new_revision": true,
+            })
+        );
+        assert_eq!(serde_json::from_value::<UploadView>(json).unwrap(), v);
     }
 
     #[test]

@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use ship_daemon::{Config, Limits, Redactor};
+use ship_daemon::{Config, Limits, Redactor, UnpackLimits};
 use ship_docker::Runner;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -26,6 +26,7 @@ pub fn config(dir: &Path) -> Config {
             disk_watermark_bytes: 0,
             ..Limits::default()
         },
+        upload_limits: UnpackLimits::default(),
     }
 }
 

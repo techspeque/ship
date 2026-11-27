@@ -11,6 +11,7 @@ publish.workspace = true
 ship-core = { path = "../ship-core" }
 ship-docker = { path = "../ship-docker" }
 ship-net = { path = "../ship-net" }
+ship-source = { path = "../ship-source" }
 ship-store = { path = "../ship-store" }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
 # Already in the graph through axum; the SSE body stream and catching a
