@@ -1,19 +1,5 @@
 version: 1
 slices:
-    - id: phase-1-ws-1.4
-      title: Snapshot pack
-      type: feat
-      priority: p2
-      risk: high
-      stage: push
-      coder: claude-code/opus-5-5
-      reviewer: codex/gpt-6-astra
-      plan: .metis/plans/phase-1-plan.md
-      plan_section: §1.4
-      coded: true
-      reviewed: true
-      review_cycles: 1
-      created: ""
     - id: phase-1-ws-1.5
       title: Upload and safe unpack
       type: feat
@@ -167,7 +153,6 @@ slices:
       reviewed: false
       review_cycles: 0
       blocked_by:
-        - phase-1-ws-1.4
         - phase-1-ws-1.5
         - phase-1-ws-1.6
         - phase-1-ws-1.7
