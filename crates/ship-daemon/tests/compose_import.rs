@@ -46,7 +46,10 @@ const CANARY: &str = "canary-from-interpolation-7f3e";
 /// - `ps` by Ship's environment label: one container per Ship service id
 ///   in the override last brought up; `container inspect`: those
 ///   containers, labelled with that override's newest release, running,
-///   with the health status in `$FAKE_DIR/health` if any;
+///   with the health status in `$FAKE_DIR/health` if any; when
+///   `$FAKE_DIR/health_seq` exists, each inspect instead takes its first
+///   line, one status per container in order, and drops it while another
+///   line follows;
 /// - anything else: success with no output.
 const SCRIPT: &str = r##"#!/bin/sh
 d="$FAKE_DIR"
@@ -91,14 +94,26 @@ case "$first" in
     prj=$(grep -m1 '"dev.ship.project": "prj_' "$l" | sed 's/.*: "\([^"]*\)".*/\1/')
     env=$(grep -m1 '"dev.ship.environment": "env_' "$l" | sed 's/.*: "\([^"]*\)".*/\1/')
     rel=$(grep -o '"dev.ship.release": "rel_[a-z0-9]*"' "$l" | sed 's/.*: "\([^"]*\)"/\1/' | sort -u | tail -1)
-    health=""
-    h=$(cat "$d/health" 2>/dev/null)
-    if [ -n "$h" ]; then health=",\"Health\":{\"Status\":\"$h\"}"; fi
+    seq=""
+    if [ -f "$d/health_seq" ]; then
+      seq=$(sed -n 1p "$d/health_seq")
+      if [ "$(wc -l < "$d/health_seq")" -gt 1 ]; then
+        sed 1d "$d/health_seq" > "$d/health_seq.next"
+        mv "$d/health_seq.next" "$d/health_seq"
+      fi
+    fi
     out="["
     n=0
     for s in $(services); do
       n=$((n+1))
       if [ "$n" -gt 1 ]; then out="$out,"; fi
+      if [ -n "$seq" ]; then
+        h=$(echo "$seq" | cut -d' ' -f"$n")
+      else
+        h=$(cat "$d/health" 2>/dev/null)
+      fi
+      health=""
+      if [ -n "$h" ]; then health=",\"Health\":{\"Status\":\"$h\"}"; fi
       out="$out$(printf '{"Id":"%s%s","Name":"/ship-s%s-1","RestartCount":0,"Config":{"Labels":{"dev.ship.project":"%s","dev.ship.environment":"%s","dev.ship.service":"%s","dev.ship.release":"%s","com.docker.compose.service":"s%s"}},"State":{"Status":"running","ExitCode":0,"OOMKilled":false%s}}' "$HEX" "$n" "$n" "$prj" "$env" "$s" "$rel" "$n" "$health")"
     done
     echo "$out]"
@@ -908,6 +923,22 @@ async fn a_failing_health_check_brings_the_previous_release_back() {
     let deployments = f.store().list_deployments(env.id).await.unwrap();
     assert_eq!(deployments[0].result, Some(DeploymentResult::Failed));
     assert_eq!(deployments[0].previous_release_id, Some(previous));
+}
+
+/// f-037: a service that passed on one poll and fails on a later one, while
+/// another service is still starting, fails the deployment.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_service_that_fails_after_passing_fails_the_deployment() {
+    let f = fixture().await;
+    let source = "services:\n  a:\n    image: nginx:1\n  b:\n    image: busybox\n";
+    let model = json!({ "services": { "a": { "image": "nginx:1" }, "b": { "image": "busybox" } } });
+    let rev = upload(&f, "app", &[("compose.yaml", source)]).await;
+    f.config(rev, &model).await;
+    f.control("health_seq", "healthy starting\nunhealthy healthy\n");
+    let op = deploy_revision(&f, "app", "d1", rev, false).await;
+    assert_failed(&op, "health_check_failed", OperationPhase::Verifying);
+    let said = messages(f.store(), op.id).await;
+    assert!(!said.iter().any(|m| m.ends_with(" is healthy")), "{said:?}");
 }
 
 /// Every file under `root`, recursively.

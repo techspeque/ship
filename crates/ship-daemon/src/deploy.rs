@@ -991,8 +991,10 @@ async fn stop(ctx: &Context, d: &Deployer, project: &ComposeProject) -> Result<(
 /// (ADR-0006 rule 2): a passing health check is `healthy`; with no check,
 /// still running and never restarted after the settle period is
 /// `running_unverified`; a failing check, an exit, a restart or no verdict
-/// in time fails, naming the service. Every service must pass; the
-/// statuses come back in the order of `services`.
+/// in time fails, naming the service. Every service must pass in the same
+/// observation: each poll judges every service afresh, so one that passed
+/// earlier and fails later fails the deployment. The statuses come back in
+/// the order of `services`.
 pub(crate) async fn verify(
     d: &Deployer,
     environment: EnvironmentId,
@@ -1003,16 +1005,13 @@ pub(crate) async fn verify(
     let deadline = started + d.settings.verify_timeout;
     let selector = Selector::environment(environment);
     let failed = |message: String| JobFailure::new(ErrorCode::HealthCheckFailed, message);
-    let mut verdicts: Vec<Option<ServiceStatus>> = vec![None; services.len()];
     let mut last: Vec<Option<ServiceStatus>> = vec![None; services.len()];
     loop {
         let found = containers(&d.docker, &selector).await.map_err(|e| {
             docker_failure(e, ErrorCode::HealthCheckFailed, "reading the containers")
         })?;
+        let mut verdicts: Vec<Option<ServiceStatus>> = vec![None; services.len()];
         for (i, service) in services.iter().enumerate() {
-            if verdicts[i].is_some() {
-                continue;
-            }
             let name = &service.name;
             let Some(c) = found
                 .iter()
