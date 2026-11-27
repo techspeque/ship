@@ -9,9 +9,9 @@ slices:
       reviewer: codex/gpt-6-astra
       plan: .metis/plans/phase-0-plan.md
       plan_section: Phase Gate
-      coded: true
+      coded: false
       reviewed: false
-      review_cycles: 0
+      review_cycles: 1
       created: ""
     - id: phase-1-ws-1.1
       title: Status model and error decoding fixes

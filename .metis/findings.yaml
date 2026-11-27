@@ -211,3 +211,12 @@ findings:
       finding: 'crates/ship/src/service.rs:607 and scripts/install.sh:251-252: an in-place upgrade that follows what install.sh prints (sudo install to /usr/local/bin, then sudo ship service install) leaves the old daemon running: the unit is unchanged, so install prints only ''Start the daemon: sudo systemctl start ship'', a no-op for a running service. Gate run 2, gate host A: binary 0.0.2 on disk, daemon still 0.0.1 (ship host version 0.0.1). docs/service.md:48-50 says to restart; neither printed hint does. Required: install.sh and service install name ''sudo systemctl restart ship'' when a daemon is already running.'
       status: advisory
       file: crates/ship/src/service.rs
+    - id: f-019
+      date: "2026-11-27"
+      slice: phase-0-gate
+      severity: P2
+      category: testing
+      finding: .metis/briefs/phase-0-gate.md:170-177 — Scenario 3 requires the live UI to change to unreachable when Docker stops, but the report explicitly records no live UI observation and substitutes a locally served bundle with a stub response; this demonstrates rendering, not the composed daemon/transport/polling transition — Provide an observation of the release UI reached through ship open transitioning from ready to unreachable during a real Docker stop, with contemporaneous ship host output and evidence the daemon remains running.
+      status: open
+      cycle: 1
+      file: metis/briefs/phase-0-gate.md
