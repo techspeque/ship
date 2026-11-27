@@ -182,4 +182,66 @@ None.
 
 ## Report
 
-Filled at implementation.
+- `ship-source/src/unpack.rs` (new): `unpack`, `UnpackLimits`,
+  `Unpacked`, `UnpackError`, `UnsafeReason`, `Limit`, `collision_key`,
+  `MAX_PATH_BYTES`, `MAX_COMPONENT_BYTES`, `MAX_TRAILER_BYTES`,
+  `ZSTD_WINDOW_LOG_MAX`; own tar header parser (checksum, octal fields,
+  ustar prefix, GNU `L`), no `tar` crate on this side.
+- `ship-source/src/fuzzing.rs` (new, doc-hidden): `check_unpack`,
+  `check_unpack_in_temp`, `compress`, `FUZZ_LIMITS`.
+- `ship-source/fuzz/` (new, own workspace): cargo-fuzz target `unpack`.
+- `ship-source/Cargo.toml`: `unicode-normalization` 0.1. `Cargo.lock`
+  adds `unicode-normalization` and `tinyvec` (MIT, Apache-2.0 or Zlib),
+  and `ship-source` to ship-daemon's and ship's lists. `cargo deny` was
+  not run locally; CI's `audit` job checks it.
+- `ship-core/src/api.rs`: `uploads_path`, `SNAPSHOT_SHA256_HEADER`,
+  `GIT_COMMIT_HEADER`, `GIT_DIRTY_HEADER`, `UPLOAD_KIND`, `UploadView`.
+- `ship-daemon/src/upload.rs` (new): `Uploads`, `UploadRequest`,
+  `parse_request`, `receive`, `Received`, `replay`, `Replay`,
+  `clean_staging`, `snapshot_dir`, `staging_dir`, `STAGING_DIR`,
+  `SNAPSHOTS_DIR`.
+- `ship-daemon/src/http.rs`: `POST /api/v1/projects/{project}/uploads`;
+  `router` takes `Arc<Uploads>`; the handler waits for the operation's
+  terminal phase before answering.
+- `ship-daemon/src/queue.rs`: one more `announce` after an operation's
+  terminal phase is stored (the terminal event's announcement comes
+  before the phase), so a waiter on the phase wakes without polling.
+- `ship-daemon/src/lib.rs`: `Config.upload_limits`; `start` runs
+  `clean_staging` after `recover`; re-exports `UnpackLimits`.
+- `ship-net/src/client.rs`: `RequestBody` (bytes, or a bounded channel),
+  `post`; `get` and `post` share `request`, `send`, `over_ssh`,
+  `exchange`. The GET wire format is unchanged (empty body).
+- `ship/Cargo.toml`: dev-dependency `ship-source`;
+  `ship/tests/ssh_real.rs`: `upload_over_real_ssh_matches_local`.
+- `.github/workflows/ci.yml`: `fuzz` job (nightly + cargo-fuzz,
+  `-max_total_time=300`).
+- Tests: `ship-source` unit (6 in `unpack.rs`), `tests/unpack.rs` (12),
+  `tests/unpack_props.rs` (2: 2000 generated archives, 2000 corrupted
+  ones); `ship-daemon` unit (5 in `upload.rs`), `tests/upload.rs` (6);
+  `ship-net` unit (2); `ship-core` unit (1 new, 1 extended).
+- `metis verify --post --slice phase-1-ws-1.5`: ALL GREEN (web, fmt,
+  clippy, all workspace tests).
+- Not run locally: the `fuzz` CI job and `ssh_real` (ignored; CI's
+  `ssh` job runs it). This session had no `cargo`/`rustup`, only
+  `metis verify`, so the cargo-fuzz target has not been compiled yet;
+  CI's `fuzz` job is its first build.
+- Decisions:
+  - The declared hash travels in a request header, so the client must
+    know it before sending (pack once to hash and once to send, or pack
+    to a temporary file); that choice belongs to `ship push` (1.9).
+  - An upload is its own `upload` operation with no environment, so it
+    never waits behind a deploy. `receive` is public for 1.9.
+  - The handler waits for the job before answering (`201`/`200` or the
+    failure), because the body is read by the job.
+  - Snapshot directories are keyed by hash only and shared between
+    projects; revisions stay per project (ADR-0007 rule 1).
+  - Entry paths with control characters are refused (not required by
+    rule 5; keeps logs and terminals safe). File modes become 0644 or
+    0755; setuid and similar bits are dropped.
+  - Malformed streams and broken transfers end `invalid_request`; size
+    and expansion limits `payload_too_large`; refused entries
+    `unsafe_snapshot`; a full disk `insufficient_storage`.
+  - Collisions use NFD → lowercase → NFC; HFS+ ignorable code points
+    are not folded.
+  - No idle timeout on an upload's body: a stalled client holds one
+    queue slot until it disconnects.
