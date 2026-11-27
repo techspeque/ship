@@ -938,7 +938,7 @@ dependencies = [
 
 [[package]]
 name = "ship"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "bytes",
  "clap",
@@ -955,7 +955,7 @@ dependencies = [
 
 [[package]]
 name = "ship-core"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -963,7 +963,7 @@ dependencies = [
 
 [[package]]
 name = "ship-daemon"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "axum",
  "libc",
@@ -981,7 +981,7 @@ dependencies = [
 
 [[package]]
 name = "ship-docker"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "libc",
  "ship-core",
@@ -991,7 +991,7 @@ dependencies = [
 
 [[package]]
 name = "ship-net"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "bytes",
  "http-body-util",
@@ -1005,11 +1005,11 @@ dependencies = [
 
 [[package]]
 name = "ship-source"
-version = "0.0.1"
+version = "0.0.2"
 
 [[package]]
 name = "ship-store"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "getrandom 0.3.4",
  "ship-core",
