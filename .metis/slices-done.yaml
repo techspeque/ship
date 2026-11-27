@@ -1,0 +1,227 @@
+version: 1
+slices:
+    - id: phase-0-ws-0.1
+      title: Workspace scaffold and verify gate
+      type: feat
+      priority: p2
+      risk: medium
+      stage: foundation
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-0-plan.md
+      plan_section: §0.1
+      coded: true
+      reviewed: true
+      review_cycles: 1
+      created: ""
+    - id: phase-0-ws-0.2
+      title: Domain types and state machines
+      type: feat
+      priority: p2
+      risk: high
+      stage: foundation
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-0-plan.md
+      plan_section: §0.2
+      coded: true
+      reviewed: true
+      review_cycles: 0
+      created: ""
+    - id: phase-0-ws-0.3
+      title: SQLite store and migrations
+      type: feat
+      priority: p2
+      risk: medium
+      stage: foundation
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-0-plan.md
+      plan_section: §0.3
+      coded: true
+      reviewed: true
+      review_cycles: 1
+      created: ""
+    - id: phase-0-ws-0.4
+      title: Daemon skeleton, listeners and logging
+      type: feat
+      priority: p2
+      risk: high
+      stage: foundation
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-0-plan.md
+      plan_section: §0.4
+      coded: true
+      reviewed: true
+      review_cycles: 1
+      created: ""
+    - id: phase-0-ws-0.5
+      title: Docker and Compose preflight
+      type: feat
+      priority: p2
+      risk: medium
+      stage: foundation
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-0-plan.md
+      plan_section: §0.5
+      coded: true
+      reviewed: true
+      review_cycles: 0
+      created: ""
+    - id: fix-0001
+      title: Store reopen straight after close fails intermittently with NotFound
+      type: fix
+      priority: p1
+      risk: medium
+      stage: foundation
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-0-plan.md
+      plan_section: §0.3
+      coded: true
+      reviewed: true
+      review_cycles: 0
+      notes: 'crates/ship-store/tests/store.rs:231: Store::open(dir) immediately after store.close().await returns Io(NotFound) in about 1 run in 5 (8 of 40 runs of the store test binary; also reproduces with only project_environment_service_roundtrip selected). Introduced in phase-0-ws-0.3 (fd713de, 753a65e). Likely cause to confirm, not assume: close() returns before SQLite has finished removing the -wal/-shm sidecars, and open()''s read-only schema-version probe or pre-migration backup lists then reads a sidecar that has gone. Required: close() leaves no connection open when it returns, open() tolerates a sidecar disappearing between listing and reading, and a regression test loops close-then-open enough times to have caught this. make verify must pass 20 consecutive runs.'
+      created: "2026-11-25"
+    - id: phase-0-ws-0.6
+      title: Client transports and targets
+      type: feat
+      priority: p2
+      risk: high
+      stage: foundation
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-0-plan.md
+      plan_section: §0.6
+      coded: true
+      reviewed: true
+      review_cycles: 1
+      created: ""
+    - id: phase-0-ws-0.8
+      title: Service install
+      type: feat
+      priority: p2
+      risk: medium
+      stage: foundation
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-0-plan.md
+      plan_section: §0.8
+      coded: true
+      reviewed: true
+      review_cycles: 1
+      created: ""
+    - id: phase-0-ws-0.7
+      title: UI shell
+      type: feat
+      priority: p2
+      risk: medium
+      stage: foundation
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-0-plan.md
+      plan_section: §0.7
+      coded: true
+      reviewed: true
+      review_cycles: 1
+      created: ""
+    - id: phase-0-ws-0.9
+      title: Release pipeline and install script
+      type: feat
+      priority: p2
+      risk: medium
+      stage: foundation
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-0-plan.md
+      plan_section: §0.9
+      coded: true
+      reviewed: true
+      review_cycles: 1
+      created: ""
+    - id: fix-0002
+      title: A predecessor's SocketFile deletes its successor's socket when Linux reuses the inode
+      type: fix
+      priority: p1
+      risk: high
+      stage: foundation
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-0-plan.md
+      plan_section: §0.4
+      coded: true
+      reviewed: true
+      review_cycles: 1
+      notes: |-
+        CI on linux amd64 (first run of dev): listener::tests::remove_leaves_a_successor_socket panics at crates/ship-net/src/listener.rs:381 with NotFound; passes on macOS. SocketFile::remove_inner identifies its own socket by (dev, ino) only. On Linux the successor's socket, bound right after the stale one is unlinked, can get the same inode number, so the predecessor's remove()/Drop unlinks the successor's live socket. Not a test problem: a daemon shutting down can delete the socket of the daemon that replaced it. Required: an identity that survives inode reuse (confirm the approach, do not assume: e.g. also compare ctime with nanoseconds, or another check that cannot match a different socket), the existing test passing on Linux 50 consecutive runs, and a test that forces the same-inode case rather than relying on the filesystem to reuse it. Must still never change the process umask (f-003).
+
+        LINUX EVIDENCE for f-015, run by the supervisor at commit b699eec in a rust:1.91 container (Linux 6.10 aarch64, rustc 1.91.0, sources copied into the container filesystem, each test run alone 50 times): remove_leaves_a_successor_socket 50/50, remove_leaves_a_successor_with_the_same_inode_number 50/50, pin_does_not_keep_the_socket_listening 50/50; the Linux-only code compiles and clippy -D warnings is clean. So DoD 4 is met and this may be recorded in the brief as the evidence. BUT stale_socket_is_replaced fails 0/50 alone on Linux (and 7 of 30 full listener runs): crates/ship-net/src/listener.rs:373 asserts the replacement socket's inode differs from the stale one's, which is the same wrong assumption this slice fixes; Linux reuses the number. Rework: make that test prove replacement without comparing inode numbers (it already checks mode and that a connect succeeds; a stale socket refuses connections), and check no other test in the workspace assumes a fresh inode number. The coder session cannot run Linux; do not park for that again. Record that the supervisor re-runs the Linux check after this rework and that CI on linux amd64 runs make verify on push.
+      created: "2026-11-25"
+    - id: fix-0003
+      title: 'CI: SQLite advisory RUSTSEC-2026-0459 fails the audit; shellcheck SC2115 in install-selftest.sh'
+      type: fix
+      priority: p1
+      risk: medium
+      stage: foundation
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-0-plan.md
+      plan_section: §0.9
+      coded: true
+      reviewed: true
+      review_cycles: 0
+      notes: |-
+        First CI run of dev. (1) cargo deny: RUSTSEC-2026-0459 / CVE-2026-119375, bundled SQLite before 3.54.0 via libsqlite3-sys 0.30.1 <- sqlx-sqlite 0.8.6 <- ship-store. sqlx 0.9.1 and libsqlite3-sys 0.40.0 exist on crates.io; check whether sqlx 0.9 pulls a fixed libsqlite3-sys and upgrade if so, keeping ship-store's tests and migrations green. Prefer the upgrade. Only if no fixed version is reachable, add a deny.toml ignore with the advisory id and a reason that states the real exposure (the advisory needs a database or -wal file written by a less trusted party; Ship's database lives in the daemon-owned state directory) and say so plainly in the report: an ignore is a person's decision to accept. (2) shellcheck SC2115 at scripts/install-selftest.sh:131: rm -rf "$work/$1" needs ${work:?} / ${1:?}. (3) The macOS install.sh self-test job was cancelled when the ubuntu one failed, so its result is unknown: make sure both run to completion (fail-fast off) so the next run reports both.
+
+        HUMAN DECISION 2026-11-25: upgrade, do not ignore the advisory. Approved and in scope for this slice (add them to the brief's owned_paths): rust-toolchain.toml channel 1.91.0 -> 1.94.0, workspace Cargo.toml rust-version 1.91 -> 1.94, and any docs or CI that name the Rust version. Then sqlx 0.9.1 and libsqlite3-sys 0.40.0 in Cargo.lock. Facts checked on crates.io by the supervisor: the advisory is patched in libsqlite3-sys >= 0.39.0; sqlx-sqlite 0.9.1 requires libsqlite3-sys >=0.30.1, <0.41.0 and rustc 1.94.0. Toolchain 1.94.0 with rustfmt and clippy is already installed on this machine. Cargo.lock kept libsqlite3-sys at 0.30.1 last time because the lock entry was still there: remove the libsqlite3-sys and sqlx* [[package]] entries from Cargo.lock (or the whole file) so the build under metis verify re-resolves them to the newest compatible versions, then confirm in Cargo.lock that libsqlite3-sys is >= 0.39.0 and that no unrelated crate moved more than necessary (say which did). Fix any sqlx 0.9 API changes in ship-store and any new clippy/rustfmt findings from 1.94 anywhere in the workspace (in scope). deny.toml ignore stays empty. cargo deny and shellcheck cannot run in the coder session; CI is the check and the supervisor pushes and reads it after review. Do not park for that.
+      created: "2026-11-25"
+    - id: fix-0004
+      title: 'Daemon cannot start in the musl release build: the socket pin loses O_PATH'
+      type: fix
+      priority: p0
+      risk: high
+      stage: foundation
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-0-plan.md
+      plan_section: §0.4
+      coded: true
+      reviewed: true
+      review_cycles: 1
+      notes: |-
+        Found at the Phase 0 gate on a real host (Ubuntu, kernel 7.0, x86_64): the static x86_64-unknown-linux-musl build of dev d530172 crash-loops under systemd with 'unix socket: pin /run/ship/ship.sock: No such device or address (os error 6)'. The same sources built for gnu pass every listener test on the same kernel. strace of the musl binary: open("/s/s.sock", O_RDONLY|O_LARGEFILE|O_NOFOLLOW|O_CLOEXEC) = -1 ENXIO: O_PATH is missing from the call. crates/ship-net/src/listener.rs identify() passes libc::O_PATH through fs::OpenOptions::custom_flags; std masks custom flags with !O_ACCMODE, and on musl O_ACCMODE is 0o10000003, which includes the O_PATH bit (O_SEARCH == O_PATH there), so the flag is silently dropped. Likely cause, confirm it rather than assume. Required: (1) open the pin without going through OpenOptions::custom_flags for O_PATH (for example libc::open/openat directly, wrapped in an OwnedFd, with O_PATH|O_NOFOLLOW|O_CLOEXEC), keeping every property fix-0002 established. (2) The gap that let this through: CI builds and tests gnu only while the release ships musl. Add CI coverage that runs the workspace tests for x86_64-unknown-linux-musl (musl-tools, CC_x86_64_unknown_linux_musl=musl-gcc as release.yml does) and, in the release workflow's per-Linux-arch checks, starts 'ship daemon' from the built release binary on a temp state dir and socket and requires GET /healthz over the unix socket to answer before the archive is packaged. (3) Search the workspace for any other custom_flags use or libc flag that overlaps O_ACCMODE on musl. The coder session cannot run Linux or musl; the supervisor builds the musl binary on a Linux host and runs the daemon and the listener tests there after the change, and CI runs on push. Do not park for that.
+
+        SUPERVISOR EVIDENCE at a68d30f, 2026-11-25, on the gate host (Ubuntu, kernel 7.0, x86_64) in a rust:1.94 container with musl-tools: (a) cargo build --release --locked -p ship --target x86_64-unknown-linux-musl succeeds and that binary's daemon now starts and answers: curl --unix-socket SOCK http://localhost/healthz -> 200, http://127.0.0.1/healthz -> 200. The pin fix works. (b) cargo test --locked --workspace --target x86_64-unknown-linux-musl: every test binary 'test result: ok', no failures. (c) shellcheck (koalaman/shellcheck:stable) on all five scripts/*.sh exits 0 with no output; the reviewer session has no shellcheck, so take this as the shellcheck evidence and do not stop for it. (d) DEFECT to fix in rework: scripts/daemon-smoke.sh exits 1 against the working daemon: 'FAIL: GET /healthz over .../ship.sock: status 403'. The daemon log says 'request rejected by origin guard ... Host must name a loopback address': the script's curl URL host is not a loopback name (http://ship/healthz -> 403, http://localhost/healthz -> 200). As committed, the new CI and release steps that call the script would fail on a good binary. Use a loopback Host in the URL; keep the rest. Reviewer: please record (d) as the blocking finding so the coder reworks it; the supervisor reruns the script on the host afterwards.
+      created: "2026-11-25"
+    - id: fix-0005
+      title: ship open fails over an ssh server that refuses unix-socket forwarding (Tailscale SSH)
+      type: fix
+      priority: p1
+      risk: high
+      stage: foundation
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-0-plan.md
+      plan_section: §0.7
+      coded: true
+      reviewed: true
+      review_cycles: 0
+      notes: 'Found at the Phase 0 gate. ship open over an ssh:// target runs ''ssh -N -T -o BatchMode=yes -o ExitOnForwardFailure=yes -l USER -L 127.0.0.1:PORT:/run/ship/ship.sock -- HOST''. When the host is reached through Tailscale SSH (tailscaled answers port 22 on the tailnet address, not OpenSSH) the forward listener comes up but every channel is refused: ''channel 1: open failed: administratively prohibited: socket path "/run/ship/ship.sock" is not in an allowed directory: ssh: rejected''. The same command through OpenSSH on the same host works (UI 200). Every other command works over Tailscale SSH because it uses ''ssh HOST ship dial-stdio'' (ship projects -o json matched the fixture there). ship open then prints only ''the daemon on USER@HOST did not answer through the ssh forward within 30s'', hiding the reason. Required: (1) ship open must work on any ssh server that can run ''ship dial-stdio'', with no dependence on streamlocal forwarding: listen on 127.0.0.1:PORT in the ship process and carry each accepted connection over its own ''ssh ... HOST ship dial-stdio'' child (the transport ADR-0003 names), reusing ship-net''s existing structured argv and hostile-value checks; bind 127.0.0.1 only, never 0.0.0.0; on Ctrl-C stop accepting, end every child and leave no ssh process behind; bound the number of concurrent children. (2) Keep the same-origin and Host guard behaviour seen through the forward today (foreign Origin POST -> 403; UI and /api/v1/host work with Host 127.0.0.1:PORT). (3) When the first connection fails, print ssh''s own stderr reason. (4) Tests: with the fake ssh used by cli_client tests, ship open serves /healthz and the UI index through dial-stdio, concurrent requests work, and no child survives Ctrl-C. Say in the report whether OpenSSH -L was kept as anything; prefer one path. The supervisor verifies against a host behind Tailscale SSH after the change.'
+      created: "2026-11-25"
+    - id: feat-0001
+      title: 'ship host: host and Docker status from the CLI'
+      type: feat
+      priority: p1
+      risk: medium
+      stage: foundation
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-0-plan.md
+      plan_section: §0.6
+      coded: true
+      reviewed: true
+      review_cycles: 0
+      notes: 'Human decision 2026-11-25 after the Phase 0 gate: the gate requires the CLI to report Docker status and no command did (with Docker stopped, ship projects printed an empty list and nothing else). OVERVIEW §6 now lists ''ship host'' in the CLI and in the JSON contract. Build: ''ship host [-o json] [--timeout]'' on the current target (local and ssh), a GET of /api/v1/host through the existing client path with the same API version check. -o json prints exactly the daemon''s HostInfo body shape (api_version, version, os, arch, docker{status, engine_version, compose_version, supported{engine, compose}, message}, capacity{cpus, memory_bytes, disk_free_bytes}); record a fixture for the stable shape and test against it with capacity and versions normalised, as ship projects does with its fixture. Text output: one short block a person can read, with Docker''s status first and, when status is not ready, the daemon''s message verbatim. Exit code: 0 when the daemon answered, whatever Docker''s status (it is a report, not a check); say so in --help. Also in this slice: add to README the idle-daemon figures measured at the gate on the gate host (Ubuntu, x86_64, static musl build, about 3 minutes after start, no projects): 5.7 MB resident memory (VmRSS 5716 kB, peak the same), 10 threads, 0.21 s CPU total since start; and ''ship projects'' over ssh on a LAN 0.12-0.13 s per run with an already-open ssh connection (a bare ''ssh HOST true'' took 0.12 s on the same link). State them as one measurement, not a guarantee.'
+      created: "2026-11-25"

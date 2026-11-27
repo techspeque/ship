@@ -1,0 +1,57 @@
+# .metis/project.yaml — project configuration for Metis
+version: 1
+project:
+  name: ship
+  integration_branch: dev
+  release_branch: main
+  overview: OVERVIEW.md
+agents:
+  human:
+    surface: human
+    model: human
+    label: Human
+  claude-code/opus-5-5:
+    surface: claude-code
+    model: claude-opus-5-5
+    label: Claude Code (Opus 5.5)
+    launch: ["claude", "-p", "{prompt}", "--model", "{model}", "--permission-mode", "acceptEdits", "--allowedTools", "Bash(metis:*)", "Bash(git:*)", "Bash(npm:*)", "Bash(node:*)"]
+  codex/gpt-6-astra:
+    surface: opencode
+    model: openai/gpt-6-astra
+    label: opencode (GPT-6 Astra)
+routing:
+  review: codex/gpt-6-astra
+review_checklist:
+  - Behavioral correctness
+  - Security and authorization correctness
+  - Scope discipline (diff vs. the committed brief)
+  - Test sufficiency
+  - Architectural fit — no duplicated/hallucinated interfaces; matches ADRs
+  - Maintainability
+commands:
+  verify: make verify
+commits:
+  prefixes:
+    - feat
+    - fix
+    - refactor
+    - docs
+    - test
+    - chore
+  require_slice_id: true
+  no_attribution: true
+  format: '{prefix}({slice_id}): {message}'
+paths:
+  ledger: .metis/slices.yaml
+  archive: .metis/slices-done.yaml
+  briefs: .metis/briefs/
+  plans: .metis/plans/
+  adr: .metis/adr/
+  findings: .metis/findings.yaml
+  runs: .metis/runs/
+  interfaces: .metis/interfaces.txt
+auto:
+  mode: step
+# Per phase and per risk, overriding auto.mode (metis mode sets these):
+# phases: { phase-9: auto, phase-10: manual }
+# by_risk: { high: step }

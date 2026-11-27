@@ -1,0 +1,25 @@
+[package]
+name = "ship-daemon"
+description = "Ship daemon: HTTP API, operation queue, reconciler and UI serving"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+ship-core = { path = "../ship-core" }
+ship-docker = { path = "../ship-docker" }
+ship-net = { path = "../ship-net" }
+ship-store = { path = "../ship-store" }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+libc = "0.2"
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "json", "std"] }
+
+[dev-dependencies]
+serde = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["io-util"] }

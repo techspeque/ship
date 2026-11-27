@@ -1,0 +1,12 @@
+.DS_Store
+.metis/runs/
+.metis/.lock
+.local/
+
+# Rust build output
+/target/
+
+# Web UI build output and dependencies
+/web/dist/
+/web/node_modules/
+/web/.svelte-kit/

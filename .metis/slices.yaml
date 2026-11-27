@@ -1,0 +1,15 @@
+version: 1
+slices:
+    - id: phase-0-gate
+      title: 'Phase 0 gate: composed-system validation'
+      type: gate
+      priority: p2
+      risk: high
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-0-plan.md
+      plan_section: Phase Gate
+      coded: false
+      reviewed: false
+      review_cycles: 0
+      created: ""

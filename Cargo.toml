@@ -1,0 +1,18 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/ship",
+    "crates/ship-core",
+    "crates/ship-daemon",
+    "crates/ship-docker",
+    "crates/ship-source",
+    "crates/ship-store",
+    "crates/ship-net",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.94"
+license = "MIT"
+publish = false

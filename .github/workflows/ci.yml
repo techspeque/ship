@@ -1,0 +1,228 @@
+name: ci
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: make verify (linux amd64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # With no argument, rustup installs the toolchain rust-toolchain.toml pins.
+      - name: Install pinned toolchain
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
+      # The UI is built with the Node version web/.nvmrc pins; Node is a
+      # build tool only, never needed at runtime.
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: web/.nvmrc
+      - name: make verify
+        run: make verify
+
+  # The workspace tests against the static musl target the release ships
+  # (release.yml). gnu and musl differ in libc constants: musl's O_ACCMODE
+  # includes O_PATH, which once broke the daemon in the musl build only
+  # (fix-0004). musl-gcc compiles the bundled SQLite, as in release.yml.
+  musl:
+    name: cargo test (linux amd64 musl)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TARGET: x86_64-unknown-linux-musl
+      CC_x86_64_unknown_linux_musl: musl-gcc
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install pinned toolchain and target
+        run: |
+          rustup toolchain install
+          rustup target add "$TARGET"
+          rustup show active-toolchain
+      - name: Install musl tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+      # As in `make verify`: the UI is built before any cargo step, so the
+      # tests run against an embedded UI.
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: web/.nvmrc
+      - name: Build the UI
+        run: |
+          cd web
+          npm ci --no-audit --no-fund
+          npm run build
+      - name: Workspace tests (musl)
+        run: cargo test --workspace --locked --target "$TARGET"
+
+  # The tests `make verify` ignores because they need a real Docker Engine:
+  # preflight against the runner's Engine and Compose plugin, and the
+  # supported range checked against them (ADR-0001 rule 6).
+  docker:
+    name: real Docker Engine (linux amd64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install pinned toolchain
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
+      - name: Docker versions
+        run: |
+          docker version
+          docker compose version
+      - name: Real-Docker tests
+        run: cargo test -p ship-docker -p ship-daemon -- --ignored
+
+  # The ssh transport against a real OpenSSH server on the runner (ADR-0003):
+  # `ship projects -o json` over ssh:// must return the same bytes as over the
+  # local socket and the recorded fixture, and `ship open` must serve the
+  # embedded UI through the forward. No account or remote host needed.
+  ssh:
+    name: ssh transport against a real sshd (linux amd64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # A missing web/dist fails the build instead of embedding no UI.
+      SHIP_REQUIRE_UI: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install pinned toolchain
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: web/.nvmrc
+      # Before any cargo build, so ship embeds the UI.
+      - name: Build the UI
+        run: |
+          cd web
+          npm ci --no-audit --no-fund
+          npm run build
+      - name: Start sshd and authorise a fresh key for this user
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-server
+          sudo mkdir -p /run/sshd
+          sudo systemctl start ssh || sudo service ssh start
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          ssh-keygen -q -t ed25519 -N '' -f ~/.ssh/id_ed25519
+          cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys
+          chmod 600 ~/.ssh/authorized_keys
+          chmod go-w ~
+          ssh-keyscan -H localhost >> ~/.ssh/known_hosts
+      - name: Build ship and put it on the login PATH
+        run: |
+          cargo build -p ship
+          sudo ln -sf "$PWD/target/debug/ship" /usr/local/bin/ship
+          ssh -o BatchMode=yes localhost ship --version
+      - name: Real-sshd test
+        run: SHIP_TEST_SSH="$USER@localhost" cargo test -p ship --test ssh_real -- --ignored
+
+  # `ship service install` / `uninstall` against the runner's real systemd
+  # and Docker: user, group, directories, unit, socket group and mode,
+  # idempotence, restart after kill, and an uninstall that leaves state,
+  # containers and volumes in place. Reboot survival is checked as
+  # `is-enabled` here and by an actual reboot on the gate VM.
+  service:
+    name: systemd service install (linux amd64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install pinned toolchain
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
+      - name: Build ship
+        run: cargo build -p ship
+      - name: Service smoke test
+        run: bash scripts/service-smoke.sh target/debug/ship
+
+  # Dependency audit and licences (ADR-0012): Rust crates through cargo-deny
+  # (deny.toml), web packages through npm audit and scripts/web-licenses.mjs.
+  # Any known vulnerability fails the job; the last step shows it would.
+  audit:
+    name: dependency audit and licences
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install pinned toolchain
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - name: cargo deny (advisories, bans, licenses, sources)
+        run: cargo deny --locked check
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: web/.nvmrc
+      - name: npm audit
+        run: |
+          cd web
+          npm audit --audit-level=low
+      - name: Web licences
+        run: |
+          node scripts/web-licenses.mjs --self-test
+          node scripts/web-licenses.mjs
+      # A crate depending on smallvec 1.6.0 (RUSTSEC-2021-0003) must fail the
+      # same advisories check.
+      - name: Audit fails on a known vulnerability
+        run: |
+          set -o pipefail
+          if cargo deny --manifest-path scripts/audit-fixture/Cargo.toml \
+              --config deny.toml check advisories 2>&1 | tee "$RUNNER_TEMP/fixture.log"; then
+            echo "cargo deny passed a crate with a known vulnerability"; exit 1
+          fi
+          grep -q RUSTSEC-2021-0003 "$RUNNER_TEMP/fixture.log"
+
+  # scripts/install.sh against a fake release and a stub cosign: a good
+  # release installs; tampered, unsigned or incomplete ones are refused.
+  install-script:
+    name: install.sh self-test (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    strategy:
+      # Both runners report a result even when the other fails.
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: shellcheck
+        if: runner.os == 'Linux'
+        run: shellcheck scripts/install.sh scripts/install-selftest.sh scripts/no-network-smoke.sh scripts/daemon-smoke.sh
+      - name: Self-test
+        run: sh scripts/install-selftest.sh

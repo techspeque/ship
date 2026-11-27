@@ -1,0 +1,193 @@
+findings:
+    - id: f-001
+      date: "2026-11-25"
+      slice: phase-0-ws-0.1
+      severity: P2
+      category: correctness
+      finding: 'crates/ship/tests/dependency_rule.rs:110-113 — is_dependency_table ignores valid quoted TOML section names: ["dependencies"] followed by ship-docker = { path = "../ship-docker" } yields no violation for ship-store, bypassing the brief requirement to reject leaf-to-leaf dependencies in any dependency section. A reviewer regression reproduced the empty result. Recognize quoted dependency table segments (including dev/build/target-specific forms) and add regression coverage.'
+      status: resolved
+      resolved_by: commit 7408af2c08c4; test detects_leaf_to_leaf_quoted_section_names; 7408af2; quoted section and subtable regression tests pass under independent forced post verification
+      cycle: 1
+      file: crates/ship/tests/dependency_rule.rs
+      commit: 7408af2c08c4ba4da6a3feb7093abcba9617a5ec
+      evidence: test detects_leaf_to_leaf_quoted_section_names
+    - id: f-002
+      date: "2026-11-25"
+      slice: phase-0-ws-0.3
+      severity: P2
+      category: correctness
+      finding: 'crates/ship-store/src/migrate.rs:56-62 — The schema-version probe opens read-write, contrary to brief lines 41-44. Reproduced against a version-6 database left with committed WAL by an exited process: Store::open returns SchemaTooNew but changes ship.db and removes ship.db-wal and ship.db-shm on close. Use a read-only version check before any writable connection and add a regression asserting all database/sidecar bytes and directory entries remain unchanged for this WAL case.'
+      status: resolved
+      resolved_by: commit 753a65e01794; test newer_schema_in_committed_wal_is_refused_and_untouched
+      cycle: 1
+      file: crates/ship-store/src/migrate.rs
+      commit: 753a65e017947f7766d0e7649dd4a23bdb3f0ea3
+      evidence: test newer_schema_in_committed_wal_is_refused_and_untouched
+    - id: f-003
+      date: "2026-11-25"
+      slice: phase-0-ws-0.4
+      severity: P2
+      category: tests
+      finding: 'crates/ship-net/src/listener.rs:162-165 — Independent metis verify --post --slice phase-0-ws-0.4 --force exits 1: socket_has_mode_0660_and_accepts, remove_leaves_a_successor_socket, stale_socket_is_replaced, regular_file_is_refused_and_untouched, and remove_deletes_own_socket fail with PermissionDenied. The process-wide 0177 umask removes owner directory-search permission from concurrently created temporary directories; overlapping calls can also restore masks out of order. Make socket creation preserve the brief’s restrictive permissions without corrupting concurrent filesystem creation or leaving the process mask changed, add concurrency regression coverage, and restore a green verification run.'
+      status: resolved
+      resolved_by: commit 34d3fc1883eb; test concurrent_file_creation_is_unaffected; Independent forced metis verify --post passed.
+      cycle: 1
+      file: crates/ship-net/src/listener.rs
+      commit: 34d3fc1883ebc29b2900e42efcc3b281dda6562f
+      evidence: test concurrent_file_creation_is_unaffected
+    - id: f-004
+      date: "2026-11-25"
+      slice: phase-0-ws-0.4
+      severity: P2
+      category: behavior
+      finding: 'crates/ship-daemon/src/lib.rs:187-198 — Shutdown applies a separate 10-second timeout to each listener and aborts only the Axum serving tasks, leaving their connection tasks alive. Reproduced with a partial GET header on each transport: shutdown returned after 20.005 seconds, then completing the TCP request returned HTTP 200 after shutdown. This violates the brief’s up-to-10-second drain and connection closure. Use a shared drain deadline and ensure remaining connection tasks are terminated and joined before shutdown returns; add a regression with incomplete requests on both transports.'
+      status: resolved
+      resolved_by: commit fb10cc872d3f; test incomplete_requests_are_closed_within_one_deadline; Independent forced metis verify --post passed.
+      cycle: 1
+      file: crates/ship-daemon/src/lib.rs
+      commit: fb10cc872d3fd22b011ae0f922d759344982e49a
+      evidence: test incomplete_requests_are_closed_within_one_deadline
+    - id: f-005
+      date: "2026-11-25"
+      slice: phase-0-ws-0.4
+      severity: P2
+      category: behavior
+      finding: 'crates/ship-daemon/src/log.rs:62-67 — Redacting raw byte patterns across the serialized record corrupts JSON syntax for valid registered secrets. Reproduced by registering a single double-quote: a JSON record becomes {[redacted]fields[redacted]:{[redacted]message[redacted]:[redacted]hello [redacted] secret[redacted]}}, which cannot be parsed as JSON. Preserve JSON structure while redacting secret-bearing values and add regression coverage for quote/backslash-only and numeric secrets, asserting that emitted records remain parseable and secret values are removed.'
+      status: resolved
+      resolved_by: commit 69d4cd94540b; test json_syntax_and_numeric_secrets_keep_records_parseable; Independent forced metis verify --post passed.
+      cycle: 1
+      file: crates/ship-daemon/src/log.rs
+      commit: 69d4cd94540b3f69c035772a1e500b5e78b95647
+      evidence: test json_syntax_and_numeric_secrets_keep_records_parseable
+    - id: f-006
+      date: "2026-11-25"
+      slice: phase-0-ws-0.6
+      severity: P2
+      category: behavior
+      finding: 'crates/ship-net/src/client.rs:178 — SSH failure cleanup waits outside the configured whole-exchange timeout (brief lines 74-85): a fake ssh that closes stdout then execs sleep 60 makes projects --timeout 1 take 3.145 seconds and report HTTP EOF instead of timeout. Bound exchange, exit-status collection and stderr collection by one deadline, kill/reap ssh on expiry, and add an early-EOF-but-still-running regression test.'
+      status: resolved
+      resolved_by: commit df04dadb91b8; test early_eof_with_ssh_still_running_times_out_within_the_deadline; df04dad; independently verified with metis verify --post --force
+      cycle: 1
+      file: crates/ship-net/src/client.rs
+      commit: df04dadb91b83e427ea1794f210d28a21a960b33
+      evidence: test early_eof_with_ssh_still_running_times_out_within_the_deadline
+    - id: f-007
+      date: "2026-11-25"
+      slice: phase-0-ws-0.6
+      severity: P2
+      category: protocol
+      finding: crates/ship-daemon/src/http.rs:57 — origin_guard wraps api_version and returns forbidden directly at line 132, so /api/ requests rejected for Host or origin omit both version headers, contrary to the brief requirement for every API response. Ensure API response headers also decorate guard rejections while retaining authorization checks and header-free /healthz; add regression coverage for rejected API requests.
+      status: resolved
+      resolved_by: commit d987b0ef5252; test origin_guard_rejections_on_api_carry_versions; d987b0e; independently verified with metis verify --post --force
+      cycle: 1
+      file: crates/ship-daemon/src/http.rs
+      commit: d987b0ef52527080a90e920f2fc3a1f7f147d401
+      evidence: test origin_guard_rejections_on_api_carry_versions
+    - id: f-008
+      date: "2026-11-25"
+      slice: phase-0-ws-0.8
+      severity: P2
+      category: correctness
+      finding: crates/ship/src/service.rs:427-468 — An existing ship user with a primary GID different from the ship group is accepted, and that passwd GID is used to chown both directories, violating the brief requirement of ship:ship ownership. Reinstall while running changes /run/ship (0750) to the other group and denies socket traversal to ship-group clients. Resolve the ship group GID via getent group ship and use it for both directory owners; add a regression covering an existing user with a different primary group and repeat install.
+      status: resolved
+      resolved_by: commit f5d135f538c2; test service::tests::existing_user_with_another_primary_group_gets_ship_group_dirs
+      cycle: 1
+      file: crates/ship/src/service.rs
+      commit: f5d135f538c2af50e20696871283ba9e3c125cdc
+      evidence: test service::tests::existing_user_with_another_primary_group_gets_ship_group_dirs
+    - id: f-009
+      date: "2026-11-25"
+      slice: phase-0-ws-0.7
+      severity: P2
+      category: behavior
+      finding: 'web/src/App.svelte:44 — The effect synchronously calls refresh(), which reads refreshing; resetting refreshing after each request retriggers the effect and immediately fetches again instead of polling every 10 seconds. Reproduced with the installed Svelte runtime: 15 refresh calls in 30 microtask turns before any interval fires. Initialise polling without tracking refreshing (for example onMount or untrack), and add a runtime regression test asserting no second request before the polling interval.'
+      status: resolved
+      resolved_by: 'commit 18a7907c195d; test web/src/lib/poller.svelte.test.ts: sends no second request before the polling interval'
+      cycle: 1
+      file: web/src/App.svelte
+      commit: 18a7907c195db9a9e0e186f65a45d203830132d7
+      evidence: 'test web/src/lib/poller.svelte.test.ts: sends no second request before the polling interval'
+    - id: f-010
+      date: "2026-11-25"
+      slice: phase-0-ws-0.7
+      severity: P2
+      category: behavior
+      finding: crates/ship/src/open.rs:140 — A successful healthz on the requested local port is treated as proof the SSH forward exists before SSH has established it. With an existing local Ship-shaped health listener and a fake ssh that creates no forward, open --no-browser --port prints that unrelated URL and claims it forwards to the remote target. Reject occupied ports and establish forward readiness before accepting healthz; add a regression test ensuring this collision prints no URL and fails.
+      status: resolved
+      resolved_by: commit cbc2cbc0bc29; test ssh_refuses_an_occupied_port
+      cycle: 1
+      file: crates/ship/src/open.rs
+      commit: cbc2cbc0bc29614bca3feb7953d4d4ce49ddb62e
+      evidence: test ssh_refuses_an_occupied_port
+    - id: f-011
+      date: "2026-11-25"
+      slice: phase-0-ws-0.7
+      severity: P2
+      category: tests
+      finding: crates/ship/tests/ssh_real.rs:148 — The real-sshd test accepts 503 when the UI is absent, and the CI ssh job never builds web/dist, so it does not perform the brief-required real-SSH GET of the UI. Build the UI before compiling ship in that job and require HTTP 200 with the embedded index content in the real-SSH test.
+      status: resolved
+      resolved_by: commit 23f978fb6a17; crates/ship/tests/ssh_real.rs:143
+      cycle: 1
+      file: crates/ship/tests/ssh_real.rs
+      commit: 23f978fb6a17b8aa41f29706095d204b41a0570f
+      evidence: crates/ship/tests/ssh_real.rs:143
+    - id: f-012
+      date: "2026-11-25"
+      slice: phase-0-ws-0.9
+      severity: P2
+      category: behavior
+      finding: .github/workflows/release.yml:205 — publish checks only ref_type, so workflow_dispatch targeting a tag enters signing and publishing despite the brief requiring every dispatch to be a dry run — require the push event as well as a tag for publish, and check dispatch-on-tag stays unsigned and unpublished.
+      status: resolved
+      resolved_by: commit 351a6a683287; .github/workflows/release.yml:207
+      cycle: 1
+      file: github/workflows/release.yml
+      commit: 351a6a6832873cced4fc211ecee56a226b04f7fd
+      evidence: .github/workflows/release.yml:207
+    - id: f-013
+      date: "2026-11-25"
+      slice: phase-0-ws-0.9
+      severity: P2
+      category: behavior
+      finding: .github/workflows/release.yml:266 — every release is marked --prerelease, which GitHub excludes from releases/latest; consequently README.md:41 cannot download the installer and install.sh without --version cannot find releases produced by this pipeline — publish releases eligible for the brief-required latest redirect and verify the default documented install path.
+      status: resolved
+      resolved_by: commit a53b1cda0bac; .github/workflows/release.yml:281
+      cycle: 1
+      file: github/workflows/release.yml
+      commit: a53b1cda0baca95aa5ba8396426b5985874b6da4
+      evidence: .github/workflows/release.yml:281
+    - id: f-014
+      date: "2026-11-25"
+      slice: phase-0-ws-0.9
+      severity: P2
+      category: behavior
+      finding: 'scripts/web-licenses.mjs:34 — removing parentheses changes SPDX semantics: acceptable("(MIT OR Apache-2.0) AND GPL-3.0-only") returns true in a local reproduction although GPL-3.0-only is mandatory and absent from the allowlist — preserve grouping with an SPDX expression parser or reject unsupported expressions, and add a regression for this compound expression.'
+      status: resolved
+      resolved_by: commit b787be07ee6c; test node scripts/web-licenses.mjs --self-test
+      cycle: 1
+      file: scripts/web-licenses.mjs
+      commit: b787be07ee6cc952c9639a5287434078514a783f
+      evidence: test node scripts/web-licenses.mjs --self-test
+    - id: f-015
+      date: "2026-11-25"
+      slice: fix-0002
+      severity: P2
+      category: testing
+      finding: '.metis/briefs/fix-0002.md:114-119 — Required Linux validation is explicitly incomplete: the Linux-only pin implementation and new tests have not been compiled or run, and DoD 4 requires 50 consecutive successful Linux runs of remove_leaves_a_successor_socket — Compile and run the listener tests on Linux, complete the 50 consecutive regression runs, and record the successful evidence in the brief.'
+      status: resolved
+      resolved_by: commit dbb70fbb4068; .metis/briefs/fix-0002.md:114
+      cycle: 1
+      file: metis/briefs/fix-0002.md
+      commit: dbb70fbb4068fa5f2cfed1408e0836f0ced8df0e
+      evidence: .metis/briefs/fix-0002.md:114
+    - id: f-016
+      date: "2026-11-25"
+      slice: fix-0004
+      severity: P1
+      category: correctness
+      finding: 'scripts/daemon-smoke.sh:50 — http://ship/healthz sends Host: ship, which the daemon origin guard rejects with 403 even over the unix socket; supervisor Linux/musl execution confirms the smoke test fails on a working binary, blocking both Linux release packages before Package. Change the URL to http://localhost/healthz (or http://127.0.0.1/healthz) and rerun the smoke script against the musl release binary to verify HTTP 200 and successful SIGTERM/socket cleanup.'
+      status: resolved
+      resolved_by: 'commit 5214130a4793; test scripts/daemon-smoke.sh: aarch64-unknown-linux-musl release in Docker; HTTP 200, SIGTERM exit 0, socket removed'
+      cycle: 1
+      file: scripts/daemon-smoke.sh
+      commit: 5214130a47933524d412bc24680e164fde8d6162
+      evidence: 'test scripts/daemon-smoke.sh: aarch64-unknown-linux-musl release in Docker; HTTP 200, SIGTERM exit 0, socket removed'
