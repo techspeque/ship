@@ -457,9 +457,12 @@ findings:
       severity: P2
       category: behavior
       finding: 'crates/ship/src/follow.rs:108-110 — Every successful response header resets lost_at, so repeatedly truncated/empty 200 event streams retry forever: a fake daemon returning empty SSE responses opened 10 streams and still ran after 5 seconds with --reconnect 1. Requests also retain a fixed 30-second timeout beyond the remaining reconnect budget. Preserve the loss deadline until a usable stream is restored, bound retries by its remaining time, and test empty/truncated reconnects and stalled reconnect attempts.'
-      status: open
+      status: resolved
+      resolved_by: commit 1265edcd3f10; test empty_truncated_or_stalled_reconnects_still_exit_94_in_time; 1265edc; independent forced verification passed
       cycle: 1
       file: crates/ship/src/follow.rs
+      commit: 1265edcd3f10d0e39aae4a494fe1a072b3d66dc5
+      evidence: test empty_truncated_or_stalled_reconnects_still_exit_94_in_time
     - id: f-040
       date: "2026-11-27"
       slice: phase-1-ws-1.9
