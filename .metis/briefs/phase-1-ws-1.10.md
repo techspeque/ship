@@ -56,7 +56,22 @@ show which services run with values older than the stored ones
     backend ref (0600, created exclusively, fsynced, then the row points
     at it; the replaced file is removed after); `read`, `remove`;
     `register_all` registers every stored value with the `Redactor` at
-    daemon start.
+   daemon start.
+
+## Reviewer checklist — cycle 1
+
+- Behavioral correctness: BLOCK f-045 — partial preparation leaves untracked env files that pruning cannot find (`crates/ship-daemon/src/config.rs:668`, `crates/ship-daemon/src/deploy.rs:582-601`).
+- Security and authorization correctness: BLOCK f-043/f-044 — rotated secrets lose redaction after restart (`crates/ship-daemon/src/secrets.rs:129`); Clap echoes leading-hyphen secret arguments (`crates/ship/src/vars.rs:118`, `crates/ship/src/main.rs:191-194`); routes retain the origin guard (`crates/ship-daemon/src/http.rs:141-158`).
+- Scope discipline: PASS — `metis log phase-1-ws-1.10 --validate -o json` reports `ok: true`, with no out-of-scope files; committed scope is declared at `.metis/briefs/phase-1-ws-1.10.md:96-113`.
+- Test sufficiency: BLOCK for the demonstrated regressions — restart coverage does not rotate/unset (`crates/ship-daemon/tests/config.rs:647-652`), CLI cases omit leading-hyphen values (`crates/ship/tests/cli_config.rs:139-144`), pruning covers successful deployments only (`crates/ship-daemon/tests/config.rs:639-645`).
+- Architectural fit: PASS — pure precedence rules (`crates/ship-core/src/config.rs:118`), transactional metadata (`crates/ship-store/src/config.rs:266`), and post-build injection (`crates/ship-daemon/src/compose_import.rs:607-629`) fit the declared boundaries and mechanisms.
+- Maintainability: PASS apart from the recorded defects — shared submission/following (`crates/ship/src/settings.rs:293-324`) and config preparation (`crates/ship-daemon/src/config.rs:510`) avoid duplicate implementations.
+
+Independent `metis verify --post --slice phase-1-ws-1.10 --force`: ALL
+GREEN. Real-Engine tests were not run in this review. Targeted reproductions
+used the built CLI and an external temporary harness linked to the built
+libraries; no implementation or test files were changed. Verdict: blocked,
+findings f-043, f-044 and f-045.
   - `config.rs`: the API — `GET|POST /api/v1/projects/{project}/vars`,
     `POST …/vars/unset`, `GET|POST …/secrets`, `POST …/secrets/unset`.
     Project, environment (`development` only in Phase 1), service, name
