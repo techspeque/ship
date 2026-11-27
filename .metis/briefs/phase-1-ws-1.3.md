@@ -149,4 +149,45 @@ None.
 
 ## Report
 
-Filled at implementation.
+- `ship-core/src/error.rs`: `ErrorCode::QueueFull` (`queue_full`, 429),
+  appended; code and status tables extended.
+- `ship-core/src/api.rs`: `OPERATIONS_PATH`, `IDEMPOTENCY_KEY_HEADER`,
+  `IDEMPOTENCY_KEY_MAX_LEN`, `LAST_EVENT_ID_HEADER`, `operation_path`,
+  `operation_events_path`, `valid_idempotency_key`, `OperationView`,
+  `OperationFailureView`, `EventKind`, `OperationEventView` (decodes the
+  `push-wait` fixture event fields). Not re-exported from `lib.rs` (not
+  owned); used as `ship_core::api::…`.
+- `ship-daemon/src/queue.rs` (new): `Queue`, `Submission`, `Submitted`,
+  `QueueError`, `Limits` (defaults: 32 queued, 1 build slot, 30 min build
+  timeout, 1 GiB watermark, 16 MiB log), `Context` (`enter`, `log`,
+  `build`), `JobFailure`, `recover`, `LOG_DIR`, `INTERRUPTED_MESSAGE`.
+  Per-environment worker over an mpsc channel; env-less operations get a
+  task each; jobs run under `catch_unwind`.
+- `ship-daemon/src/http.rs`: operation and SSE routes, `accept`,
+  `submitted_response`, `operation_view`; SSE body built by hand
+  (`Body::from_stream` + `futures_util::stream::unfold`), keep-alive
+  comment every 15 quiet polls, stream ends on the terminal event or queue
+  close.
+- `ship-daemon/src/lib.rs`: `Config.limits`; `start` runs `recover`
+  before any listener serves, then builds the queue; `Running::queue`;
+  `shutdown` stops the queue first so event streams end before the drain.
+- `ship-daemon/src/host.rs`: `disk_free_bytes` made `pub(crate)` for the
+  watermark check.
+- `ship-daemon/Cargo.toml`: `futures-util` 0.3 (already in the graph via
+  axum); `Cargo.lock` adds it to ship-daemon's dependency list only.
+- Tests: `tests/queue.rs` (12), `tests/operations_http.rs` (6),
+  `tests/recovery.rs` (2), new unit tests in `queue.rs` and `http.rs`;
+  `tests/common/mod.rs` gains a chunked/SSE reader and `limits` with no
+  watermark.
+- Decisions: a refusal at admission persists the operation and fails it
+  in phase `queued` (so a replay is deterministic) and answers the
+  failure code's status with `operation_id`, not 202. Free disk that
+  cannot be read refuses. `Context::build` reports a `waiting` event when
+  the slot is taken. On shutdown, running jobs are aborted and their rows
+  left for `recover` at the next start (one code path for kill and stop).
+  `recover` does not add a second `interrupted` event if one is already
+  last.
+- Unit test caught `fits` saturating at `u64::MAX`; fixed with
+  `checked_add`.
+- `metis verify --post --slice phase-1-ws-1.3`: ALL GREEN (web, fmt,
+  clippy, all workspace tests).

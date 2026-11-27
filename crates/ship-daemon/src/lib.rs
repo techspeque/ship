@@ -3,10 +3,12 @@
 //! Top-level crate: may depend on `ship-core` and the leaf crates
 //! (OVERVIEW §2.3).
 //!
-//! Phase 0: [`start`] binds the unix socket and the 127.0.0.1 listener
-//! (ADR-0003), opens the store and serves the router in [`http`], with the
-//! embedded UI ([`ui`]) as its fallback;
-//! [`Running::shutdown`] stops it; [`run`] does both around SIGTERM/SIGINT.
+//! [`start`] binds the unix socket and the 127.0.0.1 listener (ADR-0003),
+//! opens the store, marks operations a previous daemon left unfinished as
+//! `interrupted` ([`queue::recover`]), starts the operation [`queue`] and
+//! serves the router in [`http`], with the embedded UI ([`ui`]) as its
+//! fallback; [`Running::shutdown`] stops it; [`run`] does both around
+//! SIGTERM/SIGINT.
 //! `ship daemon` is supported on Linux only (ADR-0002 rule 2); that check
 //! belongs to the `ship` binary, so this library builds and tests on any
 //! unix.
@@ -14,6 +16,7 @@
 pub mod host;
 pub mod http;
 pub mod log;
+pub mod queue;
 pub mod ui;
 
 use std::fmt;
@@ -34,6 +37,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 pub use log::Redactor;
+pub use queue::{Limits, Queue};
 
 /// Default state directory.
 pub const DEFAULT_STATE_DIR: &str = "/var/lib/ship";
@@ -58,10 +62,13 @@ pub struct Config {
     pub redactor: Redactor,
     /// How the daemon runs `docker`; the CLI on `PATH` by default.
     pub docker: Runner,
+    /// Queue length, build slots, build timeout, disk watermark and log
+    /// size (ADR-0011 rule 10).
+    pub limits: Limits,
 }
 
 impl Config {
-    /// The default paths and port.
+    /// The default paths, port and limits.
     pub fn new(redactor: Redactor) -> Self {
         Config {
             state_dir: PathBuf::from(DEFAULT_STATE_DIR),
@@ -69,6 +76,7 @@ impl Config {
             port: DEFAULT_PORT,
             redactor,
             docker: Runner::docker(),
+            limits: Limits::default(),
         }
     }
 }
@@ -108,6 +116,7 @@ pub struct Running {
     socket: SocketFile,
     tcp_addr: SocketAddr,
     store: Store,
+    queue: Queue,
     stop: watch::Sender<bool>,
     /// Fails every open connection's I/O once the drain deadline passes.
     kill: watch::Sender<bool>,
@@ -146,12 +155,38 @@ pub async fn start(config: &Config) -> Result<Running, DaemonError> {
         .await
         .map_err(DaemonError::Store)?;
 
+    // Before anything is served: what a previous daemon left in flight is
+    // ended, never resumed (ADR-0011 rule 8).
+    let interrupted = match queue::recover(&store).await {
+        Ok(n) => n,
+        Err(e) => {
+            store.close().await;
+            return Err(DaemonError::Store(e));
+        }
+    };
+    if interrupted > 0 {
+        tracing::warn!(interrupted, "operations left unfinished were interrupted");
+    }
+    let queue = match Queue::new(
+        store.clone(),
+        config.redactor.clone(),
+        config.limits,
+        &config.state_dir,
+    ) {
+        Ok(queue) => queue,
+        Err(e) => {
+            store.close().await;
+            return Err(DaemonError::StateDir(config.state_dir.clone(), e));
+        }
+    };
+
     let router = http::router(
         store.clone(),
         http::HostProbe {
             docker: config.docker.clone(),
             state_dir: config.state_dir.clone(),
         },
+        queue.clone(),
     );
     let (stop, stopped) = watch::channel(false);
     let (kill, killed) = watch::channel(false);
@@ -174,6 +209,7 @@ pub async fn start(config: &Config) -> Result<Running, DaemonError> {
         socket,
         tcp_addr,
         store,
+        queue,
         stop,
         kill,
         servers,
@@ -196,18 +232,27 @@ impl Running {
         &self.store
     }
 
-    /// Stops accepting, drains open connections on both listeners for up
-    /// to 10 s in total, closes whatever is still open and waits for those
+    /// The daemon's operation queue.
+    pub fn queue(&self) -> &Queue {
+        &self.queue
+    }
+
+    /// Stops the operation queue (running jobs are aborted and left for
+    /// the next start to mark `interrupted`; event streams end), stops
+    /// accepting, drains open connections on both listeners for up to
+    /// 10 s in total, closes whatever is still open and waits for those
     /// connections to end, closes the database and removes the socket file.
     pub async fn shutdown(self) -> Result<(), DaemonError> {
         let Running {
             socket,
             store,
+            queue,
             stop,
             kill,
             servers,
             ..
         } = self;
+        queue.shutdown().await;
         let _ = stop.send(true);
         // One deadline for every listener, not one per listener.
         let deadline = tokio::time::Instant::now() + DRAIN_TIMEOUT;

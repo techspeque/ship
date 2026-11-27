@@ -55,7 +55,7 @@ fn parse_mem_total(meminfo: &str) -> Option<u64> {
 }
 
 /// Bytes available to unprivileged users on the filesystem holding `path`.
-fn disk_free_bytes(path: &Path) -> Option<u64> {
+pub(crate) fn disk_free_bytes(path: &Path) -> Option<u64> {
     let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
     // SAFETY: an all-zero `statvfs` is a valid value of this plain C struct.
     let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };

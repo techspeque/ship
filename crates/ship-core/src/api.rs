@@ -4,8 +4,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::id::ProjectId;
+use crate::error::ReceivedCode;
+use crate::id::{EnvironmentId, OperationId, ProjectId};
 use crate::slug::Slug;
+use crate::state::{OperationPhase, OperationStatus};
 use crate::time::Timestamp;
 
 /// The API version this build speaks.
@@ -34,6 +36,91 @@ pub fn api_version_number(version: &str) -> Option<u32> {
 pub const HOST_PATH: &str = "/api/v1/host";
 /// `GET`: [`ProjectList`].
 pub const PROJECTS_PATH: &str = "/api/v1/projects";
+
+/// Prefix of the operation endpoints: `GET {OPERATIONS_PATH}/{id}` is an
+/// [`OperationView`]; `GET {OPERATIONS_PATH}/{id}/events` streams
+/// [`OperationEventView`]s over SSE (ADR-0011 rule 5).
+pub const OPERATIONS_PATH: &str = "/api/v1/operations";
+/// Request header every mutating call carries (ADR-0011 rule 1). A replay
+/// with the same key returns the original operation.
+pub const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
+/// Longest idempotency key the daemon accepts, in bytes.
+pub const IDEMPOTENCY_KEY_MAX_LEN: usize = 128;
+/// SSE resume header: the last sequence number the client received.
+pub const LAST_EVENT_ID_HEADER: &str = "last-event-id";
+
+/// `GET /api/v1/operations/{id}`.
+pub fn operation_path(id: OperationId) -> String {
+    format!("{OPERATIONS_PATH}/{id}")
+}
+
+/// `GET /api/v1/operations/{id}/events`; `?after=N` resumes after `N`.
+pub fn operation_events_path(id: OperationId) -> String {
+    format!("{OPERATIONS_PATH}/{id}/events")
+}
+
+/// Whether `key` is an acceptable idempotency key: 1 to
+/// [`IDEMPOTENCY_KEY_MAX_LEN`] visible ASCII characters.
+pub fn valid_idempotency_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.len() <= IDEMPOTENCY_KEY_MAX_LEN
+        && key.bytes().all(|b| b.is_ascii_graphic())
+}
+
+/// A durable operation as the API shows it (ADR-0011).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperationView {
+    pub id: OperationId,
+    pub kind: String,
+    pub environment_id: Option<EnvironmentId>,
+    pub phase: OperationPhase,
+    pub status: OperationStatus,
+    /// Set exactly when the status is `failed` or `interrupted`.
+    pub failure: Option<OperationFailureView>,
+    /// Bytes written to the operation's on-disk log so far.
+    pub log_bytes: u64,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+}
+
+/// Why an operation failed: a stable code and the phase it failed in
+/// (ADR-0011 rule 7).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperationFailureView {
+    pub code: ReceivedCode,
+    pub phase: OperationPhase,
+    pub message: String,
+}
+
+string_enum! {
+    /// What an operation event records. Readers must tolerate values they
+    /// do not know, so [`OperationEventView::event`] is a plain string.
+    pub enum EventKind {
+        /// The operation entered `phase`.
+        PhaseStarted => "phase_started",
+        /// One line of build or deploy output.
+        Log => "log",
+        /// The operation waits for something it needs (a build slot).
+        Waiting => "waiting",
+        /// The operation ended; `phase` is its terminal phase. Always the
+        /// last event of an operation.
+        Finished => "finished",
+    }
+}
+
+/// One event of an operation, as each SSE `data:` line carries it. The
+/// field names are those of the `ship push --wait` event lines.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperationEventView {
+    pub operation_id: OperationId,
+    /// Starts at 1 and increases by one, with no gaps. Also the SSE `id:`.
+    pub sequence: u64,
+    pub phase: OperationPhase,
+    /// An [`EventKind`] string.
+    pub event: String,
+    pub message: String,
+    pub ts: Timestamp,
+}
 
 /// `GET /api/v1/host`. The daemon's identity, whether Docker is usable and
 /// the host's capacity. Served only on the daemon's own listeners;
@@ -227,6 +314,107 @@ mod tests {
             }]})
         );
         assert_eq!(serde_json::from_value::<ProjectList>(v).unwrap(), list);
+    }
+
+    #[test]
+    fn operation_paths_and_headers() {
+        let op: OperationId = "op_01aryz6s41tsv4rrffq69g5fav".parse().unwrap();
+        assert!(OPERATIONS_PATH.starts_with(API_PREFIX));
+        assert_eq!(
+            operation_path(op),
+            "/api/v1/operations/op_01aryz6s41tsv4rrffq69g5fav"
+        );
+        assert_eq!(
+            operation_events_path(op),
+            "/api/v1/operations/op_01aryz6s41tsv4rrffq69g5fav/events"
+        );
+        for h in [IDEMPOTENCY_KEY_HEADER, LAST_EVENT_ID_HEADER] {
+            assert!(h.bytes().all(|b| b.is_ascii_lowercase() || b == b'-'));
+        }
+    }
+
+    #[test]
+    fn idempotency_keys() {
+        for ok in ["k", "push-2026-11-27T10:00:00Z", &"x".repeat(128)] {
+            assert!(valid_idempotency_key(ok), "{ok}");
+        }
+        for bad in ["", " ", "a b", "tab\t", "é", &"x".repeat(129)] {
+            assert!(!valid_idempotency_key(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn event_kind_strings() {
+        let all: Vec<&str> = EventKind::ALL.iter().map(|k| k.as_str()).collect();
+        assert_eq!(all, ["phase_started", "log", "waiting", "finished"]);
+    }
+
+    #[test]
+    fn operation_view_shape() {
+        let view = OperationView {
+            id: "op_01aryz6s41tsv4rrffq69g5fav".parse().unwrap(),
+            kind: "push".to_owned(),
+            environment_id: Some("env_01aryz6s41tsv4rrffq69g5fav".parse().unwrap()),
+            phase: OperationPhase::Failed,
+            status: OperationStatus::Failed,
+            failure: Some(OperationFailureView {
+                code: ReceivedCode::Known(crate::ErrorCode::BuildFailed),
+                phase: OperationPhase::Building,
+                message: "the image build exited 1".to_owned(),
+            }),
+            log_bytes: 42,
+            created_at: Timestamp::from_unix_millis(1_469_918_176_385).unwrap(),
+            updated_at: Timestamp::from_unix_millis(1_469_918_176_386).unwrap(),
+        };
+        let v = serde_json::to_value(&view).unwrap();
+        assert_eq!(
+            v,
+            json!({
+                "id": "op_01aryz6s41tsv4rrffq69g5fav",
+                "kind": "push",
+                "environment_id": "env_01aryz6s41tsv4rrffq69g5fav",
+                "phase": "failed",
+                "status": "failed",
+                "failure": {
+                    "code": "build_failed",
+                    "phase": "building",
+                    "message": "the image build exited 1",
+                },
+                "log_bytes": 42,
+                "created_at": "2016-07-30T22:36:16.385Z",
+                "updated_at": "2016-07-30T22:36:16.386Z",
+            })
+        );
+        assert_eq!(serde_json::from_value::<OperationView>(v).unwrap(), view);
+
+        let open = OperationView {
+            phase: OperationPhase::Queued,
+            status: OperationStatus::Queued,
+            failure: None,
+            environment_id: None,
+            ..view
+        };
+        let v = serde_json::to_value(&open).unwrap();
+        assert_eq!(v["failure"], serde_json::Value::Null);
+        assert_eq!(v["environment_id"], serde_json::Value::Null);
+    }
+
+    /// The event lines of the `ship push --wait` fixtures, less their
+    /// `type` wrapper field, decode as [`OperationEventView`].
+    #[test]
+    fn operation_event_view_matches_the_push_fixture_fields() {
+        let line = json!({
+            "operation_id": "op_01aryz6s41tsv4rrffq69g5fav",
+            "sequence": 4,
+            "phase": "building",
+            "event": "log",
+            "message": "#5 DONE 12.1s",
+            "ts": "2026-01-02T03:04:20.000Z",
+        });
+        let e: OperationEventView = serde_json::from_value(line.clone()).unwrap();
+        assert_eq!(e.sequence, 4);
+        assert_eq!(e.event, EventKind::Log.as_str());
+        assert_eq!(serde_json::to_value(&e).unwrap(), line);
     }
 
     #[test]

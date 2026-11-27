@@ -59,6 +59,9 @@ string_enum! {
         InsufficientStorage => "insufficient_storage",
         /// The daemon stopped during the operation; it is never resumed.
         Interrupted => "interrupted",
+        /// The daemon already holds as many unfinished operations as its
+        /// queue length allows (ADR-0011 rule 10).
+        QueueFull => "queue_full",
     }
 }
 
@@ -71,6 +74,7 @@ impl ErrorCode {
             | ErrorCode::InvalidSlug
             | ErrorCode::InvalidTimestamp => 400,
             ErrorCode::Forbidden => 403,
+            ErrorCode::QueueFull => 429,
             ErrorCode::NotFound => 404,
             ErrorCode::Conflict
             | ErrorCode::IllegalTransition
@@ -326,6 +330,7 @@ mod tests {
             "health_check_failed",
             "insufficient_storage",
             "interrupted",
+            "queue_full",
         ];
         let got: Vec<&str> = ErrorCode::ALL.iter().map(|c| c.as_str()).collect();
         assert_eq!(got, expected);
@@ -375,6 +380,7 @@ mod tests {
             (HealthCheckFailed, 422),
             (InsufficientStorage, 507),
             (Interrupted, 503),
+            (QueueFull, 429),
         ];
         assert_eq!(table.len(), ErrorCode::ALL.len());
         for (code, status) in table {
