@@ -114,29 +114,29 @@ show which services run with values older than the stored ones
 
 ## Definition of Done
 
-- [ ] `ship secrets set NAME=VALUE`, or with a value as an extra
+- [x] `ship secrets set NAME=VALUE`, or with a value as an extra
       argument, exits 2 before connecting and its output does not contain
       the value; `--stdin` and `--prompt` are the only ways in.
-- [ ] No API response, operation event, operation log, generated Compose
+- [x] No API response, operation event, operation log, generated Compose
       file, override, `files.json`, `config.json`, fake `docker` argv
       (build arguments included) or daemon stderr contains a test secret,
       checked by one test that greps them all; with real Docker, the
       image's history and config do not contain it either.
-- [ ] A deployed service sees config and secret values with the
+- [x] A deployed service sees config and secret values with the
       precedence project < environment < service (env file with a fake
       `docker`; the container's environment with real Docker, including
       values with `$`, quotes, `#`, spaces and backslashes).
-- [ ] Changing a value changes nothing running; the lists' `stale_services`
+- [x] Changing a value changes nothing running; the lists' `stale_services`
       names the service until a redeploy, then is empty.
-- [ ] Secret files are 0600 and their directory 0700; env files 0600 in a
+- [x] Secret files are 0600 and their directory 0700; env files 0600 in a
       0700 directory; old releases' env files are pruned.
-- [ ] Secret values stored before a daemon restart are redacted after it.
-- [ ] Names and values outside the rules, an unknown environment or
+- [x] Secret values stored before a daemon restart are redacted after it.
+- [x] Names and values outside the rules, an unknown environment or
       service, and a var and secret sharing a name in one scope are
       refused, the first three before any operation.
-- [ ] `docs/secrets.md` states that Phase 1 secrets are protected by file
+- [x] `docs/secrets.md` states that Phase 1 secrets are protected by file
       permissions, not encryption, and who can read them.
-- [ ] `metis verify --post` green.
+- [x] `metis verify --post` green.
 
 ## Test plan
 
@@ -166,4 +166,66 @@ None.
 
 ## Report
 
-Filled at implementation.
+- `ship-core`: `config.rs` (new: `ConfigScope`, `check_name`,
+  `check_value`, `check_secret_value`, `MIN_SECRET_LEN`, `resolve`,
+  `env_file_line`, `ConfigError`); `api.rs` (`CONFIG_KIND`, the four
+  paths, `config_query`, `SetVarRequest`, `SetSecretRequest` with a
+  redacting `Debug`, `UnsetRequest`, `VarView`, `SecretView`, `VarList`,
+  `SecretList`); `lib.rs`.
+- `ship-store`: `config.rs` (new: `ConfigTarget`, `ConfigValue`,
+  `SecretRecord`, `new_secret_ref`, set/unset/list for both, `all_secrets`;
+  static SQL on `coalesce(project_id, environment_id, service_id)`, as the
+  unique indexes); `lib.rs`. No migration: migration 0002's tables serve.
+  `tests/config.rs` (4 tests).
+- `ship-daemon`: `secrets.rs` and `config.rs` (new); `http.rs` (the four
+  routes); `deploy.rs` (`prepare` in `preparing`, `config.yaml` last in the
+  files and `files.json`, the fingerprint covers the config, `prune` after
+  the outcome); `compose_import.rs` (same, plus a log line naming names the
+  file's `environment:` also sets); `queue.rs` (`Queue::redactor`);
+  `lib.rs` (`register_all` at start). `tests/config.rs` (3 tests, fake
+  `docker`; the grep test runs the scenario in a child process with the
+  real stderr logger and greps its stderr), `tests/real_config.rs` (2
+  tests, ignored).
+- `ship`: `vars.rs` (new: `ship vars`, `ship secrets`); `main.rs`;
+  `settings.rs` (`submit`, the submit-and-follow loop, shared with
+  `vars.rs`; `new_key` takes the kind). `tests/cli_config.rs` (2 tests).
+- `docs/secrets.md` (new).
+- `metis verify --post --slice phase-1-ws-1.10`: ALL GREEN (exit 0). One
+  earlier run failed in `push::tests::only_an_answering_address_answers`
+  (unchanged here: it frees an ephemeral port and asserts nothing answers
+  on it, which another test can take meanwhile); the rerun passed.
+- Not run locally: `real_config.rs` (needs a real Engine); CI's `docker`
+  job runs `ship-daemon` with `--ignored`.
+- Decisions:
+  - `ship status` (and its `stale_config`) is phase-1-ws-1.11. This slice
+    computes staleness (`config::stale_services`, from each release's
+    `config.json` stamps) and shows it in the lists (`stale_services`) and
+    after every `ship vars|secrets set|unset`; 1.11 reads the same
+    function for `stale_config`.
+  - Manifest defaults: Ship reads no manifest of its own in Phase 1, so
+    the lowest layer is empty; `resolve` takes it as a layer.
+  - Compose gives a service's own `environment:` precedence over
+    `env_file`; such a name keeps the file's value (ADR-0008 rule 5: Ship
+    changes nothing the file declares) and the deployment logs the names.
+  - Values are delivered as a double-quoted env file with `\`, `"` and
+    `$` escaped. One line only, and no trailing backslash (the env-file
+    parser reads `\"` at the end as an escaped quote); both refused with a
+    message that quotes nothing. Secrets are at least 4 bytes: the
+    redactor replaces every occurrence, so a shorter value would mangle
+    the logs.
+  - `--service S` added to `ship vars|secrets` (OVERVIEW §6 lists
+    `--project` and `--env`; ADR-0009 rule 1 has a service scope). A
+    service is known from its first deployment; before that it is `404`.
+  - A change is a `config` operation on the project's `development`
+    environment, so it never interleaves with a deployment reading the
+    config.
+  - Unsetting a name that is not set succeeds and says nothing changed.
+  - A var and a secret of one name in one scope: `conflict`; across
+    scopes the higher scope wins whatever the kind.
+  - Env files are kept for the serving release and, after a success, the
+    previous one (which a later failure brings back); older ones are
+    removed after each deployment. A failed release's env files are
+    removed after its failure.
+  - A secret is registered with the redactor when its request passes the
+    checks, before the operation is submitted, and every stored one at
+    daemon start.
