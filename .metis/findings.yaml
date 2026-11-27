@@ -481,9 +481,12 @@ findings:
       severity: P2
       category: behavior
       finding: 'crates/ship/src/push.rs:191-194 — Resolving the current target delegates to commands::endpoint(), whose configuration failures exit 1, while the --to branch maps the same failures to 99. Reproduced with SHIP_CONFIG containing invalid JSON: ship push exits 1 even though no upload/build/deployment failed. Apply the push exit-code contract consistently to current-target config read/parse/location failures (99; usage remains 2), and test both target-resolution paths.'
-      status: open
+      status: resolved
+      resolved_by: commit 9d6c9e3e8db0; test an_unreadable_config_exits_99_on_both_target_paths; 9d6c9e3; independent forced verification passed
       cycle: 1
       file: crates/ship/src/push.rs
+      commit: 9d6c9e3e8db0603a80a5677fc7d016264ed14740
+      evidence: test an_unreadable_config_exits_99_on_both_target_paths
     - id: f-042
       date: "2026-11-27"
       slice: phase-1-ws-1.9
