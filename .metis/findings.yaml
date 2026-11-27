@@ -436,3 +436,12 @@ findings:
       status: open
       cycle: 1
       file: crates/ship-daemon/src/deploy.rs
+    - id: f-038
+      date: "2026-11-27"
+      slice: phase-1-ws-1.8
+      severity: P2
+      category: behavior
+      finding: 'crates/ship-daemon/src/deploy.rs:1019 — Verification selects only the first container for each service. Reproduced with an allowed Compose service declaring deploy.replicas=2 and two same-release containers, first healthy and second unhealthy: the deployment succeeds and reports the service healthy. Evaluate all replicas of each deployed service and fail on an unhealthy or exited replica; add a mixed-health replica regression test.'
+      status: open
+      cycle: 1
+      file: crates/ship-daemon/src/deploy.rs
