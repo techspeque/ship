@@ -52,7 +52,7 @@ use ship_docker::{
 use ship_net::TailnetAddress;
 use ship_store::{
     Deployment, Environment, NewDeployment, NewRelease, NewRoute, NewService, Project, Release,
-    Revision, Service, Store,
+    Revision, Route, Service, Store,
 };
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -254,9 +254,11 @@ pub async fn run(ctx: &Context, d: &Deployer, job: &DeployJob) -> Result<Deploye
         .await?;
 
     let mut attempt = Attempt {
+        environment: env.id,
         project: ComposeProject::new(env.id),
         previous,
         started: false,
+        routes_before: None,
     };
     let steps = Steps {
         ctx,
@@ -299,18 +301,38 @@ fn detect_failure(e: DetectError) -> JobFailure {
 
 /// What a failure must undo.
 struct Attempt {
+    environment: EnvironmentId,
     project: ComposeProject,
     previous: Option<ReleaseId>,
     /// `compose up` has run for the new release.
     started: bool,
+    /// The environment's routes before this attempt replaced them; `None`
+    /// until it did.
+    routes_before: Option<Vec<Route>>,
 }
 
 impl Attempt {
-    /// After a failure: nothing if the new release never started; else the
-    /// previous release brought up again from its own files, or, with
+    /// After a failure: the environment's routes put back if this attempt
+    /// replaced them; nothing more if the new release never started; else
+    /// the previous release brought up again from its own files, or, with
     /// none, the new container stopped and kept. Problems are logged; the
     /// original failure stands.
     async fn undo(&self, ctx: &Context, d: &Deployer) {
+        if let Some(before) = &self.routes_before {
+            let routes: Vec<NewRoute> = before
+                .iter()
+                .map(|r| NewRoute {
+                    service_id: r.service_id,
+                    provider: r.provider,
+                    address: r.address.clone(),
+                    status: r.status,
+                })
+                .collect();
+            if let Err(e) = d.store.replace_routes(self.environment, &routes).await {
+                tracing::error!(error = %e, environment = %self.environment, "could not put the previous routes back");
+                let _ = ctx.log("putting the previous routes back failed").await;
+            }
+        }
         if !self.started {
             return;
         }
@@ -495,7 +517,11 @@ impl Steps<'_> {
                 status: RouteStatus::Confirmed,
             })
             .collect();
+        // Replaced before the deployment succeeds; a failure from here on
+        // (the log, the result) puts the previous routes back in `undo`.
+        let before = d.store.list_routes(env.id).await?;
         d.store.replace_routes(env.id, &routes).await?;
+        attempt.routes_before = Some(before);
         let line = match &endpoint {
             Some(address) => format!("Endpoint: {address}"),
             None => "Endpoint: not configured (no --port)".to_owned(),

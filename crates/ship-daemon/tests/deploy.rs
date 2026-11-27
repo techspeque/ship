@@ -733,6 +733,74 @@ async fn a_failing_health_check_brings_the_previous_release_back() {
     f.clear("health");
 }
 
+/// Runs `sql` on the daemon's database from outside it: the faults the
+/// tests inject.
+async fn on_database(f: &Fixture, sql: &str) {
+    use sqlx::Connection;
+    let url = format!(
+        "sqlite://{}",
+        f.state.join(ship_store::DATABASE_FILE).display()
+    );
+    let mut conn = sqlx::sqlite::SqliteConnection::connect(&url).await.unwrap();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql.to_owned()))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    conn.close().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failure_after_the_routes_are_replaced_puts_them_back() {
+    let f = fixture(None).await;
+    let revision = upload(&f, "app", &[]).await;
+    let port = free_port();
+    let previous = first_release(&f, revision, port).await;
+
+    // The endpoint line cannot be logged: a move to another port fails
+    // after its route was written, and the old route is back.
+    on_database(
+        &f,
+        "CREATE TRIGGER test_refuse_endpoint BEFORE INSERT ON operation_event \
+         WHEN NEW.message LIKE 'Endpoint:%' \
+         BEGIN SELECT RAISE(ABORT, 'refused by the test'); END",
+    )
+    .await;
+    let other = free_port();
+    let body = json!({ "revision_id": revision.to_string(), "port": other.to_string() });
+    let op = deploy(&f, "app", "second", body).await;
+    assert_eq!(op.phase, OperationPhase::Failed, "{op:?}");
+    assert_eq!(op.failure_phase, Some(OperationPhase::Verifying), "{op:?}");
+    assert_previous_serves(&f, &op, previous, port).await;
+    let calls = f.invocations();
+    let last_up = ups(&calls).pop().unwrap().clone();
+    let previous_file = release_dir(&f.state, previous).join(COMPOSE_FILE);
+    assert!(
+        last_up.contains(&previous_file.display().to_string()),
+        "{last_up}"
+    );
+    on_database(&f, "DROP TRIGGER test_refuse_endpoint").await;
+
+    // The success cannot be recorded: a deployment with no port, which
+    // would clear the routes, leaves the serving route in place.
+    on_database(
+        &f,
+        "CREATE TRIGGER test_refuse_success BEFORE UPDATE OF result ON deployment \
+         WHEN NEW.result = 'succeeded' \
+         BEGIN SELECT RAISE(ABORT, 'refused by the test'); END",
+    )
+    .await;
+    let body = json!({ "revision_id": revision.to_string() });
+    let op = deploy(&f, "app", "third", body).await;
+    assert_eq!(op.phase, OperationPhase::Failed, "{op:?}");
+    assert_eq!(op.failure_phase, Some(OperationPhase::Verifying), "{op:?}");
+    assert_previous_serves(&f, &op, previous, port).await;
+    let env = environment(&f, "app").await;
+    assert_eq!(
+        f.store().list_routes(env.id).await.unwrap()[0].status,
+        RouteStatus::Confirmed
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn with_no_previous_release_the_failed_one_is_stopped() {
     let f = fixture(None).await;
