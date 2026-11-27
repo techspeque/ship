@@ -9,8 +9,10 @@
 
 use std::cell::Cell;
 use std::fmt;
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::{self, Read, Write};
+#[cfg(unix)]
+use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
@@ -111,20 +113,102 @@ impl<R: Read> Read for ExactReader<'_, R> {
     }
 }
 
-/// Open a file for reading without following a symlink at its last
-/// component and without blocking on a FIFO swapped in since the scan.
+/// Opens selected files through directory handles, never following a
+/// symlink at any component: the root is reached from `/` one component
+/// at a time, and every directory below it is opened from its parent's
+/// handle. A directory swapped for a symlink since the scan is refused,
+/// not followed.
 #[cfg(unix)]
-fn open_nofollow(path: &Path) -> io::Result<File> {
-    use std::os::unix::fs::OpenOptionsExt;
-    fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)
+struct Opener {
+    root: OwnedFd,
+    /// The parent directory of the last file opened, and its handle.
+    parent: Option<(String, OwnedFd)>,
+}
+
+#[cfg(unix)]
+impl Opener {
+    fn new(root: &Path) -> io::Result<Self> {
+        use std::os::unix::ffi::OsStrExt;
+        use std::path::Component;
+        let mut fd = openat(None, b"/", true)?;
+        for comp in root.components() {
+            match comp {
+                Component::RootDir => {}
+                Component::Normal(name) => fd = openat(Some(&fd), name.as_bytes(), true)?,
+                _ => return Err(io::Error::from(io::ErrorKind::InvalidInput)),
+            }
+        }
+        Ok(Opener {
+            root: fd,
+            parent: None,
+        })
+    }
+
+    /// Open the regular file at `rel`, a `/`-separated selection path,
+    /// without following a symlink and without blocking on a FIFO.
+    fn open(&mut self, rel: &str) -> io::Result<File> {
+        let Some((dir, name)) = rel.rsplit_once('/') else {
+            return openat(Some(&self.root), rel.as_bytes(), false).map(File::from);
+        };
+        let cached = matches!(&self.parent, Some((p, _)) if p == dir);
+        if !cached {
+            let mut fd: Option<OwnedFd> = None;
+            for comp in dir.split('/') {
+                let base = fd.as_ref().unwrap_or(&self.root);
+                fd = Some(openat(Some(base), comp.as_bytes(), true)?);
+            }
+            let fd = fd.ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+            self.parent = Some((dir.to_string(), fd));
+        }
+        let base = match &self.parent {
+            Some((_, fd)) => fd,
+            None => &self.root,
+        };
+        openat(Some(base), name.as_bytes(), false).map(File::from)
+    }
+}
+
+/// `openat(2)` with `O_NOFOLLOW`, of a directory (`O_DIRECTORY`) or of a
+/// file for reading (`O_NONBLOCK`). `base` `None` is the current
+/// directory, used only with an absolute name.
+#[cfg(unix)]
+fn openat(base: Option<&OwnedFd>, name: &[u8], dir: bool) -> io::Result<OwnedFd> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    let name =
+        std::ffi::CString::new(name).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+    let kind = if dir {
+        libc::O_DIRECTORY
+    } else {
+        libc::O_NONBLOCK
+    };
+    let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC | kind;
+    let base = base.map_or(libc::AT_FDCWD, |fd| fd.as_raw_fd());
+    // SAFETY: `name` is NUL-terminated and `base` is an open directory
+    // handle or AT_FDCWD.
+    let fd = unsafe { libc::openat(base, name.as_ptr(), flags) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `fd` was just opened and is owned by nothing else.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
 #[cfg(not(unix))]
-fn open_nofollow(path: &Path) -> io::Result<File> {
-    File::open(path)
+struct Opener {
+    root: PathBuf,
+}
+
+#[cfg(not(unix))]
+impl Opener {
+    fn new(root: &Path) -> io::Result<Self> {
+        Ok(Opener {
+            root: root.to_path_buf(),
+        })
+    }
+
+    fn open(&mut self, rel: &str) -> io::Result<File> {
+        File::open(self.root.join(rel))
+    }
 }
 
 fn header(kind: EntryType, size: u64, mode: u32) -> Header {
@@ -151,6 +235,10 @@ pub fn pack<W: Write>(selection: &Selection, out: W) -> Result<Packed, PackError
     let encoder =
         zstd::stream::write::Encoder::new(hashing, ZSTD_LEVEL).map_err(PackError::Write)?;
     let mut builder = tar::Builder::new(encoder);
+    let mut opener = Opener::new(selection.root()).map_err(|source| PackError::Read {
+        path: selection.root().to_path_buf(),
+        source,
+    })?;
 
     for entry in selection.entries() {
         match entry.kind {
@@ -163,7 +251,7 @@ pub fn pack<W: Write>(selection: &Selection, out: W) -> Result<Packed, PackError
             EntryKind::File { size, executable } => {
                 let abs = selection.root().join(&entry.path);
                 let changed = || PackError::Changed(abs.clone());
-                let file = match open_nofollow(&abs) {
+                let file = match opener.open(&entry.path) {
                     Ok(f) => f,
                     Err(e) if is_symlink_refusal(&e) => return Err(changed()),
                     Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(changed()),
@@ -217,10 +305,14 @@ pub fn pack<W: Write>(selection: &Selection, out: W) -> Result<Packed, PackError
 }
 
 /// `O_NOFOLLOW` on a symlink fails with `ELOOP` (Linux, macOS) or `EMLINK`
-/// (some BSDs).
+/// (some BSDs); `O_DIRECTORY` on a component that is no longer a directory
+/// fails with `ENOTDIR`.
 #[cfg(unix)]
 fn is_symlink_refusal(e: &io::Error) -> bool {
-    matches!(e.raw_os_error(), Some(libc::ELOOP) | Some(libc::EMLINK))
+    matches!(
+        e.raw_os_error(),
+        Some(libc::ELOOP) | Some(libc::EMLINK) | Some(libc::ENOTDIR)
+    )
 }
 
 #[cfg(not(unix))]

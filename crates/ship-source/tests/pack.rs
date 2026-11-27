@@ -404,6 +404,40 @@ fn a_symlink_swapped_in_after_the_scan_is_not_followed() {
 
 #[cfg(unix)]
 #[test]
+fn a_parent_directory_swapped_for_a_symlink_after_the_scan_is_not_followed() {
+    use std::os::unix::fs::symlink;
+
+    // Same name and length as the scanned file, so only the parent differs.
+    let outside = TempDir::new().unwrap();
+    write(outside.path(), "data", "SECRET\n");
+    write(outside.path(), "er/data", "SECRET\n");
+
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    write(root, "sub/data", "public\n");
+    let sel = scan(root, &opts()).unwrap();
+    fs::remove_dir_all(root.join("sub")).unwrap();
+    symlink(outside.path(), root.join("sub")).unwrap();
+    assert!(matches!(
+        pack(&sel, std::io::sink()),
+        Err(PackError::Changed(_))
+    ));
+
+    // A component above the file's parent, swapped the same way.
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    write(root, "deep/er/data", "public\n");
+    let sel = scan(root, &opts()).unwrap();
+    fs::remove_dir_all(root.join("deep")).unwrap();
+    symlink(outside.path(), root.join("deep")).unwrap();
+    assert!(matches!(
+        pack(&sel, std::io::sink()),
+        Err(PackError::Changed(_))
+    ));
+}
+
+#[cfg(unix)]
+#[test]
 fn a_fifo_is_skipped() {
     let dir = TempDir::new().unwrap();
     let root = dir.path();
