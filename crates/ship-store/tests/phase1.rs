@@ -762,6 +762,15 @@ async fn schema_rejects_illegal_operation_changes() {
         .advance_operation(done, OperationPhase::Succeeded)
         .await
         .unwrap();
+    let stopped = operation(&store, "k4", env).await.id;
+    store
+        .fail_operation(
+            stopped,
+            OperationPhase::Interrupted,
+            &failure(ErrorCode::Interrupted),
+        )
+        .await
+        .unwrap();
     store.close().await;
 
     let mut conn = raw(dir.path()).await;
@@ -807,6 +816,32 @@ async fn schema_rejects_illegal_operation_changes() {
     .execute(&mut conn)
     .await
     .unwrap();
+
+    // A recorded failure, failed or interrupted, never changes.
+    for id in [running, stopped] {
+        let read =
+            "SELECT failure_code, failure_message, failure_phase FROM operation WHERE id = ?";
+        let before: (Option<String>, Option<String>, Option<String>) = sqlx::query_as(read)
+            .bind(id.to_string())
+            .fetch_one(&mut conn)
+            .await
+            .unwrap();
+        let edits = [
+            format!("UPDATE operation SET failure_code = 'other' WHERE id = '{id}'"),
+            format!("UPDATE operation SET failure_message = 'other' WHERE id = '{id}'"),
+            format!("UPDATE operation SET failure_phase = 'deploying' WHERE id = '{id}'"),
+        ];
+        for sql in &edits {
+            let msg = refused(&mut conn, sql).await;
+            assert!(msg.contains("illegal"), "{sql}: {msg}");
+        }
+        let after: (Option<String>, Option<String>, Option<String>) = sqlx::query_as(read)
+            .bind(id.to_string())
+            .fetch_one(&mut conn)
+            .await
+            .unwrap();
+        assert_eq!(after, before);
+    }
     conn.close().await.unwrap();
 }
 
