@@ -253,9 +253,12 @@ findings:
       severity: P1
       category: security
       finding: crates/ship-daemon/src/queue.rs:244 — A registered multiline secret (private-first-line\nprivate-second-line) passed through Context::log and JobFailure is persisted verbatim in failure_message and the finished event; its component lines are also persisted in log records and log events. Inner::redact passes raw multiline text to the line-oriented Redactor, and Context::log splits before redaction (line 646). A targeted real-SQLite probe reproduced this. — Redact whole message values before splitting using the existing Redactor in a representation that preserves multiline matching; ensure failure/view/SSE and log paths remove the registered value and add multiline regression coverage.
-      status: open
+      status: resolved
+      resolved_by: commit 6f71a11e8bb2; test a_multiline_secret_never_reaches_the_log_events_or_failure; 6f71a11; independently verified with forced metis verify --post; SSE forwards the redacted stored event message.
       cycle: 1
       file: crates/ship-daemon/src/queue.rs
+      commit: 6f71a11e8bb2e6ae9854c2fb40e0d1609aa154e6
+      evidence: test a_multiline_secret_never_reaches_the_log_events_or_failure
     - id: f-023
       date: "2026-11-27"
       slice: phase-1-ws-1.3
