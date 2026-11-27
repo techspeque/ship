@@ -493,6 +493,9 @@ findings:
       severity: P2
       category: tests
       finding: crates/ship/tests/ssh_real.rs:212-215 — The brief Definition of Done at lines 147-150 requires Dockerfile and Compose pushes over local and SSH transports, but both push_over_real_ssh_deploys and cli_push.rs:a_push_over_ssh_deploys exercise only Dockerfile; the Compose test uses only the local target. Add successful Compose push coverage through fake SSH and the CI real-sshd path, asserting the operation result and service outcomes.
-      status: open
+      status: resolved
+      resolved_by: commit 00b7242110b4; test a_compose_push_over_ssh_deploys; crates/ship/tests/ssh_real.rs:230; 00b7242; fake SSH regression passed independently; real-sshd Compose coverage inspected, executed by CI ssh job
       cycle: 1
       file: crates/ship/tests/ssh_real.rs
+      commit: 00b7242110b4818b85da1e3af61e86b763f6539f
+      evidence: test a_compose_push_over_ssh_deploys; crates/ship/tests/ssh_real.rs:230
