@@ -337,9 +337,12 @@ findings:
       severity: P2
       category: behavior
       finding: crates/ship-docker/src/compose.rs:275 — compose logs merges container stdout and stderr into its stdout; the real-Docker lifecycle test fails at tests/real_compose.rs:330 with err-line marked Stdout — preserve the original container stream distinction and make the required real-Docker lifecycle test pass.
-      status: open
+      status: resolved
+      resolved_by: 'commit 2fc00482ca82; test compose_project_lifecycle_is_labelled_and_keeps_volumes; 2fc0048: independently passed real-Docker lifecycle and forced post verification'
       cycle: 1
       file: crates/ship-docker/src/compose.rs
+      commit: 2fc00482ca823a71215a66219a823953763bfff3
+      evidence: test compose_project_lifecycle_is_labelled_and_keeps_volumes
     - id: f-030
       date: "2026-11-27"
       slice: phase-1-ws-1.6
