@@ -409,9 +409,12 @@ findings:
       severity: P2
       category: tests
       finding: crates/ship-store/tests/deploy.rs:1 — The brief explicitly requires migration from schema version 2 to 3 (.metis/briefs/phase-1-ws-1.7.md:154-156), but this file only tests fresh stores; the updated phase1.rs migration starts at version 1. Add the specified populated version-2 upgrade test, checking backup, preserved data, schema version 3, and usable settings storage.
-      status: open
+      status: resolved
+      resolved_by: commit c930458f2ade; test a_version_2_database_migrates_to_version_3_with_a_backup
       cycle: 1
       file: crates/ship-store/tests/deploy.rs
+      commit: c930458f2ade103fca04ab54c8316e8eef2a1cce
+      evidence: test a_version_2_database_migrates_to_version_3_with_a_backup
     - id: f-036
       date: "2026-11-27"
       slice: phase-1-ws-1.7
