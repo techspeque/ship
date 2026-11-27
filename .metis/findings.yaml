@@ -505,9 +505,12 @@ findings:
       severity: P1
       category: security
       finding: 'crates/ship-daemon/src/secrets.rs:129 — Startup registers only current secret rows, while config.rs:356-366 deletes rotated/unset values even though running and retained releases still use them. Reproduced rotation followed by register_all with a fresh Redactor: old-review-canary is emitted unchanged, new-review-canary is redacted. After daemon restart, output containing the still-running old credential can enter logs/events/API responses. Restore redaction for secrets used by retained/running releases as well as current config; add rotation and unset-before-redeploy restart regressions.'
-      status: open
+      status: resolved
+      resolved_by: commit bece0b19adbd; test values_a_retained_release_runs_with_are_redacted_after_a_restart; bece0b1; independently verified in re-review
       cycle: 1
       file: crates/ship-daemon/src/secrets.rs
+      commit: bece0b19adbdb4ebd3372d339f7e4636e899c000
+      evidence: test values_a_retained_release_runs_with_are_redacted_after_a_restart
     - id: f-044
       date: "2026-11-27"
       slice: phase-1-ws-1.10
