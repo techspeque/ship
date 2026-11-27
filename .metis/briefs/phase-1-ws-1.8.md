@@ -166,4 +166,66 @@ None.
 
 ## Report
 
-Filled at implementation.
+- `ship-core`: `trust.rs` (new: `evaluate`, `Evaluation`, `Item`, `Rule`,
+  `Outcome`, `SnapshotBind`, `ConfirmPolicy`, `normalize`,
+  `DEFAULT_RESTART`, `SOCKET_PARENTS`, `HOST_NAMESPACE_KEYS`; 12 unit
+  tests); `api.rs` `COMPOSE_CONFIRM_KEY`, `project_setting_path`,
+  `DeployRequest.confirm`.
+- `ship-store`: `migrations/0004_compose_confirm.sql`; `audit.rs`
+  (`detail`, `audit_events_for`); `settings.rs` (`SettingScope`,
+  `setting`, `set_setting`, `effective_setting`, `Setting.scope`,
+  `Setting.updated_by`; `set_host_setting` takes the actor). Tests updated
+  for version 4; `project_settings_win_over_the_host` new.
+- `ship-daemon`: `compose_import.rs` (new: `check`, `steps`,
+  `fingerprint`, `CONFIRM_ACTION`, `ACCEPT_ACTION`, `POLICY_ACTOR`; 4 unit
+  tests); `deploy.rs` (Compose dispatch before the deployment row,
+  `FILES_FILE`, `release_files`, `write_manifest`, `service_image_tag`,
+  `verify` over several services, `up_failure_of`, helpers made
+  `pub(crate)`); `settings.rs` (`compose.confirm`, project scope);
+  `http.rs` (`GET|POST /api/v1/projects/{project}/settings/{key}`,
+  `confirm` passed to the job). `tests/compose_import.rs` (7 tests, fake
+  `docker`), `tests/real_compose_import.rs` (2 tests, ignored).
+- `ship-docker`: unchanged.
+- `metis verify --post --slice phase-1-ws-1.8`: ALL GREEN.
+- Not run locally: `real_compose_import.rs` (needs a real Engine; this
+  session can run only `metis verify`). CI's `docker` job runs it.
+- Decisions:
+  - Confirmation items and Ship's diff reach the client as operation
+    events (`needs confirmation: …`, `Ship changes: …`, the fingerprint),
+    and the `confirmation_required` failure message lists the items; the
+    failure shape and the JSON fixtures are unchanged. A client confirms
+    by posting the same revision again with `confirm: true`.
+  - Only an operator's confirmation (`compose.confirm` audit event) is
+    remembered by fingerprint; an acceptance under policy is recorded
+    (`compose.accept`, actor `policy`) but does not count as a
+    confirmation if the policy later goes back to `ask`.
+  - The fingerprint covers the file's path, its bytes and the confirm
+    items' texts (which include host paths and line numbers), so the same
+    file in a new revision is not asked about again and any change to it,
+    or to what interpolation makes of it, asks again.
+  - Profile additions within ADR-0008's categories: `uts`, `userns_mode`
+    and `cgroup` set to `host` and `device_cgroup_rules` are rejects; a
+    top-level volume bound to a host path through `driver_opts`, a
+    `configs`/`secrets` `file` outside the snapshot, a build context
+    outside the snapshot and an unknown mount type need confirmation;
+    `/`, `/run`, `/var`, `/var/run` count as the Docker socket. Other keys
+    (`security_opt`, `sysctls`, …) are allowed, as before.
+  - Every bind inside the snapshot is mounted read-only (a write would
+    change an immutable revision); the override repeats the mount with
+    `read_only: true`, which Compose merges by target.
+  - A built service the file names no image for is tagged
+    `ship_<env>-<service>:<release>`, so the previous release's image
+    survives a failed deployment; a built service with its own `image`
+    keeps it. Image-only services are recorded in the release by the
+    reference the file names.
+  - `--port` with a Compose file fails `invalid_request` in `validating`:
+    an imported file keeps the ports it declares. Routes are recorded for
+    single published ports at their declared `host_ip` (none:
+    `0.0.0.0`); ranges and ephemeral ports get none, and the log says so.
+  - `docker compose config` failing is `invalid_request` without its
+    stderr (it may quote interpolated values; ADR-0008 rule 7).
+  - Every service must verify (`healthy` or `running_unverified`); a
+    one-shot service that exits fails verification in Phase 1.
+  - `GET /api/v1/projects/{project}/settings/compose.confirm` answers the
+    value in effect (project, else host, else `ask`); `SettingView` is
+    unchanged. The CLI for `compose.confirm` is phase-1-ws-1.9's.
