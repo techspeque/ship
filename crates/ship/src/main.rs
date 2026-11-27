@@ -191,6 +191,13 @@ fn main() -> ExitCode {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(e) => {
+            // Clap's diagnostics quote the arguments they refuse; a
+            // `ship secrets` argument may be a value (f-044).
+            let args: Vec<_> = std::env::args_os().skip(1).collect();
+            if vars::refuses_parse(&e, &args) {
+                eprintln!("ship: {}", vars::parse_refusal(e.kind()));
+                return ExitCode::from(2);
+            }
             let _ = e.print();
             return if e.use_stderr() {
                 ExitCode::from(2)

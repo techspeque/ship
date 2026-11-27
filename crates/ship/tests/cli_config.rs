@@ -149,6 +149,28 @@ fn a_secret_given_as_an_argument_is_refused_before_anything_is_sent() {
         assert!(!all.contains("hunter2"), "{args:?}: {all}");
         assert!(all.contains("never taken as an argument"), "{all}");
     }
+    // A value with a leading hyphen fails Clap's parse; its diagnostic is
+    // replaced, so the value is not echoed either (f-044).
+    let hyphened = format!("--{SECRET}");
+    let short = format!("-{SECRET}");
+    let flag_value = format!("--project={SECRET}");
+    let cases: [Vec<&str>; 4] = [
+        vec!["secrets", "set", "TOKEN", &hyphened, "--project", "app"],
+        vec!["secrets", "set", "TOKEN", &short, "--stdin"],
+        vec!["secrets", "set", "TOKEN", "--stdin", &flag_value, &hyphened],
+        vec!["secrets", &hyphened],
+    ];
+    for args in &cases {
+        let out = env.run_with(args, "from-stdin-value\n");
+        exits(&out, 2);
+        let all = show(&out);
+        assert!(!all.contains("hunter2"), "{args:?}: {all}");
+        assert!(all.contains("never taken as an argument"), "{all}");
+    }
+    // Help asked for is still help.
+    let out = env.run(&["secrets", "set", "--help"]);
+    exits(&out, 0);
+    assert!(show(&out).contains("--stdin"), "{}", show(&out));
     // Neither --prompt nor --stdin.
     exits(&env.run(&["secrets", "set", "TOKEN"]), 2);
     // A value the rules refuse is refused here too.

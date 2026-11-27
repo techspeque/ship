@@ -234,6 +234,42 @@ pub fn refuse_argument(name: &str, rest: &[String]) -> Option<&'static str> {
     )
 }
 
+/// Whether Clap's `error` for `args` (without the program name) is
+/// replaced by [`parse_refusal`]: any for a `ship secrets` command (the
+/// first argument that is not a flag is `secrets`), whose arguments may
+/// hold a value, except help asked for by `-h`, `--help` or `help`, or
+/// shown for a missing subcommand. A value such as `-hx` asks Clap for
+/// help too, and is refused.
+pub fn refuses_parse(error: &clap::Error, args: &[std::ffi::OsString]) -> bool {
+    use clap::error::ErrorKind;
+    let secrets = args
+        .iter()
+        .find(|a| !a.as_encoded_bytes().starts_with(b"-"))
+        .is_some_and(|a| a == "secrets");
+    if !secrets {
+        return false;
+    }
+    match error.kind() {
+        ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => false,
+        ErrorKind::DisplayHelp => !args
+            .iter()
+            .any(|a| a == "-h" || a == "--help" || a == "help"),
+        _ => true,
+    }
+}
+
+/// What `ship secrets …` prints when its arguments do not parse, in place
+/// of Clap's diagnostic, which would quote them: the kind of the problem
+/// and never an argument.
+pub fn parse_refusal(kind: clap::error::ErrorKind) -> String {
+    let what = kind.as_str().unwrap_or("the arguments are not valid");
+    format!(
+        "{what}. The arguments are not repeated: a secret value is never taken as an argument, \
+         where it would stay in shell history and the process list; give only the name, with \
+         --prompt or --stdin. See `ship secrets set --help`."
+    )
+}
+
 /// The value on stdin: all of it, less one final `\n` or `\r\n`.
 fn read_stdin() -> Result<String, String> {
     let mut bytes = Vec::new();
