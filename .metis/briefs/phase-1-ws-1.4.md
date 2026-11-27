@@ -121,4 +121,41 @@ None.
 
 ## Report
 
-Filled at implementation.
+- `src/exclude.rs` (new): `Exclusion`, `classify(name, is_dir)`; the
+  lists in the brief, matched ASCII case-insensitively.
+- `src/scan.rs` (new): `Limits` (defaults 50 000 entries, 512 MiB),
+  `Options`, `scan`, `Selection`, `Entry`, `EntryKind`, `Excluded`,
+  `Skipped`, `SkipReason`, `DryRunReport` (serde + `Display`),
+  `ScanError`, `IGNORE_FILES`. Iterative walk (no recursion depth
+  limit); limits checked as entries are added, so an oversize tree stops
+  early.
+- `src/pack.rs` (new): `pack`, `Packed`, `PackError`, `ZSTD_LEVEL`.
+  Files opened with `O_NOFOLLOW | O_NONBLOCK` and re-checked by `fstat`
+  (regular file, scanned size); an exact-length reader fails a shrunk
+  file and a one-byte probe fails a grown one, both as `Changed`.
+- `src/lib.rs`: modules and re-exports.
+- `Cargo.toml`: `ignore`, `serde`, `sha2`, `tar` (no default features),
+  `zstd` (no default features); `libc` under `cfg(unix)`; dev
+  `serde_json`, `tempfile`. `Cargo.lock` adds aho-corasick, bstr,
+  const-oid, crossbeam-deque, crossbeam-epoch, filetime, globset, ignore,
+  jobserver, regex-automata, regex-syntax, same-file, tar, walkdir,
+  winapi-util, zstd, zstd-safe, zstd-sys (all MIT, Apache-2.0 or
+  Unlicense dual licences). `cargo deny` was not run locally; CI's
+  `audit` job checks it.
+- Tests: 13 unit (`exclude.rs`, `scan.rs`, `pack.rs`), `tests/pack.rs`
+  (18), `tests/memory.rs` (1), `tests/deps.rs` (1).
+- Decisions:
+  - Entry order: a directory's entries in byte order, then each
+    subdirectory's (parents precede children).
+  - A named include lifts the block on that exact path only; its blocked
+    ancestors are entered restricted (only the way to the named path is
+    sent) and still reported as excluded. It also overrides ignore rules,
+    since `.env.*` files are usually gitignored. An include that matches
+    nothing sendable is `IncludeNotFound`.
+  - A file that is tracked by Git but matches `.gitignore` is excluded:
+    with no Git metadata read, the ignore files are the only rule.
+  - Ancestors of the home directory are refused as well as the home
+    directory itself and filesystem roots.
+  - `ship-core` is not a dependency yet; nothing from it is needed.
+- `metis verify --post --slice phase-1-ws-1.4`: ALL GREEN (web, fmt,
+  clippy, all workspace tests).
