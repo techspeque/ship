@@ -216,7 +216,9 @@ None.
     multi-stage builds count as Docker sees them. The mapping is therefore
     checked in `preparing`, after the build.
   - Each `VOLUME` path is mounted from a named volume named after the path
-    (`/var/lib/data` → `var-lib-data`), so data survives a redeploy and a
+    and its exact path's SHA-256 (`/var/lib/data` →
+    `var-lib-data-94388feac72b`), never on the image's other paths
+    (f-032), so data survives a redeploy and a
     later `remove`; networks and volumes keep the environment's first
     release as their release label (Compose would otherwise see them as
     changed).

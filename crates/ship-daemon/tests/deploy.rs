@@ -766,13 +766,16 @@ async fn volumes_are_named_and_kept() {
         .await
         .release_id
         .unwrap();
+    // Named from the path and the start of its SHA-256, the same on every
+    // release.
+    let name = "var-lib-data-94388feac72b";
     for release in [a, b] {
         let doc = generated(&f, release);
         assert_eq!(
             doc["services"]["web"]["volumes"],
-            json!([{ "type": "volume", "source": "var-lib-data", "target": "/var/lib/data" }])
+            json!([{ "type": "volume", "source": name, "target": "/var/lib/data" }])
         );
-        assert_eq!(doc["volumes"], json!({ "var-lib-data": {} }));
+        assert_eq!(doc["volumes"], json!({ name: {} }));
         // The volume's labels name the first release on every redeploy, so
         // Compose never sees it as changed.
         let labels: Value = serde_json::from_str(
@@ -780,7 +783,7 @@ async fn volumes_are_named_and_kept() {
         )
         .unwrap();
         assert_eq!(
-            labels["volumes"]["var-lib-data"]["labels"]["dev.ship.release"],
+            labels["volumes"][name]["labels"]["dev.ship.release"],
             a.to_string()
         );
     }

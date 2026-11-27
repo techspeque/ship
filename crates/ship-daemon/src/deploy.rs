@@ -29,7 +29,6 @@
 //! evidence. Either way the deployment is `failed` and the operation's
 //! failure names the phase (ADR-0011 rule 7).
 
-use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, UdpSocket};
@@ -613,34 +612,35 @@ impl Shape {
     }
 }
 
-/// One named volume per `VOLUME` path, named after the path: `/var/lib/data`
-/// is `var-lib-data`; clashes get `-2`, `-3`.
+/// One named volume per `VOLUME` path. The name depends on that exact path
+/// alone, never on the image's other paths, so a path keeps its volume
+/// across releases however paths are added or removed: a readable part
+/// from the path (`/var/lib/data` gives `var-lib-data`) and the first 12
+/// hex digits of the SHA-256 of the exact path, which tells apart paths
+/// the readable part folds together (`/data`, `/DATA`, `/data/`).
 fn volume_mounts(paths: &[String]) -> Vec<Mount> {
-    let mut used = BTreeSet::new();
-    let mut out = Vec::with_capacity(paths.len());
-    for path in paths {
-        let words: Vec<String> = path
-            .split(|c: char| !c.is_ascii_alphanumeric())
-            .filter(|w| !w.is_empty())
-            .map(str::to_ascii_lowercase)
-            .collect();
-        let base = match words.join("-") {
-            w if w.is_empty() => "volume".to_owned(),
-            w if w.len() < 2 => format!("volume-{w}"),
-            w => w,
-        };
-        let mut name = base.clone();
-        let mut n = 2;
-        while !used.insert(name.clone()) {
-            name = format!("{base}-{n}");
-            n += 1;
-        }
-        out.push(Mount {
-            name,
+    paths
+        .iter()
+        .map(|path| Mount {
+            name: volume_name(path),
             path: path.clone(),
-        });
-    }
-    out
+        })
+        .collect()
+}
+
+fn volume_name(path: &str) -> String {
+    let words: Vec<String> = path
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect();
+    let base = match words.join("-") {
+        w if w.is_empty() => "volume".to_owned(),
+        w => w,
+    };
+    let digest = Sha256::digest(path.as_bytes());
+    let hex: String = digest.iter().take(6).map(|b| format!("{b:02x}")).collect();
+    format!("{base}-{hex}")
 }
 
 fn path_text(path: &Path) -> Result<String, JobFailure> {
@@ -957,6 +957,7 @@ impl LogForward {
 mod tests {
     use super::*;
     use ship_core::deploy::Protocol;
+    use std::collections::BTreeSet;
 
     fn shape() -> Shape {
         Shape {
@@ -993,9 +994,9 @@ mod tests {
         );
         assert_eq!(
             doc["services"]["web"]["volumes"],
-            json!([{ "type": "volume", "source": "data", "target": "/data" }])
+            json!([{ "type": "volume", "source": volume_name("/data"), "target": "/data" }])
         );
-        assert_eq!(doc["volumes"], json!({ "data": {} }));
+        assert_eq!(doc["volumes"], json!({ volume_name("/data"): {} }));
         assert_eq!(s.endpoint().unwrap().to_string(), "100.64.0.9:8080");
         let v6 = SocketAddr::new("fd7a::1".parse().unwrap(), 8080);
         assert_eq!(v6.to_string(), "[fd7a::1]:8080");
@@ -1021,31 +1022,68 @@ mod tests {
         assert_ne!(a.fingerprint(), b.fingerprint());
     }
 
+    fn names(paths: &[&str]) -> Vec<(String, String)> {
+        let paths: Vec<String> = paths.iter().map(|s| (*s).to_owned()).collect();
+        volume_mounts(&paths)
+            .into_iter()
+            .map(|m| (m.path, m.name))
+            .collect()
+    }
+
+    fn name_of(mounts: &[(String, String)], path: &str) -> String {
+        mounts.iter().find(|(p, _)| p == path).unwrap().1.clone()
+    }
+
     #[test]
     fn volumes_are_named_after_their_paths() {
-        let paths: Vec<String> = [
+        let all = names(&[
             "/var/lib/data",
             "/data",
             "/DATA",
             "/",
             "/a",
             "/var/lib/data/",
-        ]
-        .iter()
-        .map(|s| (*s).to_owned())
-        .collect();
-        let names: Vec<String> = volume_mounts(&paths).into_iter().map(|m| m.name).collect();
+        ]);
+        let readable: Vec<&str> = all
+            .iter()
+            .map(|(_, n)| n.rsplit_once('-').unwrap().0)
+            .collect();
         assert_eq!(
-            names,
+            readable,
             [
                 "var-lib-data",
                 "data",
-                "data-2",
+                "data",
                 "volume",
-                "volume-a",
-                "var-lib-data-2"
+                "a",
+                "var-lib-data"
             ]
         );
+        for (_, n) in &all {
+            let hex = n.rsplit_once('-').unwrap().1;
+            assert_eq!(hex.len(), 12, "{n}");
+            assert!(hex.bytes().all(|b| b.is_ascii_hexdigit()), "{n}");
+        }
+        // Paths that fold to the same words still get their own volume.
+        let distinct: BTreeSet<&String> = all.iter().map(|(_, n)| n).collect();
+        assert_eq!(distinct.len(), all.len());
+    }
+
+    #[test]
+    fn a_volume_keeps_its_name_as_colliding_paths_come_and_go() {
+        // Release 1 has /data; release 2 adds /DATA (before it, and after
+        // it); release 3 drops /data. /data and /DATA each keep one name.
+        let r1 = names(&["/data"]);
+        let r2 = names(&["/DATA", "/data"]);
+        let r2b = names(&["/data", "/DATA"]);
+        let r3 = names(&["/DATA"]);
+        let data = name_of(&r1, "/data");
+        assert_eq!(name_of(&r2, "/data"), data);
+        assert_eq!(name_of(&r2b, "/data"), data);
+        let upper = name_of(&r2, "/DATA");
+        assert_ne!(upper, data);
+        assert_eq!(name_of(&r2b, "/DATA"), upper);
+        assert_eq!(name_of(&r3, "/DATA"), upper);
     }
 
     #[test]
