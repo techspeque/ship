@@ -10,9 +10,9 @@ slices:
       reviewer: codex/gpt-6-astra
       plan: .metis/plans/phase-1-plan.md
       plan_section: §1.2
-      coded: true
+      coded: false
       reviewed: false
-      review_cycles: 0
+      review_cycles: 1
       created: ""
     - id: phase-1-ws-1.3
       title: Operation queue, events and logs

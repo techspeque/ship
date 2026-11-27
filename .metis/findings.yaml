@@ -223,3 +223,12 @@ findings:
       file: metis/briefs/phase-0-gate.md
       commit: 3090249259585ef57c0262e166f017b49ae065e4
       evidence: .metis/briefs/phase-0-gate.md:162
+    - id: f-020
+      date: "2026-11-27"
+      slice: phase-1-ws-1.2
+      severity: P2
+      category: behavior
+      finding: 'crates/ship-store/migrations/0002_phase1.sql:181 — Deployment guards reject only changed values: repeating set_deployment_release with the same release succeeds even after completion, and repeating finish_deployment with the same result in the same millisecond succeeds. Reproduced using the exact UPDATE statements against migrations 0001+0002. This violates brief lines 113-115 requiring second attempts to be rejected. Reject repeated setter/finalizer attempts with IllegalTransition regardless of value equality, and add regression tests for identical release assignments before/after completion and identical-result finalization.'
+      status: open
+      cycle: 1
+      file: crates/ship-store/migrations/0002_phase1.sql
