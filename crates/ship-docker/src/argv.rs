@@ -356,6 +356,22 @@ pub fn compose_logs<S: AsRef<str>>(
     Argv::checked("compose logs", args)
 }
 
+/// `container logs --timestamps [--follow] [--tail N] -- <id>`: one
+/// container's log, with what it wrote to stdout on stdout and what it
+/// wrote to stderr on stderr (`compose logs` merges both into stdout).
+pub fn container_logs(id: &str, options: LogOptions) -> Result<Argv, DockerError> {
+    let mut args: Vec<OsString> = vec!["container".into(), "logs".into(), "--timestamps".into()];
+    if options.follow {
+        args.push("--follow".into());
+    }
+    if let Some(n) = options.tail {
+        args.push("--tail".into());
+        args.push(n.to_string().into());
+    }
+    push_ids(&mut args, &[id])?;
+    Argv::checked("container logs", args)
+}
+
 /// `ps --all --quiet --no-trunc --filter label=…`: containers carrying
 /// Ship's labels for the selector.
 pub fn container_ids(selector: &Selector) -> Result<Argv, DockerError> {
@@ -470,6 +486,7 @@ mod tests {
             project_network_ids(&p),
             network_inspect(services),
             project_container_ids(&p),
+            container_logs(services.first().copied().unwrap_or_default(), logs),
         ]
     }
 
@@ -611,6 +628,32 @@ mod tests {
             ["container", "inspect", "--", id]
         );
         assert_eq!(
+            strs(
+                &container_logs(
+                    id,
+                    LogOptions {
+                        follow: true,
+                        tail: Some(5)
+                    }
+                )
+                .unwrap()
+            ),
+            [
+                "container",
+                "logs",
+                "--timestamps",
+                "--follow",
+                "--tail",
+                "5",
+                "--",
+                id
+            ]
+        );
+        assert_eq!(
+            strs(&container_logs(id, LogOptions::default()).unwrap()),
+            ["container", "logs", "--timestamps", "--", id]
+        );
+        assert_eq!(
             strs(&project_network_ids(&p).unwrap()),
             [
                 "network",
@@ -703,8 +746,8 @@ mod tests {
         for (i, result) in every_builder(NO).into_iter().enumerate() {
             match result {
                 Ok(argv) => assert_safe(&argv),
-                // Inspect needs at least one id.
-                Err(DockerError::InvalidArgument(_)) if i == 13 || i == 15 => {}
+                // Inspect and logs need an id.
+                Err(DockerError::InvalidArgument(_)) if i == 13 || i == 15 || i == 17 => {}
                 Err(e) => panic!("builder {i}: {e}"),
             }
         }

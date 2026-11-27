@@ -7,7 +7,8 @@ use std::time::Duration;
 
 use ship_core::{EnvironmentId, ProjectId, ReleaseId, ServiceId};
 use ship_docker::argv::{
-    DENIED, compose_build, compose_down, compose_stop, project_container_ids, project_network_ids,
+    DENIED, compose_build, compose_down, compose_stop, container_logs, project_container_ids,
+    project_network_ids,
 };
 use ship_docker::compose;
 use ship_docker::labels::ShipLabels;
@@ -34,8 +35,8 @@ first="$1"
 for a in "$@"; do
   case "$a" in
     logs)
-      echo "web-1  | out-line"
-      echo "web-1  | err-line" >&2
+      echo "out-line"
+      echo "err-line" >&2
       exit 0;;
     ps)
       [ -n "$FAKE_IDS" ] && printf '%s\n' "$FAKE_IDS"
@@ -211,8 +212,9 @@ async fn down_never_passes_a_volume_flag() {
 async fn logs_keep_stdout_and_stderr_apart() {
     let dir = tempfile::tempdir().unwrap();
     let mut lines: Vec<Line> = Vec::new();
+    let log = dir.path().join("log");
     compose::logs(
-        &runner(&dir.path().join("log"), ""),
+        &mixed_runner(&log, false),
         &project(),
         &["web"],
         LogOptions::default(),
@@ -230,6 +232,12 @@ async fn logs_keep_stdout_and_stderr_apart() {
     };
     assert_eq!(of(Stream::Stdout), ["web-1  | out-line"]);
     assert_eq!(of(Stream::Stderr), ["web-1  | err-line"]);
+    assert_eq!(
+        invocations(&log).last(),
+        Some(&bracketed(
+            &container_logs(OURS, LogOptions::default()).unwrap()
+        ))
+    );
 }
 
 #[tokio::test]

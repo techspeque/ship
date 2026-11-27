@@ -20,9 +20,10 @@ use ship_core::{EnvironmentId, ProjectId, ReleaseId, SecretValue, ServiceId};
 use crate::argv::{self, Argv, ComposeFiles, ComposeProject, LogOptions, UpOptions};
 use crate::error::DockerError;
 use crate::inspect::{inspect_json, label_map, parse_ids};
-use crate::labels::ShipLabels;
+use crate::labels::{Selector, ShipLabels};
 use crate::runner::Runner;
 use crate::stream::{Line, stream};
+use tokio::sync::mpsc;
 
 /// The canonical, interpolated Compose model of a project
 /// (`compose config --format json`).
@@ -262,9 +263,15 @@ pub async fn down(
     run_streamed(runner, &argv, Some(timeout), sink).await
 }
 
-/// `compose logs`, streaming each line to `sink` with stdout and stderr
-/// apart. With `follow` and no `timeout` it runs until the future is
-/// dropped.
+/// The logs of the project's containers of `services` (every service when
+/// empty), streaming each line to `sink` as `<service>-<n>  | <line>`, with
+/// what the container wrote to stdout and to stderr kept apart.
+///
+/// `compose logs` merges a container's two streams into its own stdout, so
+/// this reads each of Ship's containers (selected by its labels, as
+/// [`crate::containers`] does) with `container logs`, all at once. With
+/// `follow` and no `timeout` it runs until the future is dropped, which
+/// stops every reader. The first reader that fails ends the call.
 pub async fn logs<S: AsRef<str>>(
     runner: &Runner,
     project: &ComposeProject,
@@ -273,8 +280,76 @@ pub async fn logs<S: AsRef<str>>(
     timeout: Option<Duration>,
     sink: &mut (dyn FnMut(Line) + Send),
 ) -> Result<(), DockerError> {
-    let argv = argv::compose_logs(project, services, options)?;
-    run_streamed(runner, &argv, timeout, sink).await
+    if let Some(bad) = services
+        .iter()
+        .map(AsRef::as_ref)
+        .find(|s| !argv::is_service_name(s))
+    {
+        return Err(DockerError::InvalidArgument(format!(
+            "`{bad}` is not a Compose service name"
+        )));
+    }
+    let mut ours = crate::containers(runner, &Selector::environment(project.environment())).await?;
+    ours.retain(|c| {
+        services.is_empty()
+            || c.compose_service
+                .as_deref()
+                .is_some_and(|name| services.iter().any(|s| s.as_ref() == name))
+    });
+    ours.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut readers = Vec::with_capacity(ours.len());
+    for c in &ours {
+        let prefix = c
+            .name
+            .strip_prefix(project.name())
+            .and_then(|n| n.strip_prefix('-'))
+            .unwrap_or(&c.name)
+            .to_owned();
+        readers.push((prefix, argv::container_logs(&c.id, options)?));
+    }
+
+    enum Event {
+        Line(Line),
+        Failed(DockerError),
+    }
+    let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
+    let mut tasks = AbortOnDrop(Vec::with_capacity(readers.len()));
+    for (prefix, argv) in readers {
+        let runner = runner.clone();
+        let tx = tx.clone();
+        tasks.0.push(tokio::spawn(async move {
+            let mut each = |l: Line| {
+                let _ = tx.send(Event::Line(Line {
+                    stream: l.stream,
+                    text: format!("{prefix}  | {}", l.text),
+                }));
+            };
+            if let Err(e) = run_streamed(&runner, &argv, timeout, &mut each).await {
+                let _ = tx.send(Event::Failed(e));
+            }
+        }));
+    }
+    drop(tx);
+    while let Some(event) = rx.recv().await {
+        match event {
+            Event::Line(line) => sink(line),
+            // Dropping `tasks` stops the other readers.
+            Event::Failed(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+/// Aborts its tasks when dropped; an aborted reader's process group is
+/// killed by the streaming run's own guard.
+struct AbortOnDrop(Vec<tokio::task::JoinHandle<()>>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        for task in &self.0 {
+            task.abort();
+        }
+    }
 }
 
 /// `compose ps --all --quiet`: the id of every container in the project,
