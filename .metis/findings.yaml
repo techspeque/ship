@@ -277,9 +277,12 @@ findings:
       severity: P1
       category: security
       finding: 'crates/ship-source/src/pack.rs:166 — O_NOFOLLOW protects only the final path component: after scanning sub/data containing public, replacing sub with a symlink to an outside directory containing same-length data SECRET makes pack succeed and archive SECRET (reproduced). This violates the no-symlink-following contract. Resolve/open the root and every directory component without following symlinks, using race-safe directory-relative handles, and add a regression for a parent directory swapped between scan and pack.'
-      status: open
+      status: resolved
+      resolved_by: commit acfcabe23c35; test a_parent_directory_swapped_for_a_symlink_after_the_scan_is_not_followed
       cycle: 1
       file: crates/ship-source/src/pack.rs
+      commit: acfcabe23c3514a147862f64e6d11f3bdf744e01
+      evidence: test a_parent_directory_swapped_for_a_symlink_after_the_scan_is_not_followed
     - id: f-025
       date: "2026-11-27"
       slice: phase-1-ws-1.4
