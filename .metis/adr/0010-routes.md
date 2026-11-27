@@ -39,7 +39,7 @@ provider. Nothing is reachable without one.
 
 1. No route, no exposure. `EXPOSE` in a Dockerfile is a hint for the port prompt and nothing more.
 2. The CLI prints only addresses of routes whose status is confirmed, otherwise `Endpoint: not configured` and how to add one.
-3. The `port` provider detects conflicts before deploy and never picks a different port silently.
+3. The `port` provider detects conflicts before deploy and never picks a different port silently. A port Ship publishes itself binds the host's `publish.address`, a daemon setting that defaults to `127.0.0.1`; the operator widens it, Ship never does.
 4. The `tailnet` provider needs a tailnet auth key or OAuth client, stored as a Ship secret. Sidecars are tagged and removed with the environment.
 5. Tailnet Funnel is never enabled by Ship.
 6. The `caddy` provider validates a new configuration before applying it and restores the previous one on failure. Ship does not claim to issue certificates for names it cannot prove.

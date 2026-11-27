@@ -32,6 +32,17 @@ Decisions made in this plan:
   with this plan.
 - **Routes are published ports only.** The route table is created with the
   `port` provider; tailnet and Caddy providers are Phase 2.
+- **A published port binds the host's publish address** (Human, 2026-11-27).
+  `ship settings set publish.address ADDR` is held by the daemon, like
+  `compose.confirm`, and defaults to `127.0.0.1`: `--port` exposes nothing
+  beyond the host until the operator says where. It applies to the Compose
+  file Ship generates for a Dockerfile; an imported Compose file keeps the
+  addresses it declares (ADR-0008 rule 5). The address `192.0.2.10` in the
+  fixtures is a documentation example standing for the configured address.
+- **`--port N` follows `EXPOSE`** (Human, 2026-11-27). One `EXPOSE` port:
+  host N maps to it. None: host N to container N. Several: `--port
+  HOST:CONTAINER` is required and the error names the candidates. The
+  explicit form is always accepted.
 - **Confirmation without a terminal fails.** A Compose file that needs
   confirmation exits 3 unless the operator confirmed that same file before
   or passes `--confirm`. An agent session cannot confirm on its own.
@@ -243,18 +254,24 @@ Acceptance criteria:
 
 Tasks:
 - Detect a Dockerfile or a Compose file in a revision; `--file` overrides; with both present and no `--file`, Compose wins and the choice is stated
-- For a Dockerfile, generate a single-service Compose project outside the snapshot, named from the environment id, publishing `--port` when given
+- For a Dockerfile, generate a single-service Compose project outside the snapshot, named from the environment id, publishing `--port` when given, on the daemon's `publish.address` (default `127.0.0.1`), mapped by the `EXPOSE` rule in the decisions above; store and serve the `publish.address` setting (`ship settings get|set publish.address ADDR`), validated as an address of the host or `0.0.0.0`
+- Add the route read and write functions the store lacks, and reading built image ids to the Docker adapter; both crates are in this slice's scope
 - Run the deployment as an operation through its phases: build, prepare, deploy, verify (ADR-0011 rule 2)
 - Verify: a passing health check gives `healthy`; with none, a container still running after a settle period gives `running_unverified`
 - Record the release (image ids, config fingerprint) and the deployment with its previous release (ADR-0007)
-- On any failure leave the previous release's containers and data as they were, and keep the evidence
+- On any failure the previous release serves again and its data is untouched, and the evidence is kept. Accepted (Human, 2026-11-27): each release has its own image tag and generated Compose file, and a failed deployment runs `up` with the previous release's file, so the previous containers are recreated, with a short gap, and volumes are kept
 
 Suggested packages:
 - `crates/ship-daemon`
 - `crates/ship-core`
+- `crates/ship-store`
+- `crates/ship-docker`
+- `crates/ship`
 
 Acceptance criteria:
 - [ ] A Dockerfile project is built, started and reachable on its published port against real Docker
+- [ ] With the default `publish.address` the port answers on 127.0.0.1 and on no other address of the host; after setting another address it answers there; the endpoint printed is the address bound
+- [ ] `--port 8080` on a Dockerfile exposing 3000 serves the app on host port 8080; with two `EXPOSE` ports it fails naming both, and `--port 8080:3000` works
 - [ ] A failing build, a port conflict and a failing health check each end as `failed` with a typed code and the phase, and the previous release still serves
 - [ ] The generated Compose file is outside the snapshot and contains no secret value
 - [ ] A named volume survives a redeploy
