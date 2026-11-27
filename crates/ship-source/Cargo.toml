@@ -12,6 +12,8 @@ ignore = "0.4"
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.11"
 tar = { version = "0.4", default-features = false }
+# Unicode collision checks when unpacking (ADR-0005 rule 5).
+unicode-normalization = "0.1"
 zstd = { version = "0.13", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
