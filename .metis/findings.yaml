@@ -197,6 +197,9 @@ findings:
       severity: P2
       category: testing
       finding: scripts/service-smoke.sh:84-86 — The refusal regression accepts any non-zero exit status, so it does not assert exit 1 as required by brief DoD 4; a wrong exit code with the expected message still passes — Capture the failed command's status and assert it equals 1 while retaining the message and no-mutation checks.
-      status: open
+      status: resolved
+      resolved_by: commit f1e43f739c6f; scripts/service-smoke.sh:88
       cycle: 1
       file: scripts/service-smoke.sh
+      commit: f1e43f739c6fa827e49262e3e28149441ad6a0d7
+      evidence: scripts/service-smoke.sh:88
