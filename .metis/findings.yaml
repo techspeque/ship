@@ -394,3 +394,12 @@ findings:
       status: open
       cycle: 1
       file: crates/ship-daemon/src/deploy.rs
+    - id: f-035
+      date: "2026-11-27"
+      slice: phase-1-ws-1.7
+      severity: P2
+      category: tests
+      finding: crates/ship-store/tests/deploy.rs:1 — The brief explicitly requires migration from schema version 2 to 3 (.metis/briefs/phase-1-ws-1.7.md:154-156), but this file only tests fresh stores; the updated phase1.rs migration starts at version 1. Add the specified populated version-2 upgrade test, checking backup, preserved data, schema version 3, and usable settings storage.
+      status: open
+      cycle: 1
+      file: crates/ship-store/tests/deploy.rs
