@@ -1,19 +1,5 @@
 version: 1
 slices:
-    - id: phase-1-ws-1.1
-      title: Status model and error decoding fixes
-      type: feat
-      priority: p2
-      risk: medium
-      stage: push
-      coder: claude-code/opus-5-5
-      reviewer: codex/gpt-6-astra
-      plan: .metis/plans/phase-1-plan.md
-      plan_section: §1.1
-      coded: true
-      reviewed: true
-      review_cycles: 0
-      created: ""
     - id: phase-1-ws-1.2
       title: Store for Phase 1
       type: feat
@@ -209,7 +195,6 @@ slices:
       reviewed: false
       review_cycles: 0
       blocked_by:
-        - phase-1-ws-1.1
         - phase-1-ws-1.2
         - phase-1-ws-1.3
         - phase-1-ws-1.4
