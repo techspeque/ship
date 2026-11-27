@@ -433,9 +433,12 @@ findings:
       severity: P2
       category: behavior
       finding: 'crates/ship-daemon/src/deploy.rs:1013 — Verification permanently skips a service after its first passing observation. Reproduced through the deployment API with poll 1 A=healthy/B=starting and poll 2 A=unhealthy/B=healthy: the operation succeeds and reports A healthy instead of failing and undoing. Recheck every service until the whole deployment is ready, require current passing observations, and add this staggered-readiness regression test.'
-      status: open
+      status: resolved
+      resolved_by: commit 90123919086f; test a_service_that_fails_after_passing_fails_the_deployment
       cycle: 1
       file: crates/ship-daemon/src/deploy.rs
+      commit: 90123919086fb8a91b216da90f80dd78c7d7215a
+      evidence: test a_service_that_fails_after_passing_fails_the_deployment
     - id: f-038
       date: "2026-11-27"
       slice: phase-1-ws-1.8
