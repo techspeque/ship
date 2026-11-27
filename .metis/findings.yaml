@@ -469,3 +469,12 @@ findings:
       status: open
       cycle: 1
       file: crates/ship/src/push.rs
+    - id: f-041
+      date: "2026-11-27"
+      slice: phase-1-ws-1.9
+      severity: P2
+      category: behavior
+      finding: 'crates/ship/src/push.rs:191-194 — Resolving the current target delegates to commands::endpoint(), whose configuration failures exit 1, while the --to branch maps the same failures to 99. Reproduced with SHIP_CONFIG containing invalid JSON: ship push exits 1 even though no upload/build/deployment failed. Apply the push exit-code contract consistently to current-target config read/parse/location failures (99; usage remains 2), and test both target-resolution paths.'
+      status: open
+      cycle: 1
+      file: crates/ship/src/push.rs
