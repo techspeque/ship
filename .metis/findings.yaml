@@ -340,3 +340,12 @@ findings:
       status: open
       cycle: 1
       file: crates/ship-docker/src/compose.rs
+    - id: f-030
+      date: "2026-11-27"
+      slice: phase-1-ws-1.6
+      severity: P2
+      category: security
+      finding: crates/ship-docker/src/compose.rs:192 — build executes immediately without ensure_only_ours, contrary to the brief requirement that every mutating command reject foreign containers and networks in the project — perform the ownership check before building and add coverage proving foreign objects prevent the build invocation.
+      status: open
+      cycle: 1
+      file: crates/ship-docker/src/compose.rs
