@@ -140,4 +140,58 @@ None.
 
 ## Report
 
-Filled at implementation.
+- `ship-docker/src/argv.rs` (new): `Argv` (private `checked`
+  constructor, `DENIED`), `ComposeProject`, `ComposeFiles`, `UpOptions`,
+  `LogOptions`, `is_service_name`, `is_object_id`; builders
+  `compose_config`, `compose_build`, `compose_up`, `compose_stop`,
+  `compose_start`, `compose_restart`, `compose_down`, `compose_ps`,
+  `compose_logs`, `container_ids`, `container_inspect`,
+  `project_container_ids`, `project_network_ids`, `network_inspect`.
+- `ship-docker/src/compose.rs` (new): `ComposeConfig` (redacted `Debug`,
+  `expose`, `service_names`), `DeployLabels`, `labels_override`,
+  `config`, `build`, `up`, `stop`, `start`, `restart`, `down`, `logs`,
+  `ps`, `ensure_only_ours`.
+- `ship-docker/src/inspect.rs` (new): `ContainerObservation`,
+  `containers`, `parse_inspect`.
+- `ship-docker/src/labels.rs` (new): the four label constants, Compose's
+  project and service labels, `ShipLabels`, `Selector`.
+- `ship-docker/src/stream.rs` (new): `Stream`, `Line`, `MAX_LINE`, the
+  streaming run with a process-group kill on timeout or drop.
+- `ship-docker/src/error.rs` (new): `DockerError`, unreachable
+  classification, `MAX_DETAIL_LEN`.
+- `ship-docker/src/runner.rs`: `run` is now `pub(crate)`; `command`
+  (shared child setup) and `timeout_value` added; `kill` is `pub(crate)`.
+- `ship-docker/src/lib.rs`: new modules and re-exports.
+- `ship-docker/Cargo.toml`: `serde_json` 1; tokio feature `sync`.
+  `Cargo.lock`: `serde_json` added to ship-docker's list (already locked).
+- Tests: unit 52 in `ship-docker` (argv 8, labels 3, inspect 5, compose
+  4, stream 4, error 5, plus the existing runner and preflight ones);
+  `tests/fake_compose.rs` 7; `tests/real_compose.rs` 2 (ignored; CI's
+  `docker` job runs `cargo test -p ship-docker … -- --ignored`).
+- `metis verify --post --slice phase-1-ws-1.6`: ALL GREEN.
+- Not run locally: `real_compose.rs` (this session cannot run `docker`
+  or `cargo` directly, only `metis verify`). CI's `docker` job is its
+  first run.
+- Decisions:
+  - The foreign-object guard lists containers by Compose's project
+    label (`docker ps --filter label=com.docker.compose.project=…`), not
+    by `compose ps`: `compose down` removes one-off containers too, which
+    `compose ps` does not list. It runs before `up`, `stop`, `start`,
+    `restart` and `down`, and also checks the project's networks.
+  - Name-only commands (`stop`, `start`, `restart`, `down`, `ps`,
+    `logs`) pass `-p` and no file, so they never depend on a file still
+    being on disk and never search the working directory.
+  - Networks and volumes carry an empty `dev.ship.service` (shared by the
+    environment) and `DeployLabels.shared_release`, which the caller
+    keeps stable: Compose hashes a volume's labels and asks to recreate a
+    volume whose labels changed. `--yes` is never passed.
+  - Built images get the four labels too (`build.labels`).
+  - Building is its own step: `up` passes `--no-build`.
+  - All mutating commands stream their output to a sink (for operation
+    logs) and take an explicit timeout; `logs` may run unbounded and is
+    stopped by dropping its future.
+  - Docker's `removing` state reads as exited with its exit code.
+  - `ContainerObservation.restart_count` carries the restart count;
+    `ship-core`'s `Observation` is unchanged.
+  - `compose config` failure stderr is held as a `SecretValue`; a JSON
+    parse error names only the position.

@@ -75,12 +75,14 @@ impl Runner {
         &self.program
     }
 
-    /// Runs the program with `args` as its arguments, stdin closed, in its
-    /// own process group. Returns its exit status and output whatever the
-    /// status; a non-zero exit is not an error here.
-    ///
-    /// On timeout or oversize output the whole process group is killed.
-    pub async fn run<I, S>(&self, args: I) -> Result<Output, RunError>
+    /// The configured timeout.
+    pub fn timeout_value(&self) -> Duration {
+        self.timeout
+    }
+
+    /// The child process for `args`: stdin closed, stdout and stderr piped,
+    /// its own process group, killed when dropped.
+    pub(crate) fn command<I, S>(&self, args: I) -> Command
     where
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
@@ -94,7 +96,23 @@ impl Runner {
             .stderr(Stdio::piped())
             .process_group(0)
             .kill_on_drop(true);
-        let mut child = command.spawn().map_err(RunError::Spawn)?;
+        command
+    }
+
+    /// Runs the program with `args` as its arguments, stdin closed, in its
+    /// own process group. Returns its exit status and output whatever the
+    /// status; a non-zero exit is not an error here.
+    ///
+    /// On timeout or oversize output the whole process group is killed.
+    ///
+    /// Crate-private: outside this crate Docker runs only through the
+    /// adapter's checked argument vectors ([`crate::argv`]).
+    pub(crate) async fn run<I, S>(&self, args: I) -> Result<Output, RunError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        let mut child = self.command(args).spawn().map_err(RunError::Spawn)?;
         let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
             kill(&mut child).await;
             return Err(RunError::Io(io::Error::other("child pipes missing")));
@@ -148,7 +166,7 @@ async fn read_bounded<R: AsyncRead + Unpin>(
 
 /// Kills the child's process group (the child and anything it started, such
 /// as a Compose plugin), then reaps the child.
-async fn kill(child: &mut Child) {
+pub(crate) async fn kill(child: &mut Child) {
     if let Some(pid) = child.id().and_then(|p| i32::try_from(p).ok()) {
         // SAFETY: kill(2) with a negative pid signals that process group; it
         // touches no memory. The group is the child's own (process_group(0)),

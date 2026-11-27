@@ -1110,6 +1110,7 @@ name = "ship-docker"
 version = "0.0.2"
 dependencies = [
  "libc",
+ "serde_json",
  "ship-core",
  "tempfile",
  "tokio",
