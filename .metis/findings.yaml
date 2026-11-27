@@ -331,3 +331,12 @@ findings:
       file: crates/ship-daemon/src/upload.rs
       commit: ccae0585cd9ca93f22b9902d46a842dc76fb9080
       evidence: test a_revision_store_failure_publishes_nothing,a_late_log_failure_publishes_nothing
+    - id: f-029
+      date: "2026-11-27"
+      slice: phase-1-ws-1.6
+      severity: P2
+      category: behavior
+      finding: crates/ship-docker/src/compose.rs:275 — compose logs merges container stdout and stderr into its stdout; the real-Docker lifecycle test fails at tests/real_compose.rs:330 with err-line marked Stdout — preserve the original container stream distinction and make the required real-Docker lifecycle test pass.
+      status: open
+      cycle: 1
+      file: crates/ship-docker/src/compose.rs
