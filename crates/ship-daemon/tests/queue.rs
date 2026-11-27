@@ -15,6 +15,8 @@ use ship_store::{Operation, Store};
 use tokio::sync::{Barrier, Mutex, oneshot};
 
 const SECRET: &str = "hunter2-very-secret-token";
+/// A registered value spanning lines (f-022).
+const MULTI: &str = "private-first-line\nprivate-second-line";
 
 struct Setup {
     dir: tempfile::TempDir,
@@ -29,6 +31,7 @@ async fn setup(limits: Limits) -> Setup {
     let store = Store::open(dir.path()).await.unwrap();
     let redactor = Redactor::new();
     redactor.register(&SecretValue::new(SECRET));
+    redactor.register(&SecretValue::new(MULTI));
     let queue = Queue::new(store.clone(), redactor, limits, dir.path()).unwrap();
     let env = store
         .get_or_create_project(&Slug::parse("app").unwrap())
@@ -431,6 +434,48 @@ async fn a_secret_never_reaches_the_log_events_or_failure() {
         assert!(!e.message.contains(SECRET), "{e:?}");
     }
     assert!(events.iter().all(|e| e.message.contains(REDACTED)));
+}
+
+/// A registered value spanning lines is removed whole from the log, the
+/// events and the failure, and none of its lines survive (f-022).
+#[tokio::test]
+async fn a_multiline_secret_never_reaches_the_log_events_or_failure() {
+    let s = setup(limits()).await;
+    let submitted = s
+        .queue
+        .submit(sub("multi", s.env), |ctx| async move {
+            ctx.enter(OperationPhase::Building, &format!("building with {MULTI}"))
+                .await?;
+            ctx.log(&format!("before\n{MULTI}\nafter")).await?;
+            Err(JobFailure::new(
+                ErrorCode::BuildFailed,
+                format!("build printed {MULTI} and stopped"),
+            ))
+        })
+        .await
+        .unwrap();
+    let op = finished(&s.store, submitted.operation.id).await;
+    let leaked =
+        |text: &str| text.contains("private-first-line") || text.contains("private-second-line");
+
+    let failure = op.failure_message.clone().unwrap();
+    assert!(!leaked(&failure), "{failure}");
+    assert!(failure.contains(REDACTED), "{failure}");
+
+    let log = std::fs::read_to_string(s.queue.log_path(op.id)).unwrap();
+    assert!(!leaked(&log), "{log}");
+    assert!(log.contains(REDACTED), "{log}");
+
+    let events = s.store.events_after(op.id, 0).await.unwrap();
+    for e in &events {
+        assert!(!leaked(&e.message), "{e:?}");
+    }
+    let finished_event = events.last().unwrap();
+    assert_eq!(finished_event.event_type, "finished");
+    assert!(finished_event.message.contains(REDACTED));
+
+    let view = serde_json::to_string(&ship_daemon::http::operation_view(&op)).unwrap();
+    assert!(!leaked(&view), "{view}");
 }
 
 #[tokio::test]

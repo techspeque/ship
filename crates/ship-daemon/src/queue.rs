@@ -241,8 +241,17 @@ impl Inner {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// `text` with every registered value replaced, including values that
+    /// span lines. The [`Redactor`] works line by line, so `text` goes to it
+    /// whole as one JSON string (its newlines escaped), which it redacts
+    /// inside the decoded value.
     fn redact(&self, text: &str) -> String {
-        String::from_utf8_lossy(&self.redactor.redact(text.as_bytes())).into_owned()
+        let json = serde_json::to_vec(text).expect("a str always serialises");
+        let redacted = self.redactor.redact(&json);
+        serde_json::from_slice(&redacted).unwrap_or_else(|_| {
+            // Not reached: the Redactor keeps a JSON line valid JSON.
+            String::from_utf8_lossy(&self.redactor.redact(text.as_bytes())).into_owned()
+        })
     }
 
     fn announce(&self) {
@@ -643,6 +652,8 @@ impl Context {
     /// are dropped.
     pub async fn log(&self, text: &str) -> Result<(), JobFailure> {
         let mut shared = self.shared.lock().await;
+        // Redacted whole first, so a value spanning lines is caught.
+        let text = self.inner.redact(text);
         for line in text.lines() {
             if shared.truncated {
                 break;
