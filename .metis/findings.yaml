@@ -403,3 +403,12 @@ findings:
       status: open
       cycle: 1
       file: crates/ship-store/tests/deploy.rs
+    - id: f-036
+      date: "2026-11-27"
+      slice: phase-1-ws-1.7
+      severity: P2
+      category: tests
+      finding: crates/ship-daemon/tests/real_deploy.rs:267-275 — The real-Docker suite tests explicit mapping only with the single-EXPOSE SERVER image; it never builds a two-EXPOSE image, checks refusal naming both ports, or deploys that image with HOST:CONTAINER. These acceptance cases are required by brief lines 129-130 and 167-169 and currently covered only by the fake. Add the real-Engine ambiguous-port rejection and explicit-port reachable-success cases.
+      status: open
+      cycle: 1
+      file: crates/ship-daemon/tests/real_deploy.rs
