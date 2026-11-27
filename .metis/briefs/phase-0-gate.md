@@ -26,7 +26,7 @@ Performance: idle RSS and CPU recorded in the README; `ship projects` over ssh u
 ## Evidence criteria
 
 - [x] All phase slices coded and reviewed (ws-0.1..0.9, fix-0001..0006, feat-0001 archived)
-- [x] Cross-module integration tests pass — run 2: all eight scenarios evidenced on v0.0.2 (3 and 6 partly through stand-ins, stated below)
+- [x] Cross-module integration tests pass — run 2: all eight scenarios evidenced on v0.0.2 (6 partly through a stand-in, stated below)
 - [x] No interface mismatches at seam points — run 2: release client 0.0.2 against daemons 0.0.2 and 0.0.1 over ssh; JSON matches fixtures; version refusal both ways
 - [x] Performance/resource usage acceptable — run 2: figures below, README updated
 
@@ -153,32 +153,58 @@ exit 0. The output is `{"projects": []}`, identical after `jq -S` to
 `crates/ship/tests/fixtures/projects-empty.json`. Text: `No projects.`
 Host A answered from its 0.0.1 daemon. API v1 on both sides.
 
-#### Scenario 3: UI ready, Docker stopped shows unreachable — PASS (UI half through a stand-in)
+#### Scenario 3: UI ready, Docker stopped shows unreachable — PASS (live, after f-019)
 
 - **Ready:** `ship open --no-browser` against host B printed
   `http://127.0.0.1:N/` after `/healthz`. `GET /` 200 text/html. A headless
   Chrome render on the laptop shows
   `✓ Docker ready Ship 0.0.2 (API v1) … Docker Engine 29.10.1 Docker Compose 5.8.0`.
-- **Docker stopped** (`~/ship-gate/run2/`, the sudo script): Docker was
-  stopped (`docker.socket` and `docker.service`) 13:15:46.656 → 13:16:57.516Z.
-  In all 12 samples, 13:15:56.801Z–13:16:52.457Z, `ship host -o json`,
-  run as the login user, exits 0 with `docker.status` `unreachable`,
-  `engine_version` null and a `message` naming `systemctl start docker`.
-  `systemctl show ship` shows `ActiveState=active`, `MainPID=5162` and
-  `NRestarts=0`, the same as the baseline. 11 s after Docker started:
-  `ready`, PID 5162, `NRestarts=0`. The daemon kept running throughout.
-- **UI while stopped:** the laptop observer was not started, so the real
-  UI was not rendered while Docker was down. Stand-in: the release UI
-  bundle (`index-C7gdC2Ly.js`, sha256 `4ab41272…a4a416`, fetched from the
-  host B daemon) was served on the laptop next to a stub that returns the
-  daemon's recorded 13:16:22Z `/api/v1/host` answer. Headless Chrome
-  renders `✕ Docker unreachable Docker Engine is not reachable: … Docker Engine unknown Docker Compose 5.8.0 …`.
-  The UI polls `/api/v1/host` (`web/src/lib/poller.svelte.ts:32`), the
-  same endpoint `ship host` reads.
+- **Live transition (f-019), 13:29:56–13:37:36Z.** A laptop observer
+  (`.local/gate-f019/`, gitignored) kept one `ship open --no-browser`
+  forward to host B's real v0.0.2 daemon open over ssh. About every 5 s it
+  wrote one line with:
+  (a) the Docker state text of the release UI, rendered by headless Chrome
+  from that forward;
+  (b) `docker.status` from `ship host -o json` over the ssh target;
+  (c) `systemctl show ship` and `systemctl is-active docker` on the host.
+  The Human stopped `docker.socket` and `docker.service` with sudo and
+  started them again. The host journal (read without sudo) shows
+  `Stopping docker.service` 13:30:59, `Stopped`/`Closed docker.socket`
+  13:31:10, `Started docker.service` 13:32:10. Excerpt (77 samples; the
+  field layout is the observer's):
+
+  ```
+  13:30:56Z ui=[Docker ready]       host=ready       ActiveState=active MainPID=3048 NRestarts=0 docker=active
+  13:31:02Z ui=[Docker unreachable] host=unreachable ActiveState=active MainPID=3048 NRestarts=0 docker=inactive
+  …         (11 samples unreachable, 13:31:02–13:32:09Z)
+  13:32:09Z ui=[Docker unreachable] host=unreachable ActiveState=active MainPID=3048 NRestarts=0 docker=inactive
+  13:32:15Z ui=[Docker ready]       host=ready       ActiveState=active MainPID=3048 NRestarts=0 docker=active
+  ```
+
+  All 77 samples agree three ways: the UI, `ship host` and the host's
+  Docker state (66 ready, 11 unreachable, no mismatch). `MainPID=3048` and
+  `NRestarts=0` hold in every sample and afterwards. The daemon's journal
+  logs `docker preflight … unreachable` warnings in the same window.
+- **Limits:** each UI sample is a fresh page load through the same
+  `ship open` tunnel, not one page left open. The UI's own polling
+  (`web/src/lib/poller.svelte.ts:32`) changing a page that is already open
+  was not observed live. The UI half of the sample is the first
+  `Docker …` text in the rendered DOM. Sampling is about 5 s (one gap of
+  13 s, 13:31:02–13:31:15Z). The stop and start are the Human's actions;
+  their times come from the host journal.
+- **Earlier evidence:** the run 2 sudo script, 13:15:46–13:16:57Z: 12
+  samples of `ship host` (login user) `unreachable` with `engine_version`
+  null and a message naming `systemctl start docker`; PID 5162 and
+  `NRestarts=0` throughout. Also a stand-in render of the release bundle
+  against the recorded answer (`✕ Docker unreachable …`). Both are
+  superseded by the live run for the UI half.
 - **Observation:** while the Engine is down, `compose_version` stays
   `"5.8.0"`, because the Compose CLI plugin still answers. The UI's example
-  `web/src/lib/contract/host-unreachable.json` has it null. Both satisfy the
-  contract's types. The message contains `running?. Start` (cosmetic).
+  `web/src/lib/contract/host-unreachable.json` has it null. Both satisfy
+  the contract's types. The message contains `running?. Start` (cosmetic).
+- **After the extra Docker restart:** the scenario 5 comparison was
+  re-run at 13:38Z. The volume inspect and the seed hash are identical,
+  and the container differs only in the fields listed under scenario 5.
 
 #### Scenario 4: listeners — PASS (both hosts)
 
@@ -273,10 +299,10 @@ Gate host A: `sudo systemctl restart ship` (13:23:39 GMT).
 
 #### Run 2 status
 
-Every scenario and both performance checks have evidence on v0.0.2. Two
-parts rest on stand-ins, because the real thing cannot be run: the UI's
-`unreachable` rendering in scenario 3 (real bundle, recorded daemon answer)
-and the older client in scenario 6 (no release speaks another API).
+Every scenario and both performance checks have evidence on v0.0.2.
+Scenario 3's UI half is live since review cycle 1 (f-019). One part still
+rests on a stand-in, because the real thing cannot be run: the older
+client in scenario 6 (no release speaks another API).
 `HostConfig.Dns` in scenario 5 needs the Reviewer's reading. Open
 advisory: f-018 (upgrade hint does not say restart). Flipped coded for
-review.
+review; flipped coded again after f-019 (cycle 1).
