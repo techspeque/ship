@@ -325,6 +325,9 @@ findings:
       severity: P2
       category: data
       finding: 'crates/ship-daemon/src/upload.rs:308 — Promotion disarms cleanup before fallible revision persistence and final logging. Reproduced by making the operation log path a directory before completing a valid upload: HTTP 500 and a failed operation retain both the new snapshot and revision. Ensure post-promotion failures do not leave newly published artifacts (and never remove pre-existing shared snapshots/revisions), covering revision-store and final-log failures with regression tests.'
-      status: open
+      status: resolved
+      resolved_by: commit ccae0585cd9c; test a_revision_store_failure_publishes_nothing,a_late_log_failure_publishes_nothing
       cycle: 1
       file: crates/ship-daemon/src/upload.rs
+      commit: ccae0585cd9ca93f22b9902d46a842dc76fb9080
+      evidence: test a_revision_store_failure_publishes_nothing,a_late_log_failure_publishes_nothing
