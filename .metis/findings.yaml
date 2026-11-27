@@ -460,3 +460,12 @@ findings:
       status: open
       cycle: 1
       file: crates/ship/src/follow.rs
+    - id: f-040
+      date: "2026-11-27"
+      slice: phase-1-ws-1.9
+      severity: P2
+      category: protocol
+      finding: 'crates/ship/src/push.rs:133-147 — Local scan/packing failures return through failed() before the JSON printer exists, violating the required final result line for --wait -o json. Reproduced with a valid Dockerfile tree and TMPDIR pointing to a nonexistent directory: exit 1, empty stdout, only text stderr. Emit exactly one structured result for these local failures with unknown ids null, preserving exit 1, and add a regression test.'
+      status: open
+      cycle: 1
+      file: crates/ship/src/push.rs
