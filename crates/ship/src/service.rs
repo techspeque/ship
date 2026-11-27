@@ -6,7 +6,8 @@
 //! directory (0750), and writes and enables the unit. Every step is skipped
 //! when it is already satisfied, so a second run changes nothing. Uninstall
 //! removes the unit and nothing else. Neither touches a unit that does not
-//! carry [`MARKER`].
+//! carry [`MARKER`]. Install refuses a binary the `ship` user could not run
+//! (below a home directory or a directory closed to other users).
 //!
 //! Host facts and changes go through [`Host`], with structured argv and no
 //! shell, so tests drive both commands against a fake host and a temporary
@@ -38,6 +39,9 @@ pub const MARKER: &str = "# Written by ship service install. ship service uninst
 const STATE_DIR_MODE: u32 = 0o700;
 const RUNTIME_DIR_MODE: u32 = 0o750;
 const UNIT_MODE: u32 = 0o644;
+const HOME_ROOTS: [&str; 2] = ["/home", "/root"];
+/// Where install tells the operator to put the binary.
+pub const SYSTEM_EXE: &str = "/usr/local/bin/ship";
 const NOLOGIN_CANDIDATES: [&str; 3] = ["/usr/sbin/nologin", "/sbin/nologin", "/bin/false"];
 
 /// The root-equivalence warning install always prints.
@@ -53,6 +57,8 @@ pub struct Layout {
     pub unit_path: PathBuf,
     pub state_dir: PathBuf,
     pub runtime_dir: PathBuf,
+    /// Directories holding users' homes; a binary below one is refused.
+    pub home_roots: Vec<PathBuf>,
 }
 
 impl Layout {
@@ -61,6 +67,7 @@ impl Layout {
             unit_path: PathBuf::from(UNIT_PATH),
             state_dir: PathBuf::from(DEFAULT_STATE_DIR),
             runtime_dir: PathBuf::from(RUNTIME_DIR),
+            home_roots: HOME_ROOTS.iter().map(PathBuf::from).collect(),
         }
     }
 }
@@ -79,6 +86,15 @@ pub trait Host {
     /// Whether `path` exists (for picking the nologin shell).
     fn exists(&self, path: &Path) -> bool {
         path.exists()
+    }
+    /// Permission bits of `path`, following symlinks; `None` when it cannot
+    /// be inspected.
+    fn mode(&self, path: &Path) -> Option<u32> {
+        fs::metadata(path).ok().map(|m| m.permissions().mode())
+    }
+    /// The user who ran `sudo ship service install`, if any.
+    fn sudo_user(&self) -> Option<String> {
+        std::env::var("SUDO_USER").ok().filter(|u| !u.is_empty())
     }
 }
 
@@ -161,8 +177,6 @@ impl Change {
 pub struct InstallReport {
     pub steps: Vec<(String, Change)>,
     pub unit_changed: bool,
-    /// Set when the binary looks unreachable for the `ship` user.
-    pub warnings: Vec<String>,
 }
 
 impl InstallReport {
@@ -305,21 +319,54 @@ pub fn check_exe_path(exe: &Path) -> Result<&str, ServiceError> {
     }
 }
 
-/// A warning when `exe` or one of its directories is not executable by
-/// others, so the `ship` user could not start it.
-fn exe_reachability_warning(exe: &Path) -> Option<String> {
-    let unreachable = exe.ancestors().any(|p| {
-        fs::metadata(p)
-            .map(|m| m.permissions().mode() & 0o001 == 0)
-            .unwrap_or(true)
-    });
-    unreachable.then(|| {
-        format!(
-            "{} (or a directory above it) is not executable by other users, so the ship \
-             user may not be able to run it; install it at /usr/local/bin/ship",
-            exe.display()
-        )
-    })
+/// The home directory of `user` from `getent passwd`, canonical when it
+/// exists.
+fn home_of(host: &mut dyn Host, user: &str) -> Result<Option<PathBuf>, ServiceError> {
+    let Some(line) = query(host, &["getent", "passwd", user])? else {
+        return Ok(None);
+    };
+    Ok(line
+        .lines()
+        .next()
+        .and_then(|l| l.split(':').nth(5))
+        .filter(|h| h.starts_with('/'))
+        .map(|h| fs::canonicalize(h).unwrap_or_else(|_| PathBuf::from(h))))
+}
+
+/// Refuses a binary the `ship` user could not execute: one below a home
+/// directory, or one where the binary or a directory above it is not
+/// executable by other users. systemd would fail to start it with
+/// `203/EXEC` and restart it forever.
+fn check_exe_reachable(
+    host: &mut dyn Host,
+    layout: &Layout,
+    exe: &Path,
+) -> Result<(), ServiceError> {
+    let mut homes = layout.home_roots.clone();
+    if let Some(user) = host.sudo_user() {
+        homes.extend(home_of(host, &user)?);
+    }
+    let reason = if let Some(home) = homes.iter().find(|h| exe.starts_with(h)) {
+        Some(format!(
+            "it is under the home directory tree {}",
+            home.display()
+        ))
+    } else {
+        exe.ancestors()
+            .find(|p| host.mode(p).is_none_or(|m| m & 0o001 == 0))
+            .map(|p| format!("{} is not executable by other users", p.display()))
+    };
+    match reason {
+        None => Ok(()),
+        Some(reason) => Err(ServiceError::Refused(format!(
+            "the ship binary is at {exe}, which the ship user cannot run: {reason}. \
+             systemd starts the daemon as the ship user, so the binary must be in a system \
+             directory. Install it there and run install from that copy:\n\
+             \n  sudo install -m 0755 {exe} {SYSTEM_EXE}\n  sudo {SYSTEM_EXE} service install\n\n\
+             Nothing was changed.",
+            exe = exe.display()
+        ))),
+    }
 }
 
 /// The unit text for the binary at `exe`.
@@ -422,13 +469,12 @@ pub fn install(
         return Err(foreign_unit(&layout.unit_path));
     }
     let exe_str = check_exe_path(exe)?;
+    check_exe_reachable(host, layout, exe)?;
     if !group_exists(host, DOCKER_GROUP)? {
         return Err(ServiceError::Refused(
             "there is no docker group on this host; install Docker Engine first".to_owned(),
         ));
     }
-    let mut warnings = Vec::new();
-    warnings.extend(exe_reachability_warning(exe));
 
     let mut steps = Vec::new();
 
@@ -514,7 +560,6 @@ pub fn install(
     Ok(InstallReport {
         steps,
         unit_changed: unit_change == Change::Updated,
-        warnings,
     })
 }
 
@@ -555,9 +600,6 @@ pub fn print_install(report: &InstallReport) {
     }
     println!();
     println!("{DOCKER_WARNING}");
-    for w in &report.warnings {
-        println!("warning: {w}");
-    }
     println!();
     if !report.changed_anything() {
         println!("Nothing changed.");
@@ -602,6 +644,10 @@ mod tests {
         enabled: bool,
         calls: Vec<Vec<String>>,
         fail: Option<&'static str>,
+        /// Paths whose mode lacks o+x; everything else reads 0755.
+        closed: Vec<PathBuf>,
+        /// `SUDO_USER` and that user's home as `getent passwd` reports it.
+        sudo: Option<(String, PathBuf)>,
     }
 
     impl FakeHost {
@@ -614,6 +660,8 @@ mod tests {
                 enabled: false,
                 calls: Vec::new(),
                 fail: None,
+                closed: Vec::new(),
+                sudo: None,
             }
         }
 
@@ -664,6 +712,12 @@ mod tests {
                     Some((u, g)) => ok(format!("ship:x:{u}:{g}::/var/lib/ship:/bin/false\n")),
                     None => no(),
                 },
+                ["getent", "passwd", u] => match &self.sudo {
+                    Some((name, home)) if name == u => {
+                        ok(format!("{u}:x:1000:1000::{}:/bin/bash\n", home.display()))
+                    }
+                    _ => no(),
+                },
                 ["id", "-nG", "ship"] => match self.user {
                     Some(_) if self.in_docker => ok("ship docker\n".to_owned()),
                     Some(_) => ok("ship\n".to_owned()),
@@ -708,6 +762,18 @@ mod tests {
         fn exists(&self, path: &Path) -> bool {
             path == Path::new("/usr/sbin/nologin")
         }
+
+        fn mode(&self, path: &Path) -> Option<u32> {
+            Some(if self.closed.iter().any(|c| c == path) {
+                0o750
+            } else {
+                0o755
+            })
+        }
+
+        fn sudo_user(&self) -> Option<String> {
+            self.sudo.as_ref().map(|(u, _)| u.clone())
+        }
     }
 
     struct Env {
@@ -728,6 +794,7 @@ mod tests {
                 unit_path: systemd.join(UNIT_NAME),
                 state_dir: root.join("var-lib-ship"),
                 runtime_dir: root.join("run-ship"),
+                home_roots: vec![root.join("home")],
             },
             exe,
             _dir: dir,
@@ -888,6 +955,72 @@ mod tests {
         assert!(!e.layout.state_dir.exists());
         assert!(!e.layout.runtime_dir.exists());
         assert!(!e.layout.unit_path.exists());
+    }
+
+    /// Asserts `exe` is refused with the install commands and nothing on the
+    /// host changed.
+    fn assert_unreachable_refused(e: &Env, host: &mut FakeHost, exe: &Path, reason: &str) {
+        let err = install(host, &e.layout, exe).unwrap_err();
+        let msg = err.to_string();
+        assert!(matches!(err, ServiceError::Refused(_)), "{err:?}");
+        assert!(msg.contains(reason), "{msg}");
+        assert!(
+            msg.contains(&format!(
+                "sudo install -m 0755 {} /usr/local/bin/ship",
+                exe.display()
+            )),
+            "{msg}"
+        );
+        assert!(
+            msg.contains("sudo /usr/local/bin/ship service install"),
+            "{msg}"
+        );
+        assert!(msg.contains("Nothing was changed."), "{msg}");
+        assert_eq!(host.mutating_calls(), Vec::<String>::new());
+        assert!(!e.layout.state_dir.exists());
+        assert!(!e.layout.runtime_dir.exists());
+        assert!(!e.layout.unit_path.exists());
+    }
+
+    #[test]
+    fn binary_below_a_closed_directory_is_refused_before_any_change() {
+        let e = env();
+        let mut host = FakeHost::clean();
+        let parent = e.exe.parent().unwrap().to_owned();
+        host.closed.push(parent.clone());
+        let reason = format!("{} is not executable by other users", parent.display());
+        assert_unreachable_refused(&e, &mut host, &e.exe, &reason);
+    }
+
+    #[test]
+    fn binary_under_a_home_root_is_refused_before_any_change() {
+        let e = env();
+        let home = e.layout.home_roots[0].clone();
+        let exe = home.join("alice/.local/bin/ship");
+        let mut host = FakeHost::clean();
+        let reason = format!("under the home directory tree {}", home.display());
+        assert_unreachable_refused(&e, &mut host, &exe, &reason);
+    }
+
+    #[test]
+    fn binary_under_the_sudo_users_home_is_refused() {
+        let e = env();
+        let home = e.exe.parent().unwrap().join("users/alice");
+        fs::create_dir_all(&home).unwrap();
+        let exe = home.join("bin/ship");
+        let mut host = FakeHost::clean();
+        host.sudo = Some(("alice".to_owned(), home.clone()));
+        let reason = format!("under the home directory tree {}", home.display());
+        assert_unreachable_refused(&e, &mut host, &exe, &reason);
+    }
+
+    #[test]
+    fn another_sudo_users_home_does_not_refuse_a_system_path() {
+        let e = env();
+        let mut host = FakeHost::clean();
+        host.sudo = Some(("alice".to_owned(), e.exe.with_file_name("alice")));
+        install(&mut host, &e.layout, &e.exe).unwrap();
+        assert!(e.layout.unit_path.exists());
     }
 
     #[test]

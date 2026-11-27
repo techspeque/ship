@@ -56,7 +56,12 @@ sh install.sh                       # or: sh install.sh --version v0.0.1 --prefi
 
 It installs to `/usr/local/bin` when that is writable, otherwise
 `~/.local/bin`. With an explicit `--prefix` that is not writable, only the
-final copy uses `sudo`. To verify by hand instead, see
+final copy uses `sudo`. A copy under your home directory is fine for the
+client; the daemon needs a system path, so on a Linux host that runs it,
+install.sh prints the `sudo install … /usr/local/bin/ship` and
+`sudo /usr/local/bin/ship service install` commands, and
+`ship service install` refuses a binary the `ship` user cannot run. See
+[docs/service.md](docs/service.md). To verify by hand instead, see
 [docs/release.md](docs/release.md).
 
 ## Build
