@@ -85,9 +85,10 @@ pub use api::{
 pub use compose::compose_project_name;
 pub use error::{ApiError, ErrorCode, ReceivedCode, ReceivedError};
 pub use id::{
-    DeploymentId, EnvironmentId, IdError, OperationId, ProjectId, ReleaseId, RevisionId, ServiceId,
+    DeploymentId, EnvironmentId, IdError, OperationId, ProjectId, ReleaseId, RevisionId, RouteId,
+    ServiceId,
 };
-pub use model::{RecoveryPolicy, ServiceKind};
+pub use model::{DeploymentResult, RecoveryPolicy, RevisionKind, ServiceKind};
 pub use secret::SecretValue;
 pub use slug::{Slug, SlugError};
 pub use state::{

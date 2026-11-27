@@ -4,8 +4,10 @@
 //! file, `ship.db`, in the state directory, in WAL mode (ADR-0002). Schema
 //! changes only through the migrations in `migrations/`.
 
+mod audit;
 mod clock;
 mod error;
+mod history;
 mod migrate;
 mod repo;
 
@@ -17,11 +19,13 @@ use sqlx::sqlite::{
 };
 use sqlx::{ConnectOptions, Connection};
 
+pub use audit::{AuditEvent, NewAuditEvent};
 pub use error::StoreError;
+pub use history::{Deployment, NewDeployment, NewRelease, NewRevision, Release, Revision};
 pub use migrate::{LATEST_VERSION, OpenReport};
 pub use repo::{
-    CreatedOperation, Environment, NewEnvironment, NewEvent, NewOperation, NewService, Operation,
-    OperationEvent, Project, Service,
+    CreatedOperation, DEVELOPMENT, EnsuredProject, Environment, NewEnvironment, NewEvent,
+    NewOperation, NewService, Operation, OperationEvent, OperationFailure, Project, Service,
 };
 
 /// The database file name inside the state directory.

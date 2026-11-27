@@ -17,8 +17,14 @@ pub enum StoreError {
     /// A uniqueness or foreign-key constraint refused the write, or an
     /// idempotency key was replayed with a different request.
     Conflict { entity: &'static str },
-    /// A schema check constraint refused the value.
+    /// A schema check constraint refused the value, or the row contradicts
+    /// another (a deployment under another environment's operation).
     Invalid { entity: &'static str },
+    /// The change is not allowed from the row's current state: an operation
+    /// phase moving backwards or leaving a terminal phase, a desired state
+    /// leaving `removed`, a log cursor moving back, a deployment's result
+    /// set twice, an audit event edited.
+    IllegalTransition { entity: &'static str },
     /// A stored value does not parse as its domain type.
     Corrupt {
         entity: &'static str,
@@ -46,6 +52,9 @@ impl fmt::Display for StoreError {
                 write!(f, "{entity} conflicts with an existing record")
             }
             StoreError::Invalid { entity } => write!(f, "{entity} value rejected by the schema"),
+            StoreError::IllegalTransition { entity } => {
+                write!(f, "{entity} change not allowed from its current state")
+            }
             StoreError::Corrupt { entity, field } => {
                 write!(f, "stored {entity}.{field} is not a valid value")
             }
@@ -85,7 +94,44 @@ pub(crate) fn write_err(entity: &'static str) -> impl FnOnce(sqlx::Error) -> Sto
                 StoreError::Conflict { entity }
             }
             Some(ErrorKind::CheckViolation) => StoreError::Invalid { entity },
-            _ => StoreError::Database(e),
+            _ => match trigger_refusal(&e) {
+                Some(Refusal::Illegal) => StoreError::IllegalTransition { entity },
+                Some(Refusal::Invalid) => StoreError::Invalid { entity },
+                None => StoreError::Database(e),
+            },
         }
+    }
+}
+
+pub(crate) fn not_found(entity: &'static str) -> StoreError {
+    StoreError::NotFound { entity }
+}
+
+pub(crate) fn invalid(entity: &'static str) -> StoreError {
+    StoreError::Invalid { entity }
+}
+
+pub(crate) fn illegal(entity: &'static str) -> StoreError {
+    StoreError::IllegalTransition { entity }
+}
+
+enum Refusal {
+    Illegal,
+    Invalid,
+}
+
+/// Classifies a `RAISE(ABORT, ...)` from a schema trigger by its message
+/// prefix (see `migrations/0002_phase1.sql`).
+fn trigger_refusal(e: &sqlx::Error) -> Option<Refusal> {
+    let sqlx::Error::Database(d) = e else {
+        return None;
+    };
+    let msg = d.message();
+    if msg.starts_with("illegal ") {
+        Some(Refusal::Illegal)
+    } else if msg.starts_with("invalid ") {
+        Some(Refusal::Invalid)
+    } else {
+        None
     }
 }

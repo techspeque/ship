@@ -75,13 +75,17 @@ async fn fresh_state_dir_migrates_and_reopens() {
         tables,
         [
             "audit_event",
+            "config_value",
             "deployment",
             "environment",
+            "observation",
             "operation",
             "operation_event",
             "project",
             "release",
             "revision",
+            "route",
+            "secret",
             "service",
         ]
     );

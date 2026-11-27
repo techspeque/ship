@@ -22,9 +22,47 @@ string_enum! {
     }
 }
 
+string_enum! {
+    /// Where a revision's source came from (ADR-0007). `snapshot` is the
+    /// only kind in Phase 1; `git` and `image` arrive in Phase 4.
+    pub enum RevisionKind {
+        Snapshot => "snapshot",
+        Git => "git",
+        Image => "image",
+    }
+}
+
+string_enum! {
+    /// How a deployment ended (ADR-0007, ADR-0011). A deployment still in
+    /// progress has no result.
+    pub enum DeploymentResult {
+        Succeeded => "succeeded",
+        Failed => "failed",
+        Interrupted => "interrupted",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn revision_kind_strings_are_stable_and_round_trip() {
+        let strings: Vec<&str> = RevisionKind::ALL.iter().map(|k| k.as_str()).collect();
+        assert_eq!(strings, ["snapshot", "git", "image"]);
+        for k in RevisionKind::ALL {
+            assert_eq!(k.as_str().parse::<RevisionKind>(), Ok(*k));
+        }
+    }
+
+    #[test]
+    fn deployment_result_strings_are_stable_and_round_trip() {
+        let strings: Vec<&str> = DeploymentResult::ALL.iter().map(|r| r.as_str()).collect();
+        assert_eq!(strings, ["succeeded", "failed", "interrupted"]);
+        for r in DeploymentResult::ALL {
+            assert_eq!(r.as_str().parse::<DeploymentResult>(), Ok(*r));
+        }
+    }
 
     #[test]
     fn service_kind_strings_are_stable_and_round_trip() {

@@ -1012,6 +1012,7 @@ name = "ship-store"
 version = "0.0.2"
 dependencies = [
  "getrandom 0.3.4",
+ "serde_json",
  "ship-core",
  "sqlx",
  "tempfile",

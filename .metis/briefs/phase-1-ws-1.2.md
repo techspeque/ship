@@ -135,4 +135,27 @@ None.
 
 ## Report
 
-Filled at implementation.
+- `ship-store/migrations/0002_phase1.sql`: tables `route` (provider
+  `port` only), `config_value`, `secret` (scope + FK columns, name,
+  backend_ref, updated_at), `observation`; `operation.failure_phase`;
+  `deployment` rebuilt with `revision_id NOT NULL` (filled from the
+  release), nullable `release_id`, `operation_id NOT NULL UNIQUE`; triggers
+  for operation phase/status/failure/log cursor/identity, desired state,
+  deployment insert/update rules, append-only audit. Trigger messages start
+  `illegal ` or `invalid `; `error.rs` maps them to the new
+  `StoreError::IllegalTransition` and to `Invalid`.
+- `repo.rs`: `get_or_create_project` (`BEGIN IMMEDIATE`, `ON CONFLICT DO
+  NOTHING`, new environment desired `running`), `set_desired_state`,
+  `advance_operation`, `fail_operation` (records the phase failed in),
+  `set_log_cursor`, `unfinished_operations`; `Operation.failure_phase`.
+- `history.rs`: revision, release, deployment create/get/list,
+  `set_deployment_release`, `finish_deployment`. `audit.rs`: append, list.
+- `ship-core`: `RouteId` (`rte`), `RevisionKind`, `DeploymentResult`.
+- `ship-store/Cargo.toml`: `serde_json` (already in the graph via
+  ship-core) for a release's image list; `Cargo.lock` updated.
+- Decisions: one deployment per operation (`UNIQUE`), so a replayed
+  operation cannot create a second (OVERVIEW §7); lists ordered by
+  creation time then rowid, since ids created in one millisecond do not
+  sort by creation; log cursor may still advance after an operation ends.
+- `metis verify --post --slice phase-1-ws-1.2`: ALL GREEN (fmt, clippy,
+  all tests; the 15 tests in `tests/phase1.rs` ran and passed).
