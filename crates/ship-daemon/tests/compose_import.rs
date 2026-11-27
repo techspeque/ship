@@ -44,7 +44,8 @@ const CANARY: &str = "canary-from-interpolation-7f3e";
 ///   `$FAKE_DIR/up_fail` exists; else records its two `--file`s in
 ///   `$FAKE_DIR/up_files`;
 /// - `ps` by Ship's environment label: one container per Ship service id
-///   in the override last brought up; `container inspect`: those
+///   in the override last brought up, or `$FAKE_DIR/replicas` of them
+///   when that file exists; `container inspect`: those
 ///   containers, labelled with that override's newest release, running,
 ///   with the health status in `$FAKE_DIR/health` if any; when
 ///   `$FAKE_DIR/health_seq` exists, each inspect instead takes its first
@@ -75,13 +76,18 @@ services() {
   l=$(sed -n 2p "$d/up_files")
   grep -o '"dev.ship.service": "svc_[a-z0-9]*"' "$l" | sed 's/.*: "\([^"]*\)"/\1/' | sort -u
 }
+replicas() {
+  cat "$d/replicas" 2>/dev/null || echo 1
+}
 case "$first" in
   ps)
     case "$line" in
       *"label=dev.ship.environment="*)
         if [ -f "$d/up_files" ]; then
           n=0
-          for s in $(services); do n=$((n+1)); echo "$HEX$n"; done
+          for s in $(services); do
+            for j in $(seq 1 "$(replicas)"); do n=$((n+1)); echo "$HEX$n"; done
+          done
         fi;;
     esac
     exit 0;;
@@ -104,17 +110,21 @@ case "$first" in
     fi
     out="["
     n=0
+    k=0
     for s in $(services); do
-      n=$((n+1))
-      if [ "$n" -gt 1 ]; then out="$out,"; fi
-      if [ -n "$seq" ]; then
-        h=$(echo "$seq" | cut -d' ' -f"$n")
-      else
-        h=$(cat "$d/health" 2>/dev/null)
-      fi
-      health=""
-      if [ -n "$h" ]; then health=",\"Health\":{\"Status\":\"$h\"}"; fi
-      out="$out$(printf '{"Id":"%s%s","Name":"/ship-s%s-1","RestartCount":0,"Config":{"Labels":{"dev.ship.project":"%s","dev.ship.environment":"%s","dev.ship.service":"%s","dev.ship.release":"%s","com.docker.compose.service":"s%s"}},"State":{"Status":"running","ExitCode":0,"OOMKilled":false%s}}' "$HEX" "$n" "$n" "$prj" "$env" "$s" "$rel" "$n" "$health")"
+      k=$((k+1))
+      for j in $(seq 1 "$(replicas)"); do
+        n=$((n+1))
+        if [ "$n" -gt 1 ]; then out="$out,"; fi
+        if [ -n "$seq" ]; then
+          h=$(echo "$seq" | cut -d' ' -f"$n")
+        else
+          h=$(cat "$d/health" 2>/dev/null)
+        fi
+        health=""
+        if [ -n "$h" ]; then health=",\"Health\":{\"Status\":\"$h\"}"; fi
+        out="$out$(printf '{"Id":"%s%s","Name":"/ship-s%s-%s","RestartCount":0,"Config":{"Labels":{"dev.ship.project":"%s","dev.ship.environment":"%s","dev.ship.service":"%s","dev.ship.release":"%s","com.docker.compose.service":"s%s"}},"State":{"Status":"running","ExitCode":0,"OOMKilled":false%s}}' "$HEX" "$n" "$k" "$j" "$prj" "$env" "$s" "$rel" "$k" "$health")"
+      done
     done
     echo "$out]"
     exit 0;;
@@ -939,6 +949,29 @@ async fn a_service_that_fails_after_passing_fails_the_deployment() {
     assert_failed(&op, "health_check_failed", OperationPhase::Verifying);
     let said = messages(f.store(), op.id).await;
     assert!(!said.iter().any(|m| m.ends_with(" is healthy")), "{said:?}");
+}
+
+/// f-038: one unhealthy replica of a service fails the deployment though
+/// another replica of it is healthy.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unhealthy_replica_fails_the_deployment() {
+    let f = fixture().await;
+    let source = "services:\n  web:\n    image: nginx:1\n    deploy:\n      replicas: 2\n";
+    let model =
+        json!({ "services": { "web": { "image": "nginx:1", "deploy": { "replicas": 2 } } } });
+    let rev = upload(&f, "app", &[("compose.yaml", source)]).await;
+    f.config(rev, &model).await;
+    f.control("replicas", "2");
+    f.control("health_seq", "healthy unhealthy\n");
+    let op = deploy_revision(&f, "app", "d1", rev, false).await;
+    assert_failed(&op, "health_check_failed", OperationPhase::Verifying);
+    let said = messages(f.store(), op.id).await;
+    assert!(!said.contains(&"web is healthy".to_owned()), "{said:?}");
+    assert_eq!(
+        op.failure_message.as_deref(),
+        Some("the health check of web failed"),
+        "{op:?}"
+    );
 }
 
 /// Every file under `root`, recursively.

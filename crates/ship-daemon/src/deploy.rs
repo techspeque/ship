@@ -987,7 +987,7 @@ async fn stop(ctx: &Context, d: &Deployer, project: &ComposeProject) -> Result<(
     result
 }
 
-/// Waits for the verdict on each service's container of the release
+/// Waits for the verdict on each service's containers of the release
 /// (ADR-0006 rule 2): a passing health check is `healthy`; with no check,
 /// still running and never restarted after the settle period is
 /// `running_unverified`; a failing check, an exit, a restart or no verdict
@@ -1013,40 +1013,52 @@ pub(crate) async fn verify(
         let mut verdicts: Vec<Option<ServiceStatus>> = vec![None; services.len()];
         for (i, service) in services.iter().enumerate() {
             let name = &service.name;
-            let Some(c) = found
+            // Every replica of the service in this release is judged; the
+            // service passes only when all of them pass, and is `healthy`
+            // only when all of them are.
+            let replicas: Vec<_> = found
                 .iter()
-                .find(|c| c.labels.release == release && c.labels.service == Some(service.id))
-            else {
+                .filter(|c| c.labels.release == release && c.labels.service == Some(service.id))
+                .collect();
+            if replicas.is_empty() {
                 continue;
-            };
-            let status = ServiceStatus::from_observation(c.observation, DesiredState::Running);
-            last[i] = Some(status);
-            match status {
-                ServiceStatus::Healthy => verdicts[i] = Some(status),
-                ServiceStatus::RunningUnverified if c.restart_count > 0 => {
-                    return Err(failed(format!(
-                        "{name} restarted {} times after starting",
-                        c.restart_count
-                    )));
-                }
-                ServiceStatus::RunningUnverified if started.elapsed() >= d.settings.settle => {
-                    verdicts[i] = Some(status);
-                }
-                ServiceStatus::RunningUnverified | ServiceStatus::Starting => {}
-                ServiceStatus::Unhealthy => {
-                    return Err(failed(format!("the health check of {name} failed")));
-                }
-                ServiceStatus::Failed
-                | ServiceStatus::Stopped
-                | ServiceStatus::Paused
-                | ServiceStatus::Unknown => {
-                    let detail =
-                        FailureDetail::from_observation(c.observation, DesiredState::Running)
-                            .map(|f| format!(": {f}"))
-                            .unwrap_or_default();
-                    return Err(failed(format!("{name} is {status}{detail}")));
+            }
+            let mut verdict = Some(ServiceStatus::Healthy);
+            let mut pending = None;
+            for c in replicas {
+                let status = ServiceStatus::from_observation(c.observation, DesiredState::Running);
+                match status {
+                    ServiceStatus::Healthy => {}
+                    ServiceStatus::RunningUnverified if c.restart_count > 0 => {
+                        return Err(failed(format!(
+                            "{name} restarted {} times after starting",
+                            c.restart_count
+                        )));
+                    }
+                    ServiceStatus::RunningUnverified if started.elapsed() >= d.settings.settle => {
+                        verdict = verdict.map(|_| status);
+                    }
+                    ServiceStatus::RunningUnverified | ServiceStatus::Starting => {
+                        verdict = None;
+                        pending.get_or_insert(status);
+                    }
+                    ServiceStatus::Unhealthy => {
+                        return Err(failed(format!("the health check of {name} failed")));
+                    }
+                    ServiceStatus::Failed
+                    | ServiceStatus::Stopped
+                    | ServiceStatus::Paused
+                    | ServiceStatus::Unknown => {
+                        let detail =
+                            FailureDetail::from_observation(c.observation, DesiredState::Running)
+                                .map(|f| format!(": {f}"))
+                                .unwrap_or_default();
+                        return Err(failed(format!("{name} is {status}{detail}")));
+                    }
                 }
             }
+            last[i] = pending.or(verdict);
+            verdicts[i] = verdict;
         }
         if verdicts.iter().all(Option::is_some) {
             return Ok(verdicts.into_iter().flatten().collect());
