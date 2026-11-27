@@ -349,3 +349,12 @@ findings:
       status: open
       cycle: 1
       file: crates/ship-docker/src/compose.rs
+    - id: f-031
+      date: "2026-11-27"
+      slice: phase-1-ws-1.6
+      severity: P2
+      category: security
+      finding: crates/ship-docker/src/compose.rs:275 — logs streams project containers without checking Ship labels, and ps at line 281 explicitly returns ids with or without those labels; this violates the brief requirement to select only labelled objects and never return foreign objects — filter or refuse foreign containers in both public read operations and cover a mixed owned/foreign project.
+      status: open
+      cycle: 1
+      file: crates/ship-docker/src/compose.rs
