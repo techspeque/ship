@@ -14,10 +14,6 @@ slices:
       reviewed: false
       review_cycles: 1
       created: ""
-      waiting:
-        reason: 'auto: p1'
-        since: "2026-11-27T16:29:01Z"
-        human: true
     - id: phase-1-ws-1.6
       title: Docker and Compose adapter
       type: feat
