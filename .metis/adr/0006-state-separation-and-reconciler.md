@@ -32,7 +32,7 @@ reconciler's default is to observe and report.
 ### Rules this decision implies:
 
 1. Desired state is `running`, `stopped` or `removed`, set only by an operator action. A failed deployment does not change it.
-2. Service status is one of `healthy`, `running_unverified`, `starting`, `unhealthy`, `failed`, `stopped`, `unknown`. `healthy` requires a passing health check.
+2. Service status is one of `healthy`, `running_unverified`, `starting`, `unhealthy`, `failed`, `stopped`, `paused`, `unknown`. `healthy` requires a passing health check. An exited container in an environment whose desired state is `stopped` is `stopped` whatever its exit code; `paused` was added and this was stated on 2026-11-27 (Phase 1 plan).
 3. A Compose subprocess exiting 0 proves nothing about health.
 4. Docker unreachable sets `unknown` and blocks all corrective action.
 5. Recovery policy is per environment: `observe_only` (default) or `repair_safe_drift` (Phase 3, opt-in).

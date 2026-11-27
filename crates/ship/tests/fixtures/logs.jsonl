@@ -1,0 +1,3 @@
+{"service":"web","stream":"stdout","ts":"2026-01-02T03:04:46.120Z","line":"listening on :8080"}
+{"service":"web","stream":"stderr","ts":"2026-01-02T03:04:47.003Z","line":"warning: no cache directory"}
+{"service":"worker","stream":"stdout","ts":"2026-01-02T03:04:47.500Z","line":"ready"}

@@ -2,7 +2,7 @@
 type: overview
 project: ship
 status: living
-last_updated: 2026-11-24
+last_updated: 2026-11-27
 ---
 
 # Ship — Full Specification
@@ -262,7 +262,7 @@ ship daemon [--state DIR] [--tailnet]
 ship target add NAME (ssh://USER@HOST | tailnet://HOST | local)
 ship target use NAME
 ship push [PATH] [--project P] [--env E] [--file F] [--port N]
-          (--wait | --detach) [--dry-run] [--to TARGET]
+          (--wait | --detach) [--dry-run] [--confirm] [--to TARGET]
 ship host                             # host and Docker status, as /api/v1/host
 ship projects
 ship status PROJECT [--env E]
@@ -300,6 +300,8 @@ resume from a sequence number. Errors are
 build tool: streamed progress, exit code 0 only when the deployment met its
 verification criteria, a reserved documented range for Ship's own failures.
 Shapes are provisional until Phase 5, then change only with a major version.
+The shapes, their fixtures and the exit codes (90 to 99 are Ship's own
+failures) are in `docs/contracts/cli-json.md`.
 
 ### Docker labels
 
