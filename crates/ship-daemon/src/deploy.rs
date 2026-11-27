@@ -566,12 +566,16 @@ impl Shape {
     }
 
     /// The generated Compose file. Holds paths, names and ports only,
-    /// never a configured value.
+    /// never a configured value. Paths are literal: each `$` is written
+    /// `$$`, so Compose's interpolation reads them back unchanged.
     fn document(&self) -> Value {
         let mut web = Map::new();
         web.insert(
             "build".to_owned(),
-            json!({ "context": self.context, "dockerfile": self.dockerfile }),
+            json!({
+                "context": literal(&self.context),
+                "dockerfile": literal(&self.dockerfile),
+            }),
         );
         web.insert("image".to_owned(), json!(self.image));
         web.insert("restart".to_owned(), json!(RESTART_POLICY));
@@ -591,7 +595,7 @@ impl Shape {
             let mounts: Vec<Value> = self
                 .volumes
                 .iter()
-                .map(|m| json!({ "type": "volume", "source": m.name, "target": m.path }))
+                .map(|m| json!({ "type": "volume", "source": m.name, "target": literal(&m.path) }))
                 .collect();
             web.insert("volumes".to_owned(), Value::Array(mounts));
             let named: Map<String, Value> = self
@@ -636,6 +640,11 @@ impl Shape {
         let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
         format!("sha256:{hex}")
     }
+}
+
+/// `text` escaped for Compose interpolation: `$` is written `$$`.
+fn literal(text: &str) -> String {
+    text.replace('$', "$$")
 }
 
 /// One named volume per `VOLUME` path. The name depends on that exact path
@@ -1026,6 +1035,60 @@ mod tests {
         assert_eq!(s.endpoint().unwrap().to_string(), "100.64.0.9:8080");
         let v6 = SocketAddr::new("fd7a::1".parse().unwrap(), 8080);
         assert_eq!(v6.to_string(), "[fd7a::1]:8080");
+    }
+
+    /// A Dockerfile, a context and a `VOLUME` path that Compose would
+    /// interpolate if they were not escaped.
+    fn dollar_shape(context: &str) -> Shape {
+        Shape {
+            context: context.to_owned(),
+            dockerfile: "Dockerfile.${SHIP_REVIEW_UNSET_VAR:-wrong}".to_owned(),
+            image: "ship_env_x-web:rel_y".to_owned(),
+            publish: None,
+            volumes: volume_mounts(&["/data/$SHIP_REVIEW_UNSET_VAR".to_owned()]),
+        }
+    }
+
+    #[test]
+    fn dollar_signs_in_paths_are_escaped_for_compose() {
+        let s = dollar_shape("/state/$HOME/snapshots/abc");
+        let doc = s.document();
+        let web = &doc["services"]["web"];
+        assert_eq!(web["build"]["context"], "/state/$$HOME/snapshots/abc");
+        assert_eq!(
+            web["build"]["dockerfile"],
+            "Dockerfile.$${SHIP_REVIEW_UNSET_VAR:-wrong}"
+        );
+        assert_eq!(web["volumes"][0]["target"], "/data/$$SHIP_REVIEW_UNSET_VAR");
+        let name = web["volumes"][0]["source"].as_str().unwrap();
+        assert!(!name.contains('$'), "{name}");
+        assert_eq!(literal("a$$b"), "a$$$$b");
+    }
+
+    /// `compose config` reads the generated file's paths back exactly.
+    #[tokio::test]
+    #[ignore = "needs a real Docker Engine; run by the CI docker job"]
+    async fn real_compose_config_keeps_literal_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        let context = root.join("ctx-$SHIP_REVIEW_UNSET_VAR");
+        fs::create_dir(&context).unwrap();
+        let context = context.to_str().unwrap().to_owned();
+        let s = dollar_shape(&context);
+        let file = root.join(COMPOSE_FILE);
+        fs::write(&file, serde_json::to_string_pretty(&s.document()).unwrap()).unwrap();
+        let files = ComposeFiles::new(&root, [file]).unwrap();
+        let project = ComposeProject::new(EnvironmentId::from_parts(1_767_225_600_000, 7).unwrap());
+        let config = compose::config(&Runner::docker(), &project, &files)
+            .await
+            .unwrap();
+        // Compose may print a literal `$` as `$$` again; either way no
+        // part of a path was interpolated.
+        let read = |v: &Value| v.as_str().unwrap().replace("$$", "$");
+        let web = &config.expose()["services"]["web"];
+        assert_eq!(read(&web["build"]["context"]), context);
+        assert_eq!(read(&web["build"]["dockerfile"]), s.dockerfile);
+        assert_eq!(read(&web["volumes"][0]["target"]), s.volumes[0].path);
     }
 
     #[test]
