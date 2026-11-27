@@ -427,6 +427,37 @@ async fn a_failure_answers_redacted() {
     d.running.shutdown().await.unwrap();
 }
 
+/// A refused entry ends the upload while the client still holds its body
+/// open: the answer does not wait for the end of the body (f-027).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refused_entry_answers_with_the_body_held_open() {
+    let d = daemon(UnpackLimits::default()).await;
+    let hostile = symlink_archive("link");
+    let sha = "a".repeat(64);
+    let (tx, body) = RequestBody::channel(2);
+    tx.send(Ok(Bytes::from(hostile))).await.unwrap();
+    let headers = [
+        ("idempotency-key", "k1"),
+        ("ship-snapshot-sha256", sha.as_str()),
+    ];
+    let path = "/api/v1/projects/my-app/uploads";
+    let answered = tokio::time::timeout(
+        Duration::from_secs(10),
+        client::post(&d.target, path, &headers, body, TIMEOUT),
+    )
+    .await
+    .expect("no answer while the body is held open")
+    .unwrap();
+    let a = Answer {
+        status: answered.status,
+        json: serde_json::from_slice(&answered.body).unwrap(),
+    };
+    assert_failed(&d, &a, "my-app", 422, "unsafe_snapshot").await;
+    // The sender was open until here.
+    drop(tx);
+    d.running.shutdown().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn leftover_staging_is_removed_at_start() {
     let dir = tempfile::tempdir().unwrap();

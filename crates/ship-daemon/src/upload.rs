@@ -377,28 +377,45 @@ fn unpack_failure(e: &UnpackError) -> JobFailure {
 }
 
 /// Feeds `body` to [`ship_source::unpack`] on a blocking thread through a
-/// channel of [`BODY_CHANNEL`] chunks. When the unpacker stops early the
-/// rest of the body is not read.
+/// channel of [`BODY_CHANNEL`] chunks. The unpacker's end is watched while
+/// the body is read, so when it stops early (a refused entry) the upload
+/// ends at once and the rest of the body is not read, even if the client
+/// holds it open.
 async fn stream_unpack(
     body: Body,
     staging: PathBuf,
     limits: UnpackLimits,
 ) -> Result<Unpacked, JobFailure> {
     let (tx, rx) = mpsc::channel::<io::Result<Bytes>>(BODY_CHANNEL);
-    let unpacking = tokio::task::spawn_blocking(move || {
+    let mut unpacking = tokio::task::spawn_blocking(move || {
         ship_source::unpack(ChannelReader::new(rx), &staging, &limits)
     });
     let mut chunks = body.into_data_stream();
-    while let Some(chunk) = chunks.next().await {
-        let chunk =
-            chunk.map_err(|e| io::Error::new(io::ErrorKind::ConnectionAborted, e.to_string()));
-        let failed = chunk.is_err();
-        if tx.send(chunk).await.is_err() || failed {
-            break;
+    // `None` once the body has ended or failed: the unpacker sees the end.
+    let mut tx = Some(tx);
+    let finished = loop {
+        tokio::select! {
+            biased;
+            finished = &mut unpacking => break finished,
+            chunk = chunks.next(), if tx.is_some() => {
+                let Some(chunk) = chunk else {
+                    tx = None;
+                    continue;
+                };
+                let chunk = chunk
+                    .map_err(|e| io::Error::new(io::ErrorKind::ConnectionAborted, e.to_string()));
+                let failed = chunk.is_err();
+                // The send fails only once the unpacker has ended; its
+                // result is taken on the next turn.
+                let sender = tx.as_ref().expect("guarded by the branch");
+                if sender.send(chunk).await.is_err() || failed {
+                    tx = None;
+                }
+            }
         }
-    }
+    };
     drop(tx);
-    match unpacking.await {
+    match finished {
         Ok(Ok(unpacked)) => Ok(unpacked),
         Ok(Err(e)) => Err(unpack_failure(&e)),
         Err(e) => {
