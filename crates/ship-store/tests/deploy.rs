@@ -2,10 +2,16 @@
 //! settings, routes, get-or-create of a service and releases recorded
 //! under an id allocated before the build.
 
-use ship_core::{DeploymentResult, RevisionKind, RouteProvider, RouteStatus, ServiceKind, Slug};
-use ship_store::{
-    NewDeployment, NewOperation, NewRelease, NewRevision, NewRoute, NewService, Store, StoreError,
+use ship_core::{
+    DeploymentId, DeploymentResult, EnvironmentId, OperationId, ProjectId, ReleaseId, RevisionId,
+    RevisionKind, RouteId, RouteProvider, RouteStatus, ServiceId, ServiceKind, Slug,
 };
+use ship_store::{
+    DATABASE_FILE, LATEST_VERSION, NewDeployment, NewOperation, NewRelease, NewRevision, NewRoute,
+    NewService, Store, StoreError,
+};
+use sqlx::sqlite::SqliteConnectOptions;
+use sqlx::{AssertSqlSafe, ConnectOptions, Connection};
 
 async fn open() -> (tempfile::TempDir, Store) {
     let dir = tempfile::tempdir().unwrap();
@@ -19,6 +25,147 @@ fn web() -> NewService {
         kind: ServiceKind::Web,
         port: None,
     }
+}
+
+#[tokio::test]
+async fn a_version_2_database_migrates_to_version_3_with_a_backup() {
+    let dir = tempfile::tempdir().unwrap();
+    let ts = 1_767_225_600_000_u64;
+    let prj = ProjectId::from_parts(ts, 1).unwrap().to_string();
+    let env = EnvironmentId::from_parts(ts, 2).unwrap().to_string();
+    let op = OperationId::from_parts(ts, 3).unwrap().to_string();
+    let rev = RevisionId::from_parts(ts, 4).unwrap().to_string();
+    let rel = ReleaseId::from_parts(ts, 5).unwrap().to_string();
+    let dep = DeploymentId::from_parts(ts, 6).unwrap().to_string();
+    let svc = ServiceId::from_parts(ts, 7).unwrap().to_string();
+    let rte = RouteId::from_parts(ts, 8).unwrap().to_string();
+
+    // A version 2 database as phase-1-ws-1.2 left it: the Phase 0 schema
+    // with rows, migration 0002 run over them, then a route.
+    let mut conn = SqliteConnectOptions::new()
+        .filename(dir.path().join(DATABASE_FILE))
+        .foreign_keys(true)
+        .create_if_missing(true)
+        .connect()
+        .await
+        .unwrap();
+    sqlx::raw_sql(include_str!("../migrations/0001_initial.sql"))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    let seed = format!(
+        "INSERT INTO project (id, slug, created_at) VALUES ('{prj}', 'app', {ts});
+         INSERT INTO environment (id, project_id, name, desired_state, created_at)
+             VALUES ('{env}', '{prj}', 'development', 'running', {ts});
+         INSERT INTO service (id, environment_id, name, kind, created_at)
+             VALUES ('{svc}', '{env}', 'web', 'web', {ts});
+         INSERT INTO operation (id, idempotency_key, kind, environment_id, phase, status,
+                                created_at, updated_at)
+             VALUES ('{op}', 'k', 'push', '{env}', 'succeeded', 'succeeded', {ts}, {ts});
+         INSERT INTO revision (id, project_id, kind, source_ref, created_at)
+             VALUES ('{rev}', '{prj}', 'snapshot', 'sha256:aa', {ts});
+         INSERT INTO release (id, revision_id, images, config_fingerprint, created_at)
+             VALUES ('{rel}', '{rev}', '[\"sha256:img\"]', 'cfg', {ts});
+         INSERT INTO deployment (id, environment_id, release_id, operation_id, result,
+                                 started_at, ended_at)
+             VALUES ('{dep}', '{env}', '{rel}', '{op}', 'succeeded', {ts}, {ts});"
+    );
+    sqlx::raw_sql(AssertSqlSafe(seed))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    sqlx::raw_sql(include_str!("../migrations/0002_phase1.sql"))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    let route = format!(
+        "INSERT INTO route (id, environment_id, service_id, provider, address, status,
+                            created_at, updated_at)
+             VALUES ('{rte}', '{env}', '{svc}', 'port', '127.0.0.1:8080', 'confirmed', {ts}, {ts});
+         PRAGMA user_version = 2;"
+    );
+    sqlx::raw_sql(AssertSqlSafe(route))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    conn.close().await.unwrap();
+
+    let store = Store::open(dir.path()).await.unwrap();
+    let report = store.open_report().clone();
+    assert_eq!(report.from_version, 2);
+    assert_eq!(report.to_version, 3);
+    assert_eq!(LATEST_VERSION, 3);
+    let backup = report.backup.expect("a backup was taken");
+
+    // Every row survived.
+    let projects = store.list_projects().await.unwrap();
+    assert_eq!(projects.len(), 1);
+    assert_eq!(projects[0].id.to_string(), prj);
+    let env_id: EnvironmentId = env.parse().unwrap();
+    let services = store.list_services(env_id).await.unwrap();
+    assert_eq!(services.len(), 1);
+    assert_eq!(services[0].id.to_string(), svc);
+    let d = store.get_deployment(dep.parse().unwrap()).await.unwrap();
+    assert_eq!(d.revision_id.to_string(), rev);
+    assert_eq!(d.release_id.map(|r| r.to_string()), Some(rel.clone()));
+    assert_eq!(d.result, Some(DeploymentResult::Succeeded));
+    let routes = store.list_routes(env_id).await.unwrap();
+    assert_eq!(routes.len(), 1);
+    assert_eq!(routes[0].id.to_string(), rte);
+    assert_eq!(routes[0].address, "127.0.0.1:8080");
+    assert_eq!(routes[0].status, RouteStatus::Confirmed);
+
+    // Settings storage is there and works.
+    assert_eq!(store.host_setting("publish.address").await.unwrap(), None);
+    let set = store
+        .set_host_setting("publish.address", "127.0.0.1")
+        .await
+        .unwrap();
+    assert_eq!(
+        store.host_setting("publish.address").await.unwrap(),
+        Some(set)
+    );
+    store.close().await;
+
+    // The backup is the version 2 database, with its rows and no settings.
+    let mut conn = SqliteConnectOptions::new()
+        .filename(&backup)
+        .connect()
+        .await
+        .unwrap();
+    let v: i64 = sqlx::query_scalar("PRAGMA user_version")
+        .fetch_one(&mut conn)
+        .await
+        .unwrap();
+    assert_eq!(v, 2);
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM route")
+        .fetch_one(&mut conn)
+        .await
+        .unwrap();
+    assert_eq!(n, 1);
+    let tables: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'setting'",
+    )
+    .fetch_one(&mut conn)
+    .await
+    .unwrap();
+    assert_eq!(tables, 0);
+    conn.close().await.unwrap();
+
+    // Reopening is clean, takes no second backup and keeps the setting.
+    let store = Store::open(dir.path()).await.unwrap();
+    assert_eq!(store.open_report().from_version, 3);
+    assert_eq!(store.open_report().backup, None);
+    assert_eq!(
+        store
+            .host_setting("publish.address")
+            .await
+            .unwrap()
+            .unwrap()
+            .value,
+        "127.0.0.1"
+    );
+    store.close().await;
 }
 
 #[tokio::test]
