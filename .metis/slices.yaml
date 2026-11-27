@@ -1,18 +1,5 @@
 version: 1
 slices:
-    - id: phase-0-gate
-      title: 'Phase 0 gate: composed-system validation'
-      type: gate
-      priority: p2
-      risk: high
-      coder: claude-code/opus-5-5
-      reviewer: codex/gpt-6-astra
-      plan: .metis/plans/phase-0-plan.md
-      plan_section: Phase Gate
-      coded: true
-      reviewed: true
-      review_cycles: 1
-      created: ""
     - id: phase-1-ws-1.1
       title: Status model and error decoding fixes
       type: feat
