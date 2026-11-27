@@ -554,6 +554,87 @@ async fn values_a_retained_release_runs_with_are_redacted_after_a_restart() {
     f.running.take().unwrap().shutdown().await.unwrap();
 }
 
+/// A deployment that fails in `preparing` after one service's env file
+/// was written, before its release is recorded: that file is removed all
+/// the same (f-045). Two Compose services, the second with a secret whose
+/// value is missing from the store. The fake's `compose config` prints the
+/// pushed file, so it is written as the canonical model, in JSON.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_partly_prepared_release_keeps_no_values() {
+    let f = Fixture::new(Redactor::new()).await;
+    let mut seen = Seen::default();
+    let model = json!({
+        "name": "x",
+        "services": {
+            "aaa": { "image": "busybox:1", "networks": { "default": null } },
+            "bbb": { "image": "busybox:1", "networks": { "default": null } },
+        },
+        "networks": { "default": { "name": "x_default" } },
+    });
+    let root = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("compose.yaml"), model.to_string()).unwrap();
+    let options = Options {
+        home: Some(PathBuf::from("/nonexistent/ship-test-home")),
+        ..Options::default()
+    };
+    let selection = scan(root.path(), &options).unwrap();
+    let mut stream = Vec::new();
+    let packed = pack(&selection, &mut stream).unwrap();
+    let headers = [
+        ("idempotency-key", "upload-partial"),
+        ("ship-snapshot-sha256", packed.sha256.as_str()),
+    ];
+    let r = client::post(
+        &f.target,
+        "/api/v1/projects/app/uploads",
+        &headers,
+        RequestBody::bytes(stream),
+        TIMEOUT,
+    )
+    .await
+    .unwrap();
+    let json: Value = serde_json::from_slice(&r.body).unwrap();
+    assert!(r.status == 201 || r.status == 200, "{json}");
+    let revision = json["revision_id"].as_str().unwrap();
+    let start = |key: &'static str| {
+        let body = json!({ "revision_id": revision, "confirm": true }).to_string();
+        let f = &f;
+        async move {
+            let path = "/api/v1/projects/app/deployments";
+            let a = post(f, path, Some(key), body.as_bytes()).await;
+            assert_eq!(a.status, 202, "{}", a.body);
+            let id: OperationId = a.json["id"].as_str().unwrap().parse().unwrap();
+            finished(f.store(), id).await
+        }
+    };
+
+    // A first deployment makes both services known, whatever its result.
+    start("p1").await;
+    let services = "/api/v1/projects/app/secrets";
+    let body = at(set("ONLY_BBB", "bbb-partial-canary"), "service", "bbb");
+    succeeded(&f, &mut seen, services, body).await;
+    succeeded(&f, &mut seen, "/api/v1/projects/app/vars", set("A", "1")).await;
+    for file in files_in(&f.state.join(SECRETS_DIR)) {
+        fs::remove_file(file).unwrap();
+    }
+
+    let op = start("p2").await;
+    assert_eq!(op.phase, OperationPhase::Failed, "{op:?}");
+    assert_eq!(op.failure_phase, Some(OperationPhase::Preparing), "{op:?}");
+    let why = op.failure_message.clone().unwrap_or_default();
+    assert!(why.contains("ONLY_BBB cannot be read"), "{why}");
+    let said = messages(&f, op.id).await;
+    assert!(said.iter().any(|m| m == "aaa gets config A"), "{said:?}");
+    let mut left = Vec::new();
+    walk(&f.state.join("releases"), &mut left);
+    let env_files: Vec<_> = left
+        .iter()
+        .filter(|p| p.parent().and_then(Path::file_name) == Some(ENV_DIR.as_ref()))
+        .collect();
+    assert!(env_files.is_empty(), "{env_files:?}");
+    f.running.unwrap().shutdown().await.unwrap();
+}
+
 /// The whole path, run in a child process with the daemon's real stderr
 /// logger installed ([`the_secret_appears_nowhere`] reads its stderr).
 #[test]

@@ -338,6 +338,7 @@ pub async fn run(ctx: &Context, d: &Deployer, job: &DeployJob) -> Result<Deploye
         environment: env.id,
         project: ComposeProject::new(env.id),
         previous,
+        release: None,
         started: false,
         routes_before: None,
     };
@@ -389,7 +390,7 @@ pub async fn run(ctx: &Context, d: &Deployer, job: &DeployJob) -> Result<Deploye
             .collect(),
         Err(_) => previous.into_iter().collect(),
     };
-    crate::config::prune(d, env.id, &keep).await;
+    crate::config::prune(d, env.id, attempt.release, &keep).await;
     result
 }
 
@@ -412,6 +413,9 @@ pub(crate) struct Attempt {
     pub(crate) environment: EnvironmentId,
     pub(crate) project: ComposeProject,
     pub(crate) previous: Option<ReleaseId>,
+    /// The new release's id, from when its directory is allocated: before
+    /// the release is recorded, its env files are known by this alone.
+    pub(crate) release: Option<ReleaseId>,
     /// `compose up` has run for the new release.
     pub(crate) started: bool,
     /// The environment's routes before this attempt replaced them; `None`
@@ -502,6 +506,7 @@ impl Steps<'_> {
             )
             .await?;
         let release_id = d.store.allocate_release_id()?;
+        attempt.release = Some(release_id);
         let dir = release_dir(&d.state_dir, release_id);
         create_release_dir(&d.state_dir, &dir)?;
         let labels = DeployLabels {

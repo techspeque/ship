@@ -496,6 +496,7 @@ pub(crate) async fn steps(
         );
     }
     let release_id = store.allocate_release_id()?;
+    attempt.release = Some(release_id);
     let dir = release_dir(d.state_dir(), release_id);
     create_release_dir(d.state_dir(), &dir)?;
     let labels = DeployLabels {

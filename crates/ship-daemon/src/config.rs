@@ -667,16 +667,24 @@ pub async fn stale_services(
 
 /// Removes the env files of `environment`'s releases other than `keep`:
 /// a release that will not be brought up again needs no values on disk.
+/// `attempted` is the release the deployment just ended prepared, which no
+/// deployment names if it failed before the release was recorded.
 /// Problems are logged; nothing fails.
-pub async fn prune(d: &Deployer, environment: EnvironmentId, keep: &[ReleaseId]) {
+pub async fn prune(
+    d: &Deployer,
+    environment: EnvironmentId,
+    attempted: Option<ReleaseId>,
+    keep: &[ReleaseId],
+) {
     let deployments = match d.store().list_deployments(environment).await {
         Ok(list) => list,
         Err(e) => {
             tracing::error!(error = %e, "listing deployments to prune env files failed");
-            return;
+            Vec::new()
         }
     };
-    for release in deployments.iter().filter_map(|x| x.release_id) {
+    let releases = deployments.iter().filter_map(|x| x.release_id);
+    for release in attempted.into_iter().chain(releases) {
         if keep.contains(&release) {
             continue;
         }
