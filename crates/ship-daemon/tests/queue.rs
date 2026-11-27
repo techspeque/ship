@@ -361,6 +361,79 @@ async fn under_the_disk_watermark_fails_before_the_job_runs() {
     assert!(!s.queue.log_path(op.id).exists());
 }
 
+/// Submits each of several keys a few times at once under `limits`, which
+/// refuse them, and checks every answer carries the refusal `code`
+/// (f-023).
+async fn concurrent_replay_observes_the_refusal(limits: Limits, code: &str) {
+    const ROUNDS: usize = 20;
+    const COPIES: usize = 4;
+    let s = setup(limits).await;
+    let ran = Arc::new(AtomicUsize::new(0));
+    for round in 0..ROUNDS {
+        let start = Arc::new(Barrier::new(COPIES));
+        let tasks: Vec<_> = (0..COPIES)
+            .map(|_| {
+                let (queue, env, ran, start) = (s.queue.clone(), s.env, ran.clone(), start.clone());
+                tokio::spawn(async move {
+                    let key = format!("same-{round}");
+                    start.wait().await;
+                    queue
+                        .submit(sub(&key, env), move |_ctx: Context| async move {
+                            ran.fetch_add(1, Ordering::SeqCst);
+                            Ok(())
+                        })
+                        .await
+                        .unwrap()
+                })
+            })
+            .collect();
+        let mut answers = Vec::new();
+        for task in tasks {
+            answers.push(task.await.unwrap());
+        }
+        assert_eq!(answers.iter().filter(|a| a.created).count(), 1);
+        for submitted in &answers {
+            let op = &submitted.operation;
+            assert_eq!(op.id, answers[0].operation.id);
+            assert_eq!(op.status, OperationStatus::Failed, "{submitted:?}");
+            assert_eq!(op.failure_code.as_deref(), Some(code), "{submitted:?}");
+            assert_eq!(op.failure_phase, Some(OperationPhase::Queued));
+            let response = ship_daemon::http::submitted_response(op);
+            assert_eq!(
+                response.status().as_u16(),
+                code.parse::<ErrorCode>().unwrap().http_status(),
+                "{submitted:?}"
+            );
+        }
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(ran.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_concurrent_replay_of_a_queue_full_refusal_is_refused() {
+    concurrent_replay_observes_the_refusal(
+        Limits {
+            max_queue: 0,
+            ..limits()
+        },
+        "queue_full",
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_concurrent_replay_of_an_insufficient_storage_refusal_is_refused() {
+    concurrent_replay_observes_the_refusal(
+        Limits {
+            disk_watermark_bytes: u64::MAX,
+            ..limits()
+        },
+        "insufficient_storage",
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn a_panicking_job_fails_internal_and_the_worker_goes_on() {
     let s = setup(limits()).await;

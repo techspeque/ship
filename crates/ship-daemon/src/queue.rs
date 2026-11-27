@@ -224,6 +224,10 @@ struct Inner {
     events: watch::Sender<u64>,
     /// Set once the queue is closed; SSE readers end their streams.
     closing: watch::Sender<bool>,
+    /// Held from creating an operation's row until its admission is
+    /// decided and any refusal stored, so a replay of the key never sees
+    /// the row before that decision.
+    admitting: tokio::sync::Mutex<()>,
     state: Mutex<State>,
 }
 
@@ -307,6 +311,7 @@ impl Queue {
                 builds: Arc::new(Semaphore::new(limits.build_slots.max(1))),
                 events,
                 closing,
+                admitting: tokio::sync::Mutex::new(()),
                 state: Mutex::new(State::default()),
             }),
         })
@@ -358,6 +363,8 @@ impl Queue {
                 Err(e) => return Err(QueueError::Store(e)),
             }
         }
+        // Held until admission is decided and a refusal stored (f-023).
+        let _admitting = inner.admitting.lock().await;
         let created = inner
             .store
             .create_operation(&NewOperation {
