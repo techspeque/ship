@@ -60,6 +60,10 @@ pub const CONFIG_FILE: &str = "config.yaml";
 pub const STAMPS_FILE: &str = "config.json";
 /// The release's directory of env files.
 pub const ENV_DIR: &str = "env";
+/// The key of `config.json` naming, per service, which entries of its env
+/// file are secrets (names only), so a restarted daemon can redact the
+/// values a retained release still runs with ([`crate::secrets::register_all`]).
+pub const SECRET_NAMES: &str = "secrets";
 
 // ---- scopes ----
 
@@ -519,6 +523,7 @@ pub async fn prepare(
     let layers = layers(store, environment, services).await?;
     let env_dir = dir.join(ENV_DIR);
     let mut stamps = serde_json::Map::new();
+    let mut secret_names_of = serde_json::Map::new();
     let mut fingerprint = serde_json::Map::new();
     let mut names = BTreeMap::new();
     let mut overrides = serde_json::Map::new();
@@ -556,6 +561,10 @@ pub async fn prepare(
         let (vars, secret_names): (Vec<_>, Vec<_>) = entries
             .iter()
             .partition(|(_, e)| matches!(e, Entry::Var(_)));
+        if !secret_names.is_empty() {
+            let list: Vec<&str> = secret_names.iter().map(|(n, _)| n.as_str()).collect();
+            secret_names_of.insert(service.name.clone(), json!(list));
+        }
         let list = |v: Vec<(&String, &Entry)>| {
             v.into_iter()
                 .map(|(n, _)| n.as_str())
@@ -576,7 +585,9 @@ pub async fn prepare(
     }
     write_file(
         &dir.join(STAMPS_FILE),
-        json!({ "services": stamps }).to_string().as_bytes(),
+        json!({ "services": stamps, SECRET_NAMES: secret_names_of })
+            .to_string()
+            .as_bytes(),
     )?;
     let override_file = if overrides.is_empty() {
         None

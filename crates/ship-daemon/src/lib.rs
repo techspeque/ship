@@ -197,6 +197,7 @@ pub async fn start(config: &Config) -> Result<Running, DaemonError> {
     // redacted from the first log line on (ADR-0009 rule 7).
     if let Err(e) = secrets::register_all(
         &store,
+        &config.state_dir,
         &secrets::SecretStore::new(&config.state_dir),
         &config.redactor,
     )

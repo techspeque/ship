@@ -17,6 +17,8 @@ use std::path::{Path, PathBuf};
 use ship_core::SecretValue;
 use ship_store::{Store, StoreError};
 
+use crate::config::{ENV_DIR, SECRET_NAMES, STAMPS_FILE};
+use crate::deploy::RELEASES_DIR;
 use crate::log::Redactor;
 
 /// The secret store's directory under the state directory.
@@ -117,10 +119,15 @@ impl SecretStore {
 /// At daemon start: puts the directory at 0700 and registers every stored
 /// secret's value with `redactor`, so a value set before a restart is
 /// still never printed. A value that cannot be read is logged by name and
-/// skipped; a deployment that needs it fails then. Returns how many were
+/// skipped; a deployment that needs it fails then. The values in the env
+/// files of the releases under `state_dir` that kept them (the serving
+/// release and the one before it) are registered too: a secret rotated or
+/// unset since is no longer stored, but those releases still run with, or
+/// can be brought back with, its old value. Returns how many values were
 /// registered.
 pub async fn register_all(
     store: &Store,
+    state_dir: &Path,
     secrets: &SecretStore,
     redactor: &Redactor,
 ) -> Result<usize, StoreError> {
@@ -138,7 +145,72 @@ pub async fn register_all(
             }
         }
     }
+    for value in retained_values(state_dir) {
+        redactor.register(&value);
+        n += 1;
+    }
     Ok(n)
+}
+
+/// The secret values in the env files of the releases under `state_dir`,
+/// found by the secret names each release's `config.json` records.
+/// Problems are logged by release; nothing fails.
+fn retained_values(state_dir: &Path) -> Vec<SecretValue> {
+    let mut out = Vec::new();
+    let Ok(releases) = fs::read_dir(state_dir.join(RELEASES_DIR)) else {
+        return out;
+    };
+    for release in releases.flatten() {
+        let dir = release.path();
+        let env_dir = dir.join(ENV_DIR);
+        if !env_dir.is_dir() {
+            continue;
+        }
+        let names = fs::read(dir.join(STAMPS_FILE))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .and_then(|v| v[SECRET_NAMES].as_object().cloned())
+            .unwrap_or_default();
+        for (service, list) in names {
+            let wanted: Vec<&str> = list
+                .as_array()
+                .map(|a| a.iter().filter_map(|n| n.as_str()).collect())
+                .unwrap_or_default();
+            let text = match fs::read_to_string(env_dir.join(format!("{service}.env"))) {
+                Ok(text) => text,
+                Err(e) => {
+                    tracing::error!(release = %dir.display(), service = %service, error = %e,
+                        "a retained release's env file cannot be read");
+                    continue;
+                }
+            };
+            for line in text.lines() {
+                if let Some((name, value)) = env_file_entry(line)
+                    && wanted.contains(&name)
+                {
+                    out.push(SecretValue::new(value));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The name and value of a line `ship_core::config::env_file_line` wrote:
+/// `NAME="…"`, a backslash escaping the character after it.
+fn env_file_entry(line: &str) -> Option<(&str, String)> {
+    let (name, rest) = line.split_once('=')?;
+    let quoted = rest.strip_prefix('"')?.strip_suffix('"')?;
+    let mut value = String::with_capacity(quoted.len());
+    let mut chars = quoted.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            value.push(chars.next()?);
+        } else {
+            value.push(c);
+        }
+    }
+    Some((name, value))
 }
 
 #[cfg(test)]
@@ -163,6 +235,15 @@ mod tests {
         store.remove(r).unwrap();
         store.remove(r).unwrap();
         assert!(store.read(r).is_err());
+    }
+
+    #[test]
+    fn env_file_lines_read_back() {
+        let value = r#"a"b\c$d ${E} # f 'g'"#;
+        let line = ship_core::config::env_file_line("A", value);
+        let entry = env_file_entry(line.trim_end_matches('\n'));
+        assert_eq!(entry, Some(("A", value.to_owned())));
+        assert_eq!(env_file_entry("A=unquoted"), None);
     }
 
     #[test]

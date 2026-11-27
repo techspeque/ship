@@ -524,6 +524,36 @@ async fn values_and_secrets_are_set_listed_and_unset_with_files_kept_private() {
     }
 }
 
+/// A secret rotated, and another unset, after a deployment and before the
+/// next: after a restart with a redactor that knows nothing, the values
+/// the retained release still runs with are redacted as well as the
+/// rotated one now stored (f-043).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn values_a_retained_release_runs_with_are_redacted_after_a_restart() {
+    let mut f = Fixture::new(Redactor::new()).await;
+    let mut seen = Seen::default();
+    let secrets = "/api/v1/projects/app/secrets";
+    let revision = upload(&f, "app").await;
+    let old = "old-rotate-canary-7731";
+    let new = "new-rotate-canary-7731";
+    let gone = "unset-canary-7731";
+
+    succeeded(&f, &mut seen, secrets, set("TOKEN", old)).await;
+    succeeded(&f, &mut seen, secrets, set("OTHER", gone)).await;
+    deploy(&f, &mut seen, revision, "r1").await;
+    // Rotation, and an unset before any redeploy.
+    succeeded(&f, &mut seen, secrets, set("TOKEN", new)).await;
+    let unset = "/api/v1/projects/app/secrets/unset";
+    succeeded(&f, &mut seen, unset, name("OTHER")).await;
+
+    let redactor = Redactor::new();
+    f.restart(redactor.clone()).await;
+    let text = format!("a {old} b {new} c {gone} d");
+    let out = String::from_utf8(redactor.redact(text.as_bytes())).unwrap();
+    assert_eq!(out, "a [redacted] b [redacted] c [redacted] d");
+    f.running.take().unwrap().shutdown().await.unwrap();
+}
+
 /// The whole path, run in a child process with the daemon's real stderr
 /// logger installed ([`the_secret_appears_nowhere`] reads its stderr).
 #[test]
