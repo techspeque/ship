@@ -289,6 +289,9 @@ findings:
       severity: P2
       category: tests
       finding: crates/ship-source/tests/pack.rs:293 — The include tests cover exact file names and reaching a file through an excluded ancestor, but omit the under-directory and not-a-prefix-of-a-sibling cases expressly required by the brief test plan at lines 100-102. Add tests for naming a directory and its descendants, and for a similarly prefixed sibling remaining excluded, including default-excluded and ignored descendant cases so directory-include semantics are explicit.
-      status: open
+      status: resolved
+      resolved_by: commit 4073a6a4d9dd; test a_named_path_does_not_include_a_sibling_it_prefixes
       cycle: 1
       file: crates/ship-source/tests/pack.rs
+      commit: 4073a6a4d9ddc8603a351eb3913066be5f288aae
+      evidence: test a_named_path_does_not_include_a_sibling_it_prefixes
