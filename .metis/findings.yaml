@@ -229,9 +229,12 @@ findings:
       severity: P2
       category: behavior
       finding: 'crates/ship-store/migrations/0002_phase1.sql:181 — Deployment guards reject only changed values: repeating set_deployment_release with the same release succeeds even after completion, and repeating finish_deployment with the same result in the same millisecond succeeds. Reproduced using the exact UPDATE statements against migrations 0001+0002. This violates brief lines 113-115 requiring second attempts to be rejected. Reject repeated setter/finalizer attempts with IllegalTransition regardless of value equality, and add regression tests for identical release assignments before/after completion and identical-result finalization.'
-      status: open
+      status: resolved
+      resolved_by: commit e7635ed0e200; test deployment_lifecycle
       cycle: 1
       file: crates/ship-store/migrations/0002_phase1.sql
+      commit: e7635ed0e200e3d9e8df0fb435f55ba2d68bda0e
+      evidence: test deployment_lifecycle
     - id: f-021
       date: "2026-11-27"
       slice: phase-1-ws-1.2
