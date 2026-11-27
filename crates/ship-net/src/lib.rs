@@ -15,15 +15,20 @@
 //! `ship open`, and [`dial_stdio`], the host end of the ssh transport. Ship
 //! adds no authentication of its own: socket access is the whole
 //! authorisation (ADR-0003 rule 2).
+//!
+//! Tailnet: [`tailnet::TailnetAddress`], the host's tailnet IPv4 address as
+//! the local `tailscale` CLI reports it, or none.
 
 pub mod client;
 mod connect;
 mod dial;
 pub mod forward;
 mod listener;
+pub mod tailnet;
 mod target;
 
 pub use connect::{ConnectError, FALLBACK_GROUP, connect_unix, group_name};
 pub use dial::{DRAIN_AFTER_INPUT_EOF, bridge, dial_stdio};
 pub use listener::{BindError, SOCKET_MODE, SocketFile, bind_loopback, bind_unix};
+pub use tailnet::{StaticTailnet, TailnetAddress, TailscaleCli};
 pub use target::{DEFAULT_SOCKET, SshTarget, TARGET_FORMS, Target, TargetError};

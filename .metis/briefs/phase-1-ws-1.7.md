@@ -176,4 +176,67 @@ None.
 
 ## Report
 
-Filled at implementation.
+- `ship-core`: `deploy.rs` (new: `detect`, `check_file_path`, `PortSpec`,
+  `ExposedPort`, `Protocol`, `map_port`, `AmbiguousPort`,
+  `PublishAddress`); `api.rs` (`deployments_path`, `DEPLOY_KIND`,
+  `DeployRequest`, `SETTINGS_PATH`, `SETTINGS_KIND`, `PUBLISH_ADDRESS_KEY`,
+  `setting_path`, `SettingView`, `SetSettingRequest`); `model.rs`
+  (`RouteProvider`, `RouteStatus`). `core::net` is used for `IpAddr`, so
+  the purity test's `std::net` ban holds.
+- `ship-store`: `migrations/0003_settings.sql`; `settings.rs`
+  (`host_setting`, `set_host_setting`); `route.rs` (`NewRoute`, `Route`,
+  `replace_routes`, `list_routes`); `repo.rs` `ensure_service`;
+  `history.rs` `allocate_release_id`, `create_release_as`
+  (`create_release` delegates). `tests/phase1.rs` and `tests/store.rs`
+  updated for schema version 3 and the `setting` table; `tests/deploy.rs`
+  new (4 tests).
+- `ship-docker`: `argv::image_inspect`, `is_image_reference`,
+  `MAX_IMAGE_REFERENCE`; `image.rs` (`ImageInfo`, `inspect_image`,
+  `parse_image`).
+- `ship-net`: `tailnet.rs` (`TailnetAddress`, `StaticTailnet`,
+  `TailscaleCli`, `parse_answer`); `tests/tailnet.rs` (3 tests).
+- `ship-daemon`: `deploy.rs` and `settings.rs` (new); `http.rs` routes
+  `POST /api/v1/projects/{project}/deployments`, `GET|POST
+  /api/v1/settings/{key}`, `router_with`; `lib.rs` `Config.deploy`,
+  `Config.tailnet`; `Cargo.toml` `serde` moved to dependencies, `sha2`
+  0.11 added (`Cargo.lock` updated). `tests/deploy.rs` (13 tests, fake
+  `docker`), `tests/real_deploy.rs` (3 tests, ignored),
+  `tests/common/mod.rs` (new config fields).
+- `ship`: `settings.rs` (`ship settings get|set publish.address`),
+  `client::post_json`, `main.rs` dispatch; `tests/cli_settings.rs`.
+- `metis verify --post --slice phase-1-ws-1.7`: ALL GREEN (exit 0).
+- Not run locally: `real_deploy.rs` (needs a real Engine; this session can
+  run only `metis verify`). CI's `docker` job runs it with `--ignored`.
+- Decisions:
+  - Compose detected without `--file`, or a `.yml`/`.yaml` `--file`,
+    fails `invalid_request` in `validating` ("not available yet"):
+    Compose deployment is phase-1-ws-1.8.
+  - `EXPOSE` and `VOLUME` are read from the built image (`image inspect`),
+    not parsed from the Dockerfile, so base-image ports, `ARG`s and
+    multi-stage builds count as Docker sees them. The mapping is therefore
+    checked in `preparing`, after the build.
+  - Each `VOLUME` path is mounted from a named volume named after the path
+    (`/var/lib/data` → `var-lib-data`), so data survives a redeploy and a
+    later `remove`; networks and volumes keep the environment's first
+    release as their release label (Compose would otherwise see them as
+    changed).
+  - The conflict probe binds the endpoint briefly (TCP or UDP) in
+    `preparing`. It is skipped when the environment's current route holds
+    that address, for an unspecified address (it would listen on every
+    interface) and below 1024 when the daemon may not bind (left to
+    Docker); `up` failing with Docker's port-allocation error is
+    `port_conflict` too. On macOS a just-released port can read as in use
+    for a moment (seen in the unit test, which retries).
+  - An unspecified `publish.address` records the route as `0.0.0.0:P`,
+    the address bound.
+  - Settings changes are `settings` operations (ADR-0011) with an audit
+    event (actor `operator`); a fixed address must bind a UDP socket on
+    the host, else `invalid_request`.
+  - `TailscaleCli` asks the `tailscale` CLI only (not the `tailscaled`
+    socket); missing, non-zero, slow (2 s), garbled, loopback or IPv6-only
+    answers are no tailnet.
+  - A replayed idempotency key on `deployments` or `settings` returns the
+    original operation even if the body differs (the queue compares kind
+    and environment only, as for every mutation).
+  - A deployment interrupted by a daemon stop keeps no result; closing it
+    is phase-1-ws-1.14's recovery.

@@ -22,21 +22,27 @@ use std::time::Duration;
 use tokio::sync::{oneshot, watch};
 
 use ship_core::api::{
-    HOST_PATH, IDEMPOTENCY_KEY_HEADER, LAST_EVENT_ID_HEADER, OperationEventView,
-    OperationFailureView, OperationView, PROJECTS_PATH, UPLOAD_KIND, UploadView,
+    DEPLOY_KIND, DeployRequest, HOST_PATH, IDEMPOTENCY_KEY_HEADER, LAST_EVENT_ID_HEADER,
+    OperationEventView, OperationFailureView, OperationView, PROJECTS_PATH, SETTINGS_KIND,
+    SetSettingRequest, UPLOAD_KIND, UploadView,
 };
 use ship_core::{
     API_VERSION, API_VERSION_HEADER, ApiError, EnvironmentId, ErrorCode, HostInfo, OperationId,
-    OperationPhase, ProjectList, ProjectSummary, ReceivedCode, SHIP_VERSION_HEADER,
+    OperationPhase, ProjectList, ProjectSummary, ReceivedCode, SHIP_VERSION_HEADER, Slug,
 };
 use ship_docker::Runner;
-use ship_store::{Operation, OperationEvent, Store, StoreError};
+use ship_store::{DEVELOPMENT, Operation, OperationEvent, Store, StoreError};
 
+use crate::deploy::{DeployJob, DeploySettings, Deployer};
 use crate::queue::{Context, JobFailure, Queue, QueueError, Submission};
 use crate::upload::Uploads;
 
 /// `POST`: a snapshot upload, answered with [`UploadView`].
 const UPLOADS_ROUTE: &str = "/api/v1/projects/{project}/uploads";
+/// `POST`: a deployment of a revision, answered `202` with its operation.
+const DEPLOYMENTS_ROUTE: &str = "/api/v1/projects/{project}/deployments";
+/// `GET`: a setting; `POST`: change it.
+const SETTING_ROUTE: &str = "/api/v1/settings/{key}";
 /// `GET`: [`OperationView`].
 const OPERATION_ROUTE: &str = "/api/v1/operations/{id}";
 /// `GET`: SSE stream of [`OperationEventView`].
@@ -74,17 +80,40 @@ struct AppState {
     host: Arc<HostProbe>,
     queue: Queue,
     uploads: Arc<Uploads>,
+    deployer: Arc<Deployer>,
 }
 
 /// The daemon's router over `store`, inspecting the host through `host`,
 /// following operations of `queue` and receiving snapshots under
-/// `uploads`.
+/// `uploads`. Deployments use `host`'s Docker and state directory, the
+/// default [`DeploySettings`] and the host's `tailscale` CLI.
 pub fn router(store: Store, host: HostProbe, queue: Queue, uploads: Arc<Uploads>) -> Router {
+    let deployer = Deployer::new(
+        store.clone(),
+        host.docker.clone(),
+        &host.state_dir,
+        DeploySettings::default(),
+        queue.limits().build_timeout,
+        Arc::new(ship_net::TailscaleCli::default()),
+    );
+    router_with(store, host, queue, uploads, Arc::new(deployer))
+}
+
+/// [`router`] with the deployments run by `deployer`.
+pub fn router_with(
+    store: Store,
+    host: HostProbe,
+    queue: Queue,
+    uploads: Arc<Uploads>,
+    deployer: Arc<Deployer>,
+) -> Router {
     Router::new()
         .route(HEALTHZ_PATH, get(healthz))
         .route(HOST_PATH, get(host_info))
         .route(PROJECTS_PATH, get(projects))
         .route(UPLOADS_ROUTE, post(upload))
+        .route(DEPLOYMENTS_ROUTE, post(deploy))
+        .route(SETTING_ROUTE, get(setting).post(set_setting))
         .route(OPERATION_ROUTE, get(operation))
         .route(OPERATION_EVENTS_ROUTE, get(operation_events))
         // Everything else is the UI, which keeps `/api/*`'s JSON 404.
@@ -94,9 +123,136 @@ pub fn router(store: Store, host: HostProbe, queue: Queue, uploads: Arc<Uploads>
             host: Arc::new(host),
             queue,
             uploads,
+            deployer,
         })
         .layer(middleware::from_fn(api_version))
         .layer(middleware::from_fn(origin_guard))
+}
+
+/// The answer for a database failure.
+fn database_error(e: &StoreError) -> Response {
+    tracing::error!(error = %e, "reading the database failed");
+    error_response(ApiError::new(
+        ErrorCode::Internal,
+        "the daemon could not read its database",
+    ))
+}
+
+/// A JSON request body, or `400 invalid_request` naming what is wrong.
+fn json_body<T: serde::de::DeserializeOwned>(body: &Bytes) -> Result<T, ApiError> {
+    serde_json::from_slice(body).map_err(|e| {
+        ApiError::new(
+            ErrorCode::InvalidRequest,
+            format!("the request body is not valid: {e}"),
+        )
+    })
+}
+
+// ---- deployments ----
+
+/// Deploys a revision of a project to its `development` environment as a
+/// `deploy` operation ([`crate::deploy`]). The project, the revision (of
+/// that project), `file` and `port` are checked before any operation:
+/// `400` for a malformed request, `404` for an unknown project or
+/// revision. Then [`accept`].
+async fn deploy(
+    State(state): State<AppState>,
+    Path(project): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let slug = match Slug::parse(&project) {
+        Ok(slug) => slug,
+        Err(e) => return error_response(e.into()),
+    };
+    let request: DeployRequest = match json_body(&body) {
+        Ok(request) => request,
+        Err(e) => return error_response(e),
+    };
+    if let Some(file) = &request.file
+        && let Err(e) = ship_core::deploy::check_file_path(file)
+    {
+        return error_response(ApiError::new(ErrorCode::InvalidRequest, e.to_string()));
+    }
+    let not_found = |what: &str| error_response(ApiError::new(ErrorCode::NotFound, what));
+    let project = match state.store.list_projects().await {
+        Ok(list) => match list.into_iter().find(|p| p.slug == slug) {
+            Some(p) => p,
+            None => return not_found("no such project"),
+        },
+        Err(e) => return database_error(&e),
+    };
+    let environment = match state.store.list_environments(project.id).await {
+        Ok(list) => match list.into_iter().find(|e| e.name.as_str() == DEVELOPMENT) {
+            Some(e) => e,
+            None => return not_found("the project has no development environment"),
+        },
+        Err(e) => return database_error(&e),
+    };
+    let revision = match state.store.get_revision(request.revision_id).await {
+        Ok(r) if r.project_id == project.id => r,
+        Ok(_) | Err(StoreError::NotFound { .. }) => {
+            return not_found("no such revision in this project");
+        }
+        Err(e) => return database_error(&e),
+    };
+    let environment_id = environment.id;
+    let job = DeployJob {
+        project,
+        environment,
+        revision,
+        file: request.file,
+        port: request.port,
+    };
+    let deployer = Arc::clone(&state.deployer);
+    let run = move |ctx: Context| async move {
+        crate::deploy::run(&ctx, &deployer, &job).await.map(|_| ())
+    };
+    accept(
+        &state.queue,
+        &headers,
+        DEPLOY_KIND,
+        Some(environment_id),
+        run,
+    )
+    .await
+}
+
+// ---- settings ----
+
+async fn setting(State(state): State<AppState>, Path(key): Path<String>) -> Response {
+    if let Err(e) = crate::settings::check_key(&key) {
+        return error_response(e);
+    }
+    match state.store.host_setting(&key).await {
+        Ok(stored) => Json(crate::settings::view(&key, stored)).into_response(),
+        Err(e) => database_error(&e),
+    }
+}
+
+/// Changes a setting as a `settings` operation, answered `202`. An unknown
+/// key is `404`, a malformed value `400`, both before any operation.
+async fn set_setting(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Err(e) = crate::settings::check_key(&key) {
+        return error_response(e);
+    }
+    let request: SetSettingRequest = match json_body(&body) {
+        Ok(request) => request,
+        Err(e) => return error_response(e),
+    };
+    let value = match crate::settings::parse_value(&key, &request.value) {
+        Ok(value) => value,
+        Err(e) => return error_response(e),
+    };
+    let store = state.store.clone();
+    let run =
+        move |ctx: Context| async move { crate::settings::apply(&ctx, &store, &key, value).await };
+    accept(&state.queue, &headers, SETTINGS_KIND, None, run).await
 }
 
 /// The response for an [`ApiError`]: its code's status and the error as JSON.

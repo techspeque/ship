@@ -4,6 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::deploy::PortSpec;
 use crate::error::ReceivedCode;
 use crate::id::{EnvironmentId, OperationId, ProjectId, RevisionId};
 use crate::slug::Slug;
@@ -89,6 +90,60 @@ pub struct UploadView {
     pub sha256: String,
     /// `false` when the project already had a revision with this hash.
     pub new_revision: bool,
+}
+
+/// `POST`: deploy a revision of `project` to its `development`
+/// environment. The body is a [`DeployRequest`]; the answer `202` with the
+/// `deploy` operation. Needs an idempotency key.
+pub fn deployments_path(project: &Slug) -> String {
+    format!("{PROJECTS_PATH}/{}/deployments", project.as_str())
+}
+
+/// The operation kind of a deployment.
+pub const DEPLOY_KIND: &str = "deploy";
+
+/// What to deploy: a revision of the project, optionally the build file to
+/// use and the port to publish.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeployRequest {
+    pub revision_id: RevisionId,
+    /// A path relative to the revision's root (`--file`); `None` detects.
+    #[serde(default)]
+    pub file: Option<String>,
+    /// `--port`: `N` or `HOST:CONTAINER`; `None` publishes nothing.
+    #[serde(default)]
+    pub port: Option<PortSpec>,
+}
+
+/// Prefix of the daemon settings: `GET {SETTINGS_PATH}/{key}` is a
+/// [`SettingView`]; `POST` with a [`SetSettingRequest`] and an idempotency
+/// key changes it as a `settings` operation.
+pub const SETTINGS_PATH: &str = "/api/v1/settings";
+/// The operation kind of a settings change.
+pub const SETTINGS_KIND: &str = "settings";
+/// Where the ports Ship publishes bind: `auto` or an address
+/// ([`crate::deploy::PublishAddress`]).
+pub const PUBLISH_ADDRESS_KEY: &str = "publish.address";
+
+/// `GET` and `POST` path of the setting `key`.
+pub fn setting_path(key: &str) -> String {
+    format!("{SETTINGS_PATH}/{key}")
+}
+
+/// A daemon setting.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SettingView {
+    pub key: String,
+    /// The stored value, or the default when it was never set.
+    pub value: String,
+    /// `None` when it was never set.
+    pub updated_at: Option<Timestamp>,
+}
+
+/// The body of a settings change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetSettingRequest {
+    pub value: String,
 }
 
 /// Whether `key` is an acceptable idempotency key: 1 to
@@ -247,6 +302,49 @@ mod tests {
         for h in [SNAPSHOT_SHA256_HEADER, GIT_COMMIT_HEADER, GIT_DIRTY_HEADER] {
             assert!(h.bytes().all(token), "{h}");
         }
+    }
+
+    #[test]
+    fn deploy_and_settings_shapes() {
+        let slug = Slug::parse("my-app").unwrap();
+        assert_eq!(
+            deployments_path(&slug),
+            "/api/v1/projects/my-app/deployments"
+        );
+        assert_eq!(
+            setting_path(PUBLISH_ADDRESS_KEY),
+            "/api/v1/settings/publish.address"
+        );
+        assert!(SETTINGS_PATH.starts_with(API_PREFIX));
+
+        let request: DeployRequest = serde_json::from_value(json!({
+            "revision_id": "rev_01aryz6s41tsv4rrffq69g5fav",
+            "port": "8080:3000",
+        }))
+        .unwrap();
+        assert_eq!(request.file, None);
+        assert_eq!(request.port.unwrap().to_string(), "8080:3000");
+        let v = serde_json::to_value(&request).unwrap();
+        assert_eq!(
+            v,
+            json!({
+                "revision_id": "rev_01aryz6s41tsv4rrffq69g5fav",
+                "file": null,
+                "port": "8080:3000",
+            })
+        );
+        let bad = json!({ "revision_id": "rev_01aryz6s41tsv4rrffq69g5fav", "port": "0" });
+        assert!(serde_json::from_value::<DeployRequest>(bad).is_err());
+
+        let unset = SettingView {
+            key: PUBLISH_ADDRESS_KEY.to_owned(),
+            value: "auto".to_owned(),
+            updated_at: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&unset).unwrap(),
+            json!({ "key": "publish.address", "value": "auto", "updated_at": null })
+        );
     }
 
     #[test]

@@ -217,9 +217,29 @@ impl Store {
         revision: RevisionId,
         new: &NewRelease<'_>,
     ) -> Result<Release, StoreError> {
+        let id = self.allocate_release_id()?;
+        self.create_release_as(id, revision, new).await
+    }
+
+    /// A new release id, recorded nowhere yet. A deployment needs its
+    /// release's id before the build (for the image tag and the labels);
+    /// [`Store::create_release_as`] records the release under it.
+    pub fn allocate_release_id(&self) -> Result<ReleaseId, StoreError> {
+        new_id(now()?, ReleaseId::from_parts)
+    }
+
+    /// [`Store::create_release`] under an id from
+    /// [`Store::allocate_release_id`]. An id already recorded is
+    /// [`StoreError::Conflict`].
+    pub async fn create_release_as(
+        &self,
+        id: ReleaseId,
+        revision: RevisionId,
+        new: &NewRelease<'_>,
+    ) -> Result<Release, StoreError> {
         let created_at = now()?;
         let release = Release {
-            id: new_id(created_at, ReleaseId::from_parts)?,
+            id,
             revision_id: revision,
             images: new.images.to_vec(),
             config_fingerprint: new.config_fingerprint.to_owned(),

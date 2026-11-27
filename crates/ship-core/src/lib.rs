@@ -70,6 +70,7 @@ macro_rules! string_enum {
 
 pub mod api;
 pub mod compose;
+pub mod deploy;
 pub mod error;
 pub mod id;
 pub mod model;
@@ -88,7 +89,9 @@ pub use id::{
     DeploymentId, EnvironmentId, IdError, OperationId, ProjectId, ReleaseId, RevisionId, RouteId,
     ServiceId,
 };
-pub use model::{DeploymentResult, RecoveryPolicy, RevisionKind, ServiceKind};
+pub use model::{
+    DeploymentResult, RecoveryPolicy, RevisionKind, RouteProvider, RouteStatus, ServiceKind,
+};
 pub use secret::SecretValue;
 pub use slug::{Slug, SlugError};
 pub use state::{

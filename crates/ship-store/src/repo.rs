@@ -412,6 +412,43 @@ impl Store {
         Ok(svc)
     }
 
+    /// The service of `environment` named `new.name`, created from `new`
+    /// if there is none. An existing service is returned as it is, even if
+    /// `new` differs from it. An unknown environment is
+    /// [`StoreError::Conflict`].
+    pub async fn ensure_service(
+        &self,
+        environment: EnvironmentId,
+        new: &NewService,
+    ) -> Result<Service, StoreError> {
+        let created_at = now()?;
+        let id = new_id(created_at, ServiceId::from_parts)?;
+        sqlx::query(
+            "INSERT INTO service (id, environment_id, name, kind, port, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (environment_id, name) DO NOTHING",
+        )
+        .bind(id.to_string())
+        .bind(environment.to_string())
+        .bind(new.name.as_str())
+        .bind(new.kind.as_str())
+        .bind(new.port.map(i64::from))
+        .bind(created_at.unix_millis())
+        .execute(&self.pool)
+        .await
+        .map_err(write_err("service"))?;
+        let row = sqlx::query(
+            "SELECT id, environment_id, name, kind, port, created_at FROM service \
+             WHERE environment_id = ? AND name = ?",
+        )
+        .bind(environment.to_string())
+        .bind(new.name.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db)?
+        .ok_or(StoreError::NotFound { entity: "service" })?;
+        service_from(&row)
+    }
+
     /// The service with `id`.
     pub async fn get_service(&self, id: ServiceId) -> Result<Service, StoreError> {
         let row = sqlx::query(

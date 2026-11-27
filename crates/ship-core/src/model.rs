@@ -42,9 +42,37 @@ string_enum! {
     }
 }
 
+string_enum! {
+    /// How a route reaches a service (ADR-0010). Phase 1 has `port` only.
+    pub enum RouteProvider {
+        Port => "port",
+    }
+}
+
+string_enum! {
+    /// Whether a route's address is known to work. Only a `confirmed`
+    /// route's address is ever printed (ADR-0010 rule 2).
+    pub enum RouteStatus {
+        Pending => "pending",
+        Confirmed => "confirmed",
+        Failed => "failed",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn route_strings_are_stable_and_round_trip() {
+        let providers: Vec<&str> = RouteProvider::ALL.iter().map(|p| p.as_str()).collect();
+        assert_eq!(providers, ["port"]);
+        let statuses: Vec<&str> = RouteStatus::ALL.iter().map(|s| s.as_str()).collect();
+        assert_eq!(statuses, ["pending", "confirmed", "failed"]);
+        for s in RouteStatus::ALL {
+            assert_eq!(s.as_str().parse::<RouteStatus>(), Ok(*s));
+        }
+    }
 
     #[test]
     fn revision_kind_strings_are_stable_and_round_trip() {

@@ -91,6 +91,36 @@ pub async fn get_json<T: serde::de::DeserializeOwned>(
     serde_json::from_slice(&response.body).map_err(|e| ClientError::BadResponse(e.to_string()))
 }
 
+/// `POST path` with a JSON `body` and `headers` to `endpoint`, checking
+/// the API version, and decoding a successful JSON answer as `T`.
+pub async fn post_json<T: serde::de::DeserializeOwned>(
+    endpoint: &Endpoint,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: Vec<u8>,
+    timeout: Duration,
+) -> Result<T, ClientError> {
+    let mut all = vec![("content-type", "application/json")];
+    all.extend_from_slice(headers);
+    let response = client::post(
+        &endpoint.target,
+        path,
+        &all,
+        client::RequestBody::bytes(body),
+        timeout,
+    )
+    .await
+    .map_err(|error| ClientError::Transport {
+        endpoint: Box::new(endpoint.clone()),
+        error: Box::new(error),
+    })?;
+    check_version(&response)?;
+    if !(200..300).contains(&response.status) {
+        return Err(decode_error(&response));
+    }
+    serde_json::from_slice(&response.body).map_err(|e| ClientError::BadResponse(e.to_string()))
+}
+
 /// The error for a non-2xx answer: the daemon's error body, whatever its
 /// code, or the bare status when the body is not one.
 fn decode_error(response: &Response) -> ClientError {

@@ -151,7 +151,7 @@ async fn phase0_database_migrates_in_place_with_a_backup() {
     let report = store.open_report().clone();
     assert_eq!(report.from_version, 1);
     assert_eq!(report.to_version, LATEST_VERSION);
-    assert_eq!(LATEST_VERSION, 2);
+    assert_eq!(LATEST_VERSION, 3);
     let backup = report.backup.expect("a backup was taken");
 
     // Every row survived; the deployment now names its revision.

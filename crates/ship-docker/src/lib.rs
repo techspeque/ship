@@ -17,6 +17,8 @@
 //!   creates.
 //! - [`inspect`]: Ship's containers, selected by [`labels`], read into
 //!   [`ship_core::Observation`]s.
+//! - [`image`]: an image Ship built: its id, `EXPOSE` ports and `VOLUME`
+//!   paths.
 //! - [`stream`]: output delivered line by line, stdout and stderr apart.
 //!
 //! Docker unreachable is [`DockerError::Unreachable`], never confused with
@@ -27,6 +29,7 @@
 pub mod argv;
 pub mod compose;
 pub mod error;
+pub mod image;
 pub mod inspect;
 pub mod labels;
 pub mod preflight;
@@ -37,6 +40,7 @@ pub mod supported;
 pub use argv::{Argv, ComposeFiles, ComposeProject, LogOptions, UpOptions};
 pub use compose::{ComposeConfig, DeployLabels, labels_override};
 pub use error::DockerError;
+pub use image::{ImageInfo, inspect_image};
 pub use inspect::{ContainerObservation, containers};
 pub use labels::{Selector, ShipLabels};
 pub use preflight::preflight;

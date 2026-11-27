@@ -87,6 +87,7 @@ async fn fresh_state_dir_migrates_and_reopens() {
             "route",
             "secret",
             "service",
+            "setting",
         ]
     );
     conn.close().await.unwrap();

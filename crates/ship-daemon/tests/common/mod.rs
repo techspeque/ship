@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use ship_daemon::{Config, Limits, Redactor, UnpackLimits};
+use ship_daemon::{Config, DeploySettings, Limits, Redactor, UnpackLimits};
 use ship_docker::Runner;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -27,6 +27,9 @@ pub fn config(dir: &Path) -> Config {
             ..Limits::default()
         },
         upload_limits: UnpackLimits::default(),
+        deploy: DeploySettings::default(),
+        // No test asks the developer's own tailnet.
+        tailnet: std::sync::Arc::new(ship_net::StaticTailnet(None)),
     }
 }
 

@@ -10,6 +10,8 @@ mod error;
 mod history;
 mod migrate;
 mod repo;
+mod route;
+mod settings;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -27,6 +29,8 @@ pub use repo::{
     CreatedOperation, DEVELOPMENT, EnsuredProject, Environment, NewEnvironment, NewEvent,
     NewOperation, NewService, Operation, OperationEvent, OperationFailure, Project, Service,
 };
+pub use route::{NewRoute, Route};
+pub use settings::Setting;
 
 /// The database file name inside the state directory.
 pub const DATABASE_FILE: &str = "ship.db";

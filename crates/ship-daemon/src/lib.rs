@@ -8,17 +8,20 @@
 //! `interrupted` ([`queue::recover`]), removes the staging directories of
 //! uploads it left half-written ([`upload::clean_staging`]), starts the
 //! operation [`queue`] and
-//! serves the router in [`http`], with the embedded UI ([`ui`]) as its
+//! serves the router in [`http`] (uploads, [`deploy`]ments and
+//! [`settings`] among its routes), with the embedded UI ([`ui`]) as its
 //! fallback; [`Running::shutdown`] stops it; [`run`] does both around
 //! SIGTERM/SIGINT.
 //! `ship daemon` is supported on Linux only (ADR-0002 rule 2); that check
 //! belongs to the `ship` binary, so this library builds and tests on any
 //! unix.
 
+pub mod deploy;
 pub mod host;
 pub mod http;
 pub mod log;
 pub mod queue;
+pub mod settings;
 pub mod ui;
 pub mod upload;
 
@@ -28,17 +31,19 @@ use std::net::SocketAddr;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
 use ship_docker::Runner;
-use ship_net::{BindError, SocketFile};
+use ship_net::{BindError, SocketFile, TailnetAddress, TailscaleCli};
 use ship_store::{Store, StoreError};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
+pub use deploy::{DeploySettings, Deployer};
 pub use log::Redactor;
 pub use queue::{Limits, Queue};
 pub use ship_source::UnpackLimits;
@@ -72,6 +77,11 @@ pub struct Config {
     /// Size, entry-count and expansion limits of an uploaded snapshot
     /// (ADR-0005 rule 5).
     pub upload_limits: UnpackLimits,
+    /// Settle period and timeouts of a deployment's steps.
+    pub deploy: DeploySettings,
+    /// Where `publish.address auto` finds the host's tailnet address; the
+    /// host's `tailscale` CLI by default.
+    pub tailnet: Arc<dyn TailnetAddress>,
 }
 
 impl Config {
@@ -85,6 +95,8 @@ impl Config {
             docker: Runner::docker(),
             limits: Limits::default(),
             upload_limits: UnpackLimits::default(),
+            deploy: DeploySettings::default(),
+            tailnet: Arc::new(TailscaleCli::default()),
         }
     }
 }
@@ -199,7 +211,15 @@ pub async fn start(config: &Config) -> Result<Running, DaemonError> {
         }
     };
 
-    let router = http::router(
+    let deployer = Deployer::new(
+        store.clone(),
+        config.docker.clone(),
+        &config.state_dir,
+        config.deploy,
+        config.limits.build_timeout,
+        Arc::clone(&config.tailnet),
+    );
+    let router = http::router_with(
         store.clone(),
         http::HostProbe {
             docker: config.docker.clone(),
@@ -207,6 +227,7 @@ pub async fn start(config: &Config) -> Result<Running, DaemonError> {
         },
         queue.clone(),
         uploads,
+        Arc::new(deployer),
     );
     let (stop, stopped) = watch::channel(false);
     let (kill, killed) = watch::channel(false);

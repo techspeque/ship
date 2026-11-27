@@ -1,14 +1,16 @@
 //! The `ship` binary: client commands and `ship daemon` dispatch.
 //!
 //! Phase 0: `--version` / `-V`, `ship daemon`, `ship target`, `ship host`,
-//! `ship projects`, `ship open`, `ship dial-stdio` and `ship service`. Exit
-//! codes: 0 success, 1 failure, 2 usage error.
+//! `ship projects`, `ship open`, `ship dial-stdio` and `ship service`.
+//! Phase 1: `ship settings`. Exit codes: 0 success, 1 failure, 2 usage
+//! error.
 
 mod client;
 mod commands;
 mod config;
 mod open;
 mod service;
+mod settings;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -51,6 +53,9 @@ enum Command {
     Host(commands::HostArgs),
     /// List the projects on the current target.
     Projects(commands::ProjectsArgs),
+    /// Show or change the current target's daemon settings.
+    #[command(subcommand)]
+    Settings(settings::SettingsCommand),
     /// Open the current target's UI in a browser; over ssh, forward it
     /// until Ctrl-C.
     Open(open::OpenArgs),
@@ -188,6 +193,7 @@ fn main() -> ExitCode {
         Some(Command::Target(command)) => commands::target(command),
         Some(Command::Host(args)) => commands::host(args),
         Some(Command::Projects(args)) => commands::projects(args),
+        Some(Command::Settings(command)) => settings::settings(command),
         Some(Command::Open(args)) => open::open(args),
         Some(Command::DialStdio(args)) => commands::dial_stdio(args),
         Some(Command::Service(command)) => service(command),

@@ -421,6 +421,59 @@ pub fn project_network_ids(project: &ComposeProject) -> Result<Argv, DockerError
     Argv::checked("network ls", args)
 }
 
+/// Longest image reference passed to Docker.
+pub const MAX_IMAGE_REFERENCE: usize = 255;
+
+/// Whether `reference` is an image reference the adapter passes on:
+/// `name[:tag]`, lowercase name components of letters, digits and `._-`
+/// separated by `/`, a tag of letters, digits and `._-`, at most
+/// [`MAX_IMAGE_REFERENCE`] bytes, starting with a letter or digit. No
+/// registry port, digest or uppercase name: Ship only reads back images it
+/// tagged itself.
+pub fn is_image_reference(reference: &str) -> bool {
+    if reference.is_empty() || reference.len() > MAX_IMAGE_REFERENCE {
+        return false;
+    }
+    let (name, tag) = match reference.split_once(':') {
+        Some((name, tag)) => (name, Some(tag)),
+        None => (reference, None),
+    };
+    let component_ok = |c: &str| {
+        let b = c.as_bytes();
+        !b.is_empty()
+            && (b[0].is_ascii_lowercase() || b[0].is_ascii_digit())
+            && b.iter().all(|&ch| {
+                ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, b'.' | b'_' | b'-')
+            })
+    };
+    let tag_ok = tag.is_none_or(|t| {
+        let b = t.as_bytes();
+        !b.is_empty()
+            && b.len() <= 128
+            && b[0].is_ascii_alphanumeric()
+            && b.iter()
+                .all(|&ch| ch.is_ascii_alphanumeric() || matches!(ch, b'.' | b'_' | b'-'))
+    });
+    name.split('/').all(component_ok) && tag_ok
+}
+
+/// `image inspect -- <reference>`.
+pub fn image_inspect(reference: &str) -> Result<Argv, DockerError> {
+    if !is_image_reference(reference) {
+        return Err(DockerError::InvalidArgument(format!(
+            "`{}` is not an image reference Ship tags",
+            reference.chars().take(80).collect::<String>()
+        )));
+    }
+    let args: Vec<OsString> = vec![
+        "image".into(),
+        "inspect".into(),
+        "--".into(),
+        reference.into(),
+    ];
+    Argv::checked("image inspect", args)
+}
+
 /// `network inspect -- ids`.
 pub fn network_inspect<S: AsRef<str>>(ids: &[S]) -> Result<Argv, DockerError> {
     let mut args: Vec<OsString> = vec!["network".into(), "inspect".into()];
@@ -787,5 +840,44 @@ mod tests {
         assert!(!is_object_id(&"f".repeat(65)));
         assert!(!is_object_id("0123456789AB"));
         assert!(!is_object_id("-123456789ab"));
+    }
+
+    #[test]
+    fn image_references() {
+        let tag = format!("{}-web:rel_01aryz6s41tsv4rrffq69g5fav", project().name());
+        for ok in [
+            tag.as_str(),
+            "busybox",
+            "library/busybox:1.36",
+            "a.b/c_d-e:v1.0",
+        ] {
+            assert!(is_image_reference(ok), "{ok}");
+            let argv = image_inspect(ok).unwrap();
+            assert_eq!(strs(&argv), ["image", "inspect", "--", ok]);
+            assert_safe(&argv);
+        }
+        let long = "a".repeat(MAX_IMAGE_REFERENCE + 1);
+        for bad in [
+            "",
+            "-v",
+            "--volumes",
+            "Busybox",
+            "busybox:",
+            ":tag",
+            "a//b",
+            "/a",
+            "a:b:c",
+            "a b",
+            "a;sh",
+            "a@sha256:00",
+            "localhost:5000/a",
+            long.as_str(),
+        ] {
+            assert!(!is_image_reference(bad), "{bad:?}");
+            assert!(matches!(
+                image_inspect(bad),
+                Err(DockerError::InvalidArgument(_))
+            ));
+        }
     }
 }
