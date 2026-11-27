@@ -952,6 +952,44 @@ fn compose_model(port: u16) -> String {
 }
 
 #[test]
+fn a_compose_push_over_ssh_deploys() {
+    let h = Harness::new();
+    h.target("ssh://deploy@lab", None);
+    let port = free_port();
+    h.control("config", &compose_model(port));
+    let root = h.tree(
+        "remote-stack",
+        &[(
+            "compose.yaml",
+            "services:\n  web:\n    image: nginx\n    ports:\n      - \"127.0.0.1:8080:80\"\n",
+        )],
+    );
+    let out = h.run(&["push", root.to_str().unwrap(), "--confirm", "-o", "json"]);
+    assert_eq!(code(&out), 0, "{}", show(&out));
+    let lines = json_lines(&out);
+    assert_matches_fixture(&lines, SUCCEEDED_FIXTURE);
+    let result = lines.last().unwrap();
+    assert_eq!(result["status"], "succeeded", "{result}");
+    assert_eq!(result["failure"], Value::Null, "{result}");
+    assert_eq!(result["project"]["slug"], "remote-stack");
+    assert!(
+        result["operation_id"].as_str().unwrap().starts_with("op_"),
+        "{result}"
+    );
+    assert!(
+        result["release_id"].as_str().unwrap().starts_with("rel_"),
+        "{result}"
+    );
+    // Nothing listens on the published port, so no endpoint is listed.
+    assert_eq!(
+        result["services"],
+        json!([{ "name": "web", "status": "running_unverified", "endpoints": [] }]),
+        "{result}"
+    );
+    assert!(h.fake("up_files").exists());
+}
+
+#[test]
 fn a_compose_file_needing_confirmation_exits_3_until_confirmed() {
     let h = Harness::new();
     let port = free_port();

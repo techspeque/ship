@@ -163,8 +163,9 @@ fn upload_over_real_ssh_matches_local() {
     rt.block_on(running.shutdown()).unwrap();
 }
 
-/// `ship push` over the real sshd deploys a Dockerfile project, against
-/// the fake `docker` of `cli_push.rs`, and prints the fixture's lines.
+/// `ship push` over the real sshd deploys a Dockerfile project and a
+/// Compose project, against the fake `docker` of `cli_push.rs`, and
+/// prints the fixture's lines.
 #[test]
 #[ignore = "needs a real sshd; run by CI's ssh job with SHIP_TEST_SSH=user@host"]
 fn push_over_real_ssh_deploys() {
@@ -222,6 +223,62 @@ fn push_over_real_ssh_deploys() {
     assert_eq!(result["type"], "result", "{lines:#?}");
     assert_eq!(result["status"], "succeeded", "{result}");
     assert_eq!(result["project"]["slug"], "ssh-push");
+    for (i, e) in lines[..lines.len() - 1].iter().enumerate() {
+        assert_eq!(e["sequence"], serde_json::json!(i + 1), "{e}");
+    }
+
+    // A Compose project over the same sshd: the fake's `compose config`
+    // answers the canonical model of one service publishing a port.
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let model = serde_json::json!({
+        "name": "x",
+        "services": {
+            "web": {
+                "image": "nginx",
+                "ports": [{
+                    "mode": "ingress",
+                    "host_ip": "127.0.0.1",
+                    "target": 80,
+                    "published": port.to_string(),
+                    "protocol": "tcp",
+                }],
+            },
+        },
+    });
+    std::fs::write(fake.join("config"), model.to_string()).unwrap();
+    let stack = dir.path().join("ssh-stack");
+    std::fs::create_dir_all(&stack).unwrap();
+    std::fs::write(
+        stack.join("compose.yaml"),
+        b"services:\n  web:\n    image: nginx\n    ports:\n      - \"127.0.0.1:8080:80\"\n",
+    )
+    .unwrap();
+    let out = ship(
+        &cfg,
+        &["push", stack.to_str().unwrap(), "--confirm", "-o", "json"],
+    );
+    check(&out);
+    let lines: Vec<serde_json::Value> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let result = lines.last().unwrap();
+    assert_eq!(result["type"], "result", "{lines:#?}");
+    assert_eq!(result["status"], "succeeded", "{result}");
+    assert_eq!(result["project"]["slug"], "ssh-stack");
+    assert!(
+        result["release_id"].as_str().unwrap().starts_with("rel_"),
+        "{result}"
+    );
+    assert_eq!(
+        result["services"],
+        serde_json::json!([{ "name": "web", "status": "running_unverified", "endpoints": [] }]),
+        "{result}"
+    );
     for (i, e) in lines[..lines.len() - 1].iter().enumerate() {
         assert_eq!(e["sequence"], serde_json::json!(i + 1), "{e}");
     }
