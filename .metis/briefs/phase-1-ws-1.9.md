@@ -199,4 +199,47 @@ None.
 
 ## Report
 
-Filled at implementation.
+- `ship-core::api`: `pushes_path`, `PUSH_KIND`, `PROJECT_KIND`,
+  `push_query`, `parse_push_query`, `PushOptions`, `percent_encode`,
+  `percent_decode`, `PushView`, `operation_deployment_path`,
+  `OperationDeploymentView`, `ServiceOutcomeView`, `EndpointView`; 3 tests.
+- `ship-store`: `deployment_for_operation`; test in `tests/deploy.rs`.
+- `ship-net::client`: `get_stream`, `StreamResponse`, `StreamHead`; ssh
+  failure explanation shared (`explain_ssh`).
+- `ship-daemon`: `push.rs` (new: `handle`, `deployment_of`, `answers`,
+  `project_key`; 2 unit tests); `http.rs` routes `POST
+  /api/v1/projects/{project}/pushes`, `GET
+  /api/v1/operations/{id}/deployment`; `queue.rs` `Context::continue_in`;
+  `deploy.rs` uses it for `validating`; `upload.rs` `find_revision`
+  `pub(crate)`. `tests/push.rs` (4 tests).
+- `ship`: `push.rs`, `follow.rs`, `exit.rs` (new); `client.rs`
+  (`post_stream`, `get_stream`, `decode_error` public, version check on
+  parts); `config.rs` `Config::named`; `settings.rs` `compose.confirm`,
+  `--project`, `--confirm`; `main.rs` `Push`; `ship-source` now a normal
+  dependency. Tests: `tests/cli_push.rs` (14 tests: exit codes 0, 1, 2, 3,
+  90, 91, 92, 93, 94, 99 each from its condition, fixture shapes, dry run,
+  detach, cut-and-resumed stream, ssh via fake `ssh`, `--to`, Compose
+  confirmation, settings), `tests/ssh_real.rs` `push_over_real_ssh_deploys`
+  (ignored; CI `ssh` job), `tests/support/fake-docker.sh` shared by both.
+- `metis verify --post --slice phase-1-ws-1.9`: ALL GREEN (twice, the
+  second `--force`).
+- Not run locally: `ssh_real.rs` (needs a real sshd; this session can run
+  only `metis verify`).
+- Decisions:
+  - The client reads the operation until its status is terminal after the
+    `finished` event: the daemon stores that event before the terminal
+    phase (found by the tests as a race giving exit 99).
+  - With no route, and with a route that does not answer, text prints
+    `Endpoint: not configured` and JSON `endpoints: []`.
+  - `-o json` always ends with one result line, also for failures of the
+    client itself: `failure.code` is then the exit code's name
+    (`daemon_unreachable`, `version_mismatch`, `connection_lost`, …),
+    `failure.phase` null; after 94 `status` is `unknown`.
+  - A push waits for the environment's lock before its snapshot is read,
+    so a push behind a long deployment on the same environment holds its
+    upload until then (`--timeout`, default 600 s).
+  - Terminal confirmation redeploys the same revision through the
+    deployments endpoint with `confirm: true`; the result line then names
+    that second operation.
+  - `--env` is not implemented (one environment in Phase 1; not in the
+    plan's task list).

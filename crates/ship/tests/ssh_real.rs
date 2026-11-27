@@ -3,7 +3,8 @@
 //! ADR-0004 rule 4). `ship open --no-browser` over the same sshd serves the
 //! UI on a 127.0.0.1 port, each connection carried by `ssh … ship
 //! dial-stdio`, and SIGINT closes it. A snapshot uploaded over the same
-//! sshd becomes the same revision as over the local socket.
+//! sshd becomes the same revision as over the local socket, and `ship
+//! push` over it deploys.
 //!
 //! Ignored by default: it needs an sshd that accepts this user with a key
 //! (BatchMode, host key already known) and `ship` from this build on the
@@ -158,6 +159,72 @@ fn upload_over_real_ssh_matches_local() {
     assert_eq!(second["revision_id"], first["revision_id"]);
     assert_eq!(second["sha256"], packed.sha256.as_str());
     assert_ne!(second["operation_id"], first["operation_id"]);
+
+    rt.block_on(running.shutdown()).unwrap();
+}
+
+/// `ship push` over the real sshd deploys a Dockerfile project, against
+/// the fake `docker` of `cli_push.rs`, and prints the fixture's lines.
+#[test]
+#[ignore = "needs a real sshd; run by CI's ssh job with SHIP_TEST_SSH=user@host"]
+fn push_over_real_ssh_deploys() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let remote = std::env::var("SHIP_TEST_SSH").expect("SHIP_TEST_SSH=user@host");
+    let dir = tempfile::tempdir().unwrap();
+    let fake = dir.path().join("fake");
+    std::fs::create_dir(&fake).unwrap();
+    let docker = dir.path().join("docker");
+    std::fs::write(&docker, include_str!("support/fake-docker.sh")).unwrap();
+    std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let config = ship_daemon::Config {
+        state_dir: dir.path().join("state"),
+        socket_path: dir.path().join("ship.sock"),
+        port: 0,
+        docker: ship_docker::Runner::new(&docker).env("FAKE_DIR", &fake),
+        limits: ship_daemon::Limits {
+            disk_watermark_bytes: 0,
+            ..ship_daemon::Limits::default()
+        },
+        deploy: ship_daemon::DeploySettings {
+            settle: Duration::from_millis(200),
+            verify_timeout: Duration::from_secs(5),
+            step_timeout: Duration::from_secs(30),
+            poll: Duration::from_millis(50),
+        },
+        tailnet: std::sync::Arc::new(ship_net::StaticTailnet(None)),
+        ..ship_daemon::Config::new(ship_daemon::Redactor::new())
+    };
+    let running = rt.block_on(ship_daemon::start(&config)).unwrap();
+    let socket = running.socket_path().display().to_string();
+    let cfg = dir.path().join("config.json");
+    let url = format!("ssh://{remote}");
+    check(&ship(
+        &cfg,
+        &["target", "add", "lab", &url, "--socket", &socket],
+    ));
+
+    let tree = dir.path().join("ssh-push");
+    std::fs::create_dir_all(&tree).unwrap();
+    std::fs::write(tree.join("Dockerfile"), b"FROM scratch\n").unwrap();
+    let out = ship(&cfg, &["push", tree.to_str().unwrap(), "-o", "json"]);
+    check(&out);
+    let lines: Vec<serde_json::Value> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let result = lines.last().unwrap();
+    assert_eq!(result["type"], "result", "{lines:#?}");
+    assert_eq!(result["status"], "succeeded", "{result}");
+    assert_eq!(result["project"]["slug"], "ssh-push");
+    for (i, e) in lines[..lines.len() - 1].iter().enumerate() {
+        assert_eq!(e["sequence"], serde_json::json!(i + 1), "{e}");
+    }
 
     rt.block_on(running.shutdown()).unwrap();
 }

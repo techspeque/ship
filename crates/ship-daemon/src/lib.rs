@@ -8,7 +8,7 @@
 //! `interrupted` ([`queue::recover`]), removes the staging directories of
 //! uploads it left half-written ([`upload::clean_staging`]), starts the
 //! operation [`queue`] and
-//! serves the router in [`http`] (uploads, [`deploy`]ments and
+//! serves the router in [`http`] (uploads, [`deploy`]ments, [`push`]es and
 //! [`settings`] among its routes), with the embedded UI ([`ui`]) as its
 //! fallback; [`Running::shutdown`] stops it; [`run`] does both around
 //! SIGTERM/SIGINT.
@@ -21,6 +21,7 @@ pub mod deploy;
 pub mod host;
 pub mod http;
 pub mod log;
+pub mod push;
 pub mod queue;
 pub mod settings;
 pub mod ui;

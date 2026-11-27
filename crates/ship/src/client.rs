@@ -121,9 +121,85 @@ pub async fn post_json<T: serde::de::DeserializeOwned>(
     serde_json::from_slice(&response.body).map_err(|e| ClientError::BadResponse(e.to_string()))
 }
 
+/// `POST path` with `headers` and a streamed `body`, checking the API
+/// version; the answer whatever its status, for a caller that reads an
+/// error body itself.
+pub async fn post_stream(
+    endpoint: &Endpoint,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: client::RequestBody,
+    timeout: Duration,
+) -> Result<Response, ClientError> {
+    let response = client::post(&endpoint.target, path, headers, body, timeout)
+        .await
+        .map_err(|error| ClientError::Transport {
+            endpoint: Box::new(endpoint.clone()),
+            error: Box::new(error),
+        })?;
+    check_version(&response)?;
+    Ok(response)
+}
+
+/// Largest error body read from a streamed answer.
+const MAX_STREAM_ERROR: usize = 64 * 1024;
+
+/// `GET path` with `headers` as a stream (SSE), checking the API version
+/// once the head arrived within `timeout`. A non-2xx answer is read whole
+/// and decoded as an error.
+pub async fn get_stream(
+    endpoint: &Endpoint,
+    path: &str,
+    headers: &[(&str, &str)],
+    timeout: Duration,
+) -> Result<client::StreamResponse, ClientError> {
+    let transport = |error| ClientError::Transport {
+        endpoint: Box::new(endpoint.clone()),
+        error: Box::new(error),
+    };
+    let mut stream = client::get_stream(&endpoint.target, path, headers, timeout)
+        .await
+        .map_err(transport)?;
+    let head = stream.head.clone();
+    if (200..300).contains(&head.status) {
+        check_parts(
+            head.status,
+            head.api_version.as_deref(),
+            head.daemon_version.as_deref(),
+            b"",
+        )?;
+        return Ok(stream);
+    }
+    let mut body = Vec::new();
+    let read = tokio::time::timeout(timeout, async {
+        while let Some(chunk) = stream.next_chunk().await {
+            let chunk = chunk?;
+            body.extend_from_slice(&chunk);
+            if body.len() > MAX_STREAM_ERROR {
+                break;
+            }
+        }
+        Ok::<(), TransportError>(())
+    })
+    .await;
+    match read {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => return Err(transport(e)),
+        Err(_) => return Err(transport(TransportError::TimedOut { after: timeout })),
+    }
+    let response = Response {
+        status: head.status,
+        api_version: head.api_version,
+        daemon_version: head.daemon_version,
+        body: bytes::Bytes::from(body),
+    };
+    check_version(&response)?;
+    Err(decode_error(&response))
+}
+
 /// The error for a non-2xx answer: the daemon's error body, whatever its
 /// code, or the bare status when the body is not one.
-fn decode_error(response: &Response) -> ClientError {
+pub fn decode_error(response: &Response) -> ClientError {
     match serde_json::from_slice::<ReceivedError>(&response.body) {
         Ok(e) => ClientError::Api(Box::new(e)),
         Err(_) => ClientError::BadResponse(format!("HTTP {}", response.status)),
@@ -136,10 +212,23 @@ fn decode_error(response: &Response) -> ClientError {
 /// code is `unsupported_api_version` on any status: a body this build
 /// cannot fully read is never taken as agreement.
 fn check_version(response: &Response) -> Result<(), ClientError> {
-    let refused = response.status == 426
-        || serde_json::from_slice::<ReceivedError>(&response.body)
+    check_parts(
+        response.status,
+        response.api_version.as_deref(),
+        response.daemon_version.as_deref(),
+        &response.body,
+    )
+}
+
+fn check_parts(
+    status: u16,
+    daemon: Option<&str>,
+    daemon_version: Option<&str>,
+    body: &[u8],
+) -> Result<(), ClientError> {
+    let refused = status == 426
+        || serde_json::from_slice::<ReceivedError>(body)
             .is_ok_and(|e| e.code.known() == Some(ErrorCode::UnsupportedApiVersion));
-    let daemon = response.api_version.as_deref();
     if !refused && daemon == Some(API_VERSION) {
         return Ok(());
     }
@@ -147,7 +236,7 @@ fn check_version(response: &Response) -> Result<(), ClientError> {
         API_VERSION,
         CLIENT_VERSION,
         daemon,
-        response.daemon_version.as_deref(),
+        daemon_version,
     )))
 }
 

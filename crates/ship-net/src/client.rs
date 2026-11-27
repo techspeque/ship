@@ -295,21 +295,253 @@ where
             kill_and_reap(&mut child, &stderr).await;
             Err(timed_out())
         }
-        Ok(Err(e)) => {
-            let Ok(status) = tokio::time::timeout_at(deadline, child.wait()).await else {
-                kill_and_reap(&mut child, &stderr).await;
-                return Err(timed_out());
-            };
-            let stderr = match tokio::time::timeout_at(deadline, &mut stderr).await {
-                Ok(read) => read.unwrap_or_default(),
-                Err(_) => {
-                    stderr.abort();
-                    String::new()
+        Ok(Err(e)) => Err(explain_ssh(ssh, &mut child, &mut stderr, deadline, timeout, e).await),
+    }
+}
+
+/// The error for an exchange over ssh that failed with `cause`, from
+/// ssh's exit status and stderr, collected by `deadline`.
+async fn explain_ssh(
+    ssh: &SshTarget,
+    child: &mut Child,
+    stderr: &mut JoinHandle<String>,
+    deadline: Instant,
+    timeout: Duration,
+    cause: TransportError,
+) -> TransportError {
+    let Ok(status) = tokio::time::timeout_at(deadline, child.wait()).await else {
+        kill_and_reap(child, stderr).await;
+        return TransportError::TimedOut { after: timeout };
+    };
+    let stderr = match tokio::time::timeout_at(deadline, &mut *stderr).await {
+        Ok(read) => read.unwrap_or_default(),
+        Err(_) => {
+            stderr.abort();
+            String::new()
+        }
+    };
+    ssh_failure(ssh, status.ok(), stderr, cause)
+}
+
+/// The status line and version headers of a streamed answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamHead {
+    pub status: u16,
+    /// The daemon's `Ship-Api-Version` header, if it sent one.
+    pub api_version: Option<String>,
+    /// The daemon's `Ship-Version` header, if it sent one.
+    pub daemon_version: Option<String>,
+}
+
+/// A daemon's answer whose body arrives chunk by chunk, such as an SSE
+/// stream. The connection (and, over ssh, the `ssh` child) lives until
+/// the stream ends or is dropped.
+#[derive(Debug)]
+pub struct StreamResponse {
+    pub head: StreamHead,
+    body: mpsc::Receiver<Result<Bytes, TransportError>>,
+    _task: AbortOnDrop,
+}
+
+impl StreamResponse {
+    /// The next chunk of the body; `None` once it ended cleanly. An error
+    /// means the connection broke.
+    pub async fn next_chunk(&mut self) -> Option<Result<Bytes, TransportError>> {
+        self.body.recv().await
+    }
+}
+
+/// Aborts a task when dropped.
+#[derive(Debug)]
+struct AbortOnDrop(JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// `GET path` with `headers` from the daemon behind `target`, sending this
+/// build's API version, returning once the status line and headers
+/// arrived within `timeout`; the body then streams with no time limit.
+pub async fn get_stream(
+    target: &Target,
+    path: &str,
+    headers: &[(&str, &str)],
+    timeout: Duration,
+) -> Result<StreamResponse, TransportError> {
+    let request = request(Method::GET, path, headers, Empty::<Bytes>::new())?;
+    let (head_tx, head_rx) = tokio::sync::oneshot::channel();
+    let (body_tx, body_rx) = mpsc::channel(16);
+    let task = match target {
+        Target::Local { socket } => {
+            let socket = socket.clone();
+            tokio::spawn(async move {
+                let opened = match connect_unix_async(&socket).await {
+                    Ok(stream) => open_stream(stream, request).await,
+                    Err(e) => Err(e.into()),
+                };
+                match opened {
+                    Ok(open) => {
+                        let _ = head_tx.send(Ok(open.head.clone()));
+                        open.forward(&body_tx).await;
+                    }
+                    Err(e) => {
+                        let _ = head_tx.send(Err(e));
+                    }
                 }
-            };
-            Err(ssh_failure(ssh, status.ok(), stderr, e))
+            })
+        }
+        Target::Ssh(ssh) => {
+            let ssh = ssh.clone();
+            tokio::spawn(async move {
+                stream_over_ssh(&ssh, request, timeout, head_tx, body_tx).await;
+            })
+        }
+    };
+    let task = AbortOnDrop(task);
+    match tokio::time::timeout(timeout, head_rx).await {
+        Ok(Ok(Ok(head))) => Ok(StreamResponse {
+            head,
+            body: body_rx,
+            _task: task,
+        }),
+        Ok(Ok(Err(e))) => Err(e),
+        Ok(Err(_)) => Err(TransportError::Http(
+            "the connection closed before the daemon answered".to_owned(),
+        )),
+        Err(_) => Err(TransportError::TimedOut { after: timeout }),
+    }
+}
+
+async fn stream_over_ssh(
+    ssh: &SshTarget,
+    request: Request<Empty<Bytes>>,
+    timeout: Duration,
+    head_tx: tokio::sync::oneshot::Sender<Result<StreamHead, TransportError>>,
+    body_tx: mpsc::Sender<Result<Bytes, TransportError>>,
+) {
+    let spawned = Command::new("ssh")
+        .args(ssh.ssh_args(timeout))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn();
+    let mut child = match spawned {
+        Ok(child) => child,
+        Err(e) => {
+            let _ = head_tx.send(Err(TransportError::SshSpawn(e)));
+            return;
+        }
+    };
+    let (Some(stdin), Some(stdout), Some(stderr)) =
+        (child.stdin.take(), child.stdout.take(), child.stderr.take())
+    else {
+        let _ = head_tx.send(Err(TransportError::SshSpawn(io::Error::other(
+            "ssh started without its pipes",
+        ))));
+        return;
+    };
+    let mut stderr = tokio::spawn(read_bounded(stderr));
+    let deadline = Instant::now() + timeout;
+    let opened = tokio::time::timeout_at(
+        deadline,
+        open_stream(tokio::io::join(stdout, stdin), request),
+    )
+    .await;
+    match opened {
+        Err(_) => {
+            kill_and_reap(&mut child, &stderr).await;
+            let _ = head_tx.send(Err(TransportError::TimedOut { after: timeout }));
+        }
+        Ok(Err(e)) => {
+            let e = explain_ssh(ssh, &mut child, &mut stderr, deadline, timeout, e).await;
+            let _ = head_tx.send(Err(e));
+        }
+        Ok(Ok(open)) => {
+            let _ = head_tx.send(Ok(open.head.clone()));
+            open.forward(&body_tx).await;
+            kill_and_reap(&mut child, &stderr).await;
         }
     }
+}
+
+/// A request sent and its head received; the body not yet read.
+struct OpenStream {
+    head: StreamHead,
+    body: hyper::body::Incoming,
+    /// Kept so the connection is not closed early.
+    _sender: hyper::client::conn::http1::SendRequest<Empty<Bytes>>,
+    driver: JoinHandle<Result<(), hyper::Error>>,
+}
+
+impl OpenStream {
+    /// Sends each data chunk to `tx` until the body ends, breaks, or the
+    /// receiver is gone.
+    async fn forward(mut self, tx: &mpsc::Sender<Result<Bytes, TransportError>>) {
+        loop {
+            match self.body.frame().await {
+                None => break,
+                Some(Ok(frame)) => {
+                    if let Ok(data) = frame.into_data()
+                        && tx.send(Ok(data)).await.is_err()
+                    {
+                        break;
+                    }
+                }
+                Some(Err(e)) => {
+                    let _ = tx.send(Err(TransportError::Http(e.to_string()))).await;
+                    break;
+                }
+            }
+        }
+    }
+}
+
+impl Drop for OpenStream {
+    fn drop(&mut self) {
+        self.driver.abort();
+    }
+}
+
+async fn open_stream<S>(
+    stream: S,
+    request: Request<Empty<Bytes>>,
+) -> Result<OpenStream, TransportError>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let http = |e: hyper::Error| TransportError::Http(e.to_string());
+    let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+        .await
+        .map_err(http)?;
+    let driver = tokio::spawn(conn);
+    let response = match sender.send_request(request).await {
+        Ok(response) => response,
+        Err(e) => {
+            driver.abort();
+            return Err(http(e));
+        }
+    };
+    let (parts, body) = response.into_parts();
+    let header = |name: &str| {
+        parts
+            .headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned)
+    };
+    Ok(OpenStream {
+        head: StreamHead {
+            status: parts.status.as_u16(),
+            api_version: header(API_VERSION_HEADER),
+            daemon_version: header(SHIP_VERSION_HEADER),
+        },
+        body,
+        _sender: sender,
+        driver,
+    })
 }
 
 /// Kills `ssh`, waits for it so no process is left behind, and stops

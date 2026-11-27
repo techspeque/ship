@@ -355,7 +355,7 @@ fn promote(staging: &Path, target: &Path) -> io::Result<bool> {
 }
 
 /// The project's `snapshot` revision with content hash `sha256`.
-async fn find_revision(
+pub(crate) async fn find_revision(
     store: &Store,
     project: ProjectId,
     sha256: &str,

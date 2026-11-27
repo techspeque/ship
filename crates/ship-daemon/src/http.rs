@@ -43,6 +43,10 @@ use crate::upload::Uploads;
 const UPLOADS_ROUTE: &str = "/api/v1/projects/{project}/uploads";
 /// `POST`: a deployment of a revision, answered `202` with its operation.
 const DEPLOYMENTS_ROUTE: &str = "/api/v1/projects/{project}/deployments";
+/// `POST`: `ship push`, an upload and its deployment as one operation.
+const PUSHES_ROUTE: &str = "/api/v1/projects/{project}/pushes";
+/// `GET`: the deployment an operation recorded.
+const OPERATION_DEPLOYMENT_ROUTE: &str = "/api/v1/operations/{id}/deployment";
 /// `GET`: a setting; `POST`: change it.
 const SETTING_ROUTE: &str = "/api/v1/settings/{key}";
 /// `GET`: a project's setting in effect; `POST`: change the project's own.
@@ -117,6 +121,7 @@ pub fn router_with(
         .route(PROJECTS_PATH, get(projects))
         .route(UPLOADS_ROUTE, post(upload))
         .route(DEPLOYMENTS_ROUTE, post(deploy))
+        .route(PUSHES_ROUTE, post(push))
         .route(SETTING_ROUTE, get(setting).post(set_setting))
         .route(
             PROJECT_SETTING_ROUTE,
@@ -124,6 +129,7 @@ pub fn router_with(
         )
         .route(OPERATION_ROUTE, get(operation))
         .route(OPERATION_EVENTS_ROUTE, get(operation_events))
+        .route(OPERATION_DEPLOYMENT_ROUTE, get(operation_deployment))
         // Everything else is the UI, which keeps `/api/*`'s JSON 404.
         .fallback(crate::ui::fallback)
         .with_state(AppState {
@@ -225,6 +231,42 @@ async fn deploy(
         run,
     )
     .await
+}
+
+// ---- pushes ----
+
+/// `ship push`: see [`crate::push`].
+async fn push(
+    State(state): State<AppState>,
+    Path(project): Path<String>,
+    uri: Uri,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let cx = crate::push::PushContext {
+        store: &state.store,
+        queue: &state.queue,
+        uploads: &state.uploads,
+        deployer: &state.deployer,
+    };
+    crate::push::handle(cx, &project, uri.query(), &headers, body).await
+}
+
+/// The deployment an operation recorded ([`crate::push::deployment_of`]);
+/// `404` when it recorded none.
+async fn operation_deployment(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let op = match find_operation(&state.store, &id).await {
+        Ok(op) => op,
+        Err(response) => return response,
+    };
+    match crate::push::deployment_of(&state.store, state.deployer.docker(), op.id).await {
+        Ok(Some(view)) => Json(view).into_response(),
+        Ok(None) => error_response(
+            ApiError::new(ErrorCode::NotFound, "the operation recorded no deployment")
+                .with_operation(op.id),
+        ),
+        Err(e) => database_error(&e),
+    }
 }
 
 // ---- settings ----

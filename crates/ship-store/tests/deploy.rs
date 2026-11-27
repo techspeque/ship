@@ -432,3 +432,48 @@ async fn a_release_is_recorded_under_its_allocated_id() {
     assert_eq!(done.release_id, Some(id));
     store.close().await;
 }
+
+#[tokio::test]
+async fn the_deployment_of_an_operation_is_found_by_its_operation() {
+    let (_dir, store) = open().await;
+    let p = store
+        .get_or_create_project(&Slug::parse("app").unwrap())
+        .await
+        .unwrap();
+    let revision = store
+        .create_revision(
+            p.project.id,
+            &NewRevision {
+                kind: RevisionKind::Snapshot,
+                source_ref: &"cd".repeat(32),
+                manifest_fingerprint: None,
+            },
+        )
+        .await
+        .unwrap();
+    let op = |key: &'static str| NewOperation {
+        idempotency_key: key,
+        kind: "push",
+        environment_id: Some(p.environment.id),
+    };
+    let with = store.create_operation(&op("a")).await.unwrap().operation;
+    let without = store.create_operation(&op("b")).await.unwrap().operation;
+    let d = store
+        .create_deployment(&NewDeployment {
+            environment_id: p.environment.id,
+            revision_id: revision.id,
+            operation_id: with.id,
+            previous_release_id: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        store.deployment_for_operation(with.id).await.unwrap(),
+        Some(d)
+    );
+    assert_eq!(
+        store.deployment_for_operation(without.id).await.unwrap(),
+        None
+    );
+    store.close().await;
+}

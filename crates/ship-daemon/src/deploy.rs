@@ -270,7 +270,7 @@ pub struct Deployed {
 /// carries an upload before it (`ship push`) runs the same steps.
 pub async fn run(ctx: &Context, d: &Deployer, job: &DeployJob) -> Result<Deployed, JobFailure> {
     let env = &job.environment;
-    ctx.enter(
+    ctx.continue_in(
         OperationPhase::Validating,
         &format!(
             "checking revision {} for a build definition",

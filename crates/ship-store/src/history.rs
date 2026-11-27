@@ -341,6 +341,23 @@ impl Store {
         deployment_from(&row)
     }
 
+    /// The deployment `operation` recorded, if any (one per operation).
+    pub async fn deployment_for_operation(
+        &self,
+        operation: OperationId,
+    ) -> Result<Option<Deployment>, StoreError> {
+        // Built from a compile-time constant only; values are bound.
+        let sql = format!("SELECT {DEPLOYMENT_COLUMNS} FROM deployment WHERE operation_id = ?");
+        sqlx::query(AssertSqlSafe(sql))
+            .bind(operation.to_string())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db)?
+            .as_ref()
+            .map(deployment_from)
+            .transpose()
+    }
+
     /// Every deployment of `environment`, newest first, as
     /// `ship deployments` prints them.
     pub async fn list_deployments(

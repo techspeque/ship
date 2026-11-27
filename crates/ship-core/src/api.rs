@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::deploy::PortSpec;
 use crate::error::ReceivedCode;
-use crate::id::{EnvironmentId, OperationId, ProjectId, RevisionId};
+use crate::id::{DeploymentId, EnvironmentId, OperationId, ProjectId, ReleaseId, RevisionId};
 use crate::slug::Slug;
 use crate::state::{OperationPhase, OperationStatus};
 use crate::time::Timestamp;
@@ -118,6 +118,165 @@ pub struct DeployRequest {
     /// log with the file's fingerprint. Never waives a reject item.
     #[serde(default)]
     pub confirm: bool,
+}
+
+/// `POST`: `ship push`. The body is a snapshot exactly as for
+/// [`uploads_path`], with the same headers; the query carries the
+/// deployment's options ([`push_query`]). One `push` operation on the
+/// project's `development` environment receives the snapshot and deploys
+/// it. The answer, once the snapshot is stored, is `202` with a
+/// [`PushView`]; a failed upload answers its error with `operation_id`. A
+/// new project is created first by its own `project` operation.
+pub fn pushes_path(project: &Slug) -> String {
+    format!("{PROJECTS_PATH}/{}/pushes", project.as_str())
+}
+
+/// The operation kind of a push: an upload, then a deployment.
+pub const PUSH_KIND: &str = "push";
+/// The operation kind that creates a project and its `development`
+/// environment before its first push.
+pub const PROJECT_KIND: &str = "project";
+
+/// The query of a push: `file` percent-encoded, `port` as `N` or
+/// `HOST:CONTAINER`, `confirm=true`; empty when none is set.
+pub fn push_query(file: Option<&str>, port: Option<PortSpec>, confirm: bool) -> String {
+    let mut pairs = Vec::new();
+    if let Some(file) = file {
+        pairs.push(format!("file={}", percent_encode(file)));
+    }
+    if let Some(port) = port {
+        pairs.push(format!("port={}", percent_encode(&port.to_string())));
+    }
+    if confirm {
+        pairs.push("confirm=true".to_owned());
+    }
+    if pairs.is_empty() {
+        String::new()
+    } else {
+        format!("?{}", pairs.join("&"))
+    }
+}
+
+/// The options a push query carries.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PushOptions {
+    pub file: Option<String>,
+    pub port: Option<PortSpec>,
+    pub confirm: bool,
+}
+
+/// Reads a push query ([`push_query`]); an unknown or repeated key, a bad
+/// encoding or a bad value is an error naming it.
+pub fn parse_push_query(query: Option<&str>) -> Result<PushOptions, String> {
+    let mut options = PushOptions::default();
+    let mut seen = Vec::new();
+    for pair in query.unwrap_or("").split('&').filter(|p| !p.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        if seen.contains(&key) {
+            return Err(format!("`{key}` is given twice"));
+        }
+        seen.push(key);
+        let value = percent_decode(value).ok_or_else(|| format!("`{key}` is badly encoded"))?;
+        match key {
+            "file" => options.file = Some(value),
+            "port" => {
+                options.port =
+                    Some(value.parse().map_err(|_| {
+                        format!("`port` must be N or HOST:CONTAINER, not `{value}`")
+                    })?)
+            }
+            "confirm" => match value.as_str() {
+                "true" => options.confirm = true,
+                "false" => options.confirm = false,
+                _ => return Err("`confirm` must be `true` or `false`".to_owned()),
+            },
+            _ => return Err(format!("unknown push option `{key}`")),
+        }
+    }
+    Ok(options)
+}
+
+/// Percent-encodes every byte but ASCII letters, digits and `-._~`.
+pub fn percent_encode(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for b in text.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            out.push(char::from(b));
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// Decodes `%XX` escapes; `None` for a malformed escape or bytes that are
+/// not UTF-8. `+` is kept as it is.
+pub fn percent_decode(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = text.get(i + 1..i + 3)?;
+            if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return None;
+            }
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// A push whose snapshot is stored: its operation, which goes on to
+/// deploy, and what it deploys.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PushView {
+    pub operation: OperationView,
+    pub project_id: ProjectId,
+    pub environment_id: EnvironmentId,
+    pub revision_id: RevisionId,
+}
+
+/// `GET`: the deployment an operation recorded, as an
+/// [`OperationDeploymentView`]; `404 not_found` when it recorded none.
+pub fn operation_deployment_path(id: OperationId) -> String {
+    format!("{OPERATIONS_PATH}/{id}/deployment")
+}
+
+/// The deployment an operation recorded, and, when it succeeded, each
+/// service with the status Docker reports now and the endpoints that
+/// answer now (OVERVIEW §3.3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperationDeploymentView {
+    pub deployment_id: DeploymentId,
+    /// `None` when the deployment failed before a release was recorded.
+    pub release_id: Option<ReleaseId>,
+    /// A `DeploymentResult` string; `None` while in progress.
+    pub result: Option<String>,
+    /// Empty unless the deployment succeeded.
+    pub services: Vec<ServiceOutcomeView>,
+}
+
+/// One service of a deployment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServiceOutcomeView {
+    pub name: String,
+    /// A `ServiceStatus` string.
+    pub status: String,
+    /// Only addresses that answered; empty when none.
+    pub endpoints: Vec<EndpointView>,
+}
+
+/// An address a service is reached on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndpointView {
+    /// A `RouteProvider` string.
+    pub provider: String,
+    pub address: String,
 }
 
 /// Prefix of the daemon settings: `GET {SETTINGS_PATH}/{key}` is a
@@ -361,6 +520,90 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&unset).unwrap(),
             json!({ "key": "publish.address", "value": "auto", "updated_at": null })
+        );
+    }
+
+    #[test]
+    fn push_paths_and_query() {
+        let slug = Slug::parse("my-app").unwrap();
+        assert_eq!(pushes_path(&slug), "/api/v1/projects/my-app/pushes");
+        let op: OperationId = "op_01aryz6s41tsv4rrffq69g5fav".parse().unwrap();
+        assert_eq!(
+            operation_deployment_path(op),
+            "/api/v1/operations/op_01aryz6s41tsv4rrffq69g5fav/deployment"
+        );
+        assert_eq!(push_query(None, None, false), "");
+        let port: PortSpec = "8080:3000".parse().unwrap();
+        let q = push_query(Some("deploy/My File é.yml"), Some(port), true);
+        assert_eq!(
+            q,
+            "?file=deploy%2FMy%20File%20%C3%A9.yml&port=8080%3A3000&confirm=true"
+        );
+        let parsed = parse_push_query(q.strip_prefix('?')).unwrap();
+        assert_eq!(
+            parsed,
+            PushOptions {
+                file: Some("deploy/My File é.yml".to_owned()),
+                port: Some(port),
+                confirm: true,
+            }
+        );
+        assert_eq!(parse_push_query(None).unwrap(), PushOptions::default());
+        for bad in [
+            "file=a&file=b",
+            "port=0",
+            "port=x",
+            "confirm=yes",
+            "other=1",
+            "file=%zz",
+            "file=%c3",
+            "file=%4",
+        ] {
+            assert!(parse_push_query(Some(bad)).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn percent_round_trip() {
+        for text in ["", "a", "a b/c?d&e=f%g", "é漢字", "-._~"] {
+            assert_eq!(percent_decode(&percent_encode(text)).unwrap(), text);
+        }
+        assert_eq!(percent_encode("-._~aZ9"), "-._~aZ9");
+        assert_eq!(percent_decode("a+b").unwrap(), "a+b");
+    }
+
+    #[test]
+    fn push_and_deployment_view_shapes() {
+        let view = OperationDeploymentView {
+            deployment_id: "dep_01aryz6s41tsv4rrffq69g5fav".parse().unwrap(),
+            release_id: None,
+            result: Some("failed".to_owned()),
+            services: vec![ServiceOutcomeView {
+                name: "web".to_owned(),
+                status: "healthy".to_owned(),
+                endpoints: vec![EndpointView {
+                    provider: "port".to_owned(),
+                    address: "192.0.2.10:8080".to_owned(),
+                }],
+            }],
+        };
+        let v = serde_json::to_value(&view).unwrap();
+        assert_eq!(
+            v,
+            json!({
+                "deployment_id": "dep_01aryz6s41tsv4rrffq69g5fav",
+                "release_id": null,
+                "result": "failed",
+                "services": [{
+                    "name": "web",
+                    "status": "healthy",
+                    "endpoints": [{ "provider": "port", "address": "192.0.2.10:8080" }],
+                }],
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<OperationDeploymentView>(v).unwrap(),
+            view
         );
     }
 

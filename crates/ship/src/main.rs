@@ -2,13 +2,17 @@
 //!
 //! Phase 0: `--version` / `-V`, `ship daemon`, `ship target`, `ship host`,
 //! `ship projects`, `ship open`, `ship dial-stdio` and `ship service`.
-//! Phase 1: `ship settings`. Exit codes: 0 success, 1 failure, 2 usage
-//! error.
+//! Phase 1: `ship push` and `ship settings`. Exit codes: 0 success, 1
+//! failure, 2 usage error; `ship push` has the contract's codes
+//! ([`exit`]).
 
 mod client;
 mod commands;
 mod config;
+mod exit;
+mod follow;
 mod open;
+mod push;
 mod service;
 mod settings;
 
@@ -53,6 +57,9 @@ enum Command {
     Host(commands::HostArgs),
     /// List the projects on the current target.
     Projects(commands::ProjectsArgs),
+    /// Send a directory, uncommitted changes included, to the target's
+    /// daemon, build it, start it and print its address.
+    Push(push::PushArgs),
     /// Show or change the current target's daemon settings.
     #[command(subcommand)]
     Settings(settings::SettingsCommand),
@@ -193,6 +200,7 @@ fn main() -> ExitCode {
         Some(Command::Target(command)) => commands::target(command),
         Some(Command::Host(args)) => commands::host(args),
         Some(Command::Projects(args)) => commands::projects(args),
+        Some(Command::Push(args)) => push::push(args),
         Some(Command::Settings(command)) => settings::settings(command),
         Some(Command::Open(args)) => open::open(args),
         Some(Command::DialStdio(args)) => commands::dial_stdio(args),

@@ -656,6 +656,23 @@ impl Context {
         Ok(())
     }
 
+    /// [`Context::enter`] `phase`, or, when the operation is already in
+    /// it (a push validates its snapshot before its deployment validates
+    /// the build definition), [`Context::log`] `message` instead, so
+    /// phases only ever increase.
+    pub async fn continue_in(
+        &self,
+        phase: OperationPhase,
+        message: &str,
+    ) -> Result<(), JobFailure> {
+        let current = self.shared.lock().await.phase;
+        if current == phase {
+            self.log(message).await
+        } else {
+            self.enter(phase, message).await
+        }
+    }
+
     /// Writes `text` to the operation's log, one record per line, each
     /// redacted, and records each kept line as a `log` event. Once the log
     /// reaches its limit one truncation marker is written and later lines
