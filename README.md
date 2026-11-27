@@ -31,13 +31,15 @@ added here when CI covers them.
 
 ## Footprint
 
-One measurement, taken at the Phase 0 gate, not a guarantee: on Ubuntu,
-x86_64, a static musl build, about 3 minutes after start with no projects,
-the idle daemon held 5.7 MB resident memory (VmRSS 5716 kB, peak the
-same), ran 10 threads and had used 0.21 s of CPU in total since start.
-`ship projects` over ssh on a LAN took 0.12–0.13 s per run with an
-already-open ssh connection; a bare `ssh HOST true` took 0.12 s on the same
-link.
+One measurement, taken at the Phase 0 gate (run 2, 2026-11-27), not a
+guarantee: the v0.0.2 release build under systemd on Ubuntu 26.04, x86_64,
+16 cores, 16 minutes after start with no projects. The idle daemon held
+6.3 MB resident memory (VmRSS 6448 kB, peak 6508 kB), ran 18 threads, used
+no measurable CPU over 60 idle seconds (0 ticks at 100 Hz) and 0.02 s of
+CPU in total since start. `ship projects` over ssh on a LAN took
+0.11–0.14 s per run, each run opening a new ssh connection; a bare
+`ssh HOST true` took 0.12 s on the same link, so almost all of it is the
+ssh handshake.
 
 ## Install
 
