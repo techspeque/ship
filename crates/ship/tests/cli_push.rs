@@ -901,7 +901,10 @@ fn empty_truncated_or_stalled_reconnects_still_exit_94_in_time() {
         let took = cut_at.elapsed();
         assert_eq!(code(&out), 94, "{fault:?}\n{}", show(&out));
         assert!(took < Duration::from_secs(10), "{fault:?} took {took:?}");
-        assert!(streams.load(Ordering::SeqCst) >= 2, "{fault:?}: never reopened");
+        assert!(
+            streams.load(Ordering::SeqCst) >= 2,
+            "{fault:?}: never reopened"
+        );
         let result = json_lines(&out).pop().unwrap();
         assert_eq!(result["type"], "result");
         assert_eq!(result["failure"]["code"], "connection_lost");
