@@ -313,3 +313,12 @@ findings:
       status: open
       cycle: 1
       file: crates/ship-daemon/src/upload.rs
+    - id: f-028
+      date: "2026-11-27"
+      slice: phase-1-ws-1.5
+      severity: P2
+      category: data
+      finding: 'crates/ship-daemon/src/upload.rs:308 — Promotion disarms cleanup before fallible revision persistence and final logging. Reproduced by making the operation log path a directory before completing a valid upload: HTTP 500 and a failed operation retain both the new snapshot and revision. Ensure post-promotion failures do not leave newly published artifacts (and never remove pre-existing shared snapshots/revisions), covering revision-store and final-log failures with regression tests.'
+      status: open
+      cycle: 1
+      file: crates/ship-daemon/src/upload.rs
