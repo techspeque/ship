@@ -241,6 +241,39 @@ async fn logs_keep_stdout_and_stderr_apart() {
 }
 
 #[tokio::test]
+async fn reads_of_a_mixed_project_return_only_ships_containers() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("argv.log");
+    let r = mixed_runner(&log, true);
+    let p = project();
+    assert_eq!(compose::ps(&r, &p).await.unwrap(), [OURS]);
+
+    let mut lines: Vec<Line> = Vec::new();
+    compose::logs(&r, &p, NO, LogOptions::default(), Some(T), &mut |l| {
+        lines.push(l)
+    })
+    .await
+    .unwrap();
+    assert!(
+        lines.iter().all(|l| l.text.starts_with("web-1  | ")),
+        "{lines:?}"
+    );
+    let calls = invocations(&log);
+    assert!(
+        calls.contains(&bracketed(
+            &container_logs(OURS, LogOptions::default()).unwrap()
+        )),
+        "{calls:?}"
+    );
+    assert!(
+        !calls
+            .iter()
+            .any(|c| c.contains("[logs]") && c.contains(FOREIGN)),
+        "{calls:?}"
+    );
+}
+
+#[tokio::test]
 async fn a_daemon_error_is_failed_not_unreachable() {
     let dir = tempfile::tempdir().unwrap();
     let r = runner(

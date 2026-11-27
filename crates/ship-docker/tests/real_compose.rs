@@ -428,9 +428,22 @@ async fn an_unlabelled_container_in_the_project_is_never_touched() {
             .unwrap_err(),
     );
 
-    // Never returned as one of Ship's.
+    // Never returned as one of Ship's, nor read.
     let env = Selector::environment(ids.environment);
     assert!(containers(&runner, &env).await.unwrap().is_empty());
+    assert!(compose::ps(&runner, &project).await.unwrap().is_empty());
+    let mut lines: Vec<Line> = Vec::new();
+    compose::logs(
+        &runner,
+        &project,
+        NO,
+        LogOptions::default(),
+        Some(Duration::from_secs(30)),
+        &mut |l| lines.push(l),
+    )
+    .await
+    .unwrap();
+    assert!(lines.is_empty(), "{lines:?}");
 
     // Still there and still running.
     let status = docker_ok(&["inspect", "--format", "{{.State.Status}}", &foreign]);

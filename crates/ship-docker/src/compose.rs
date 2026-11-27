@@ -19,7 +19,7 @@ use ship_core::{EnvironmentId, ProjectId, ReleaseId, SecretValue, ServiceId};
 
 use crate::argv::{self, Argv, ComposeFiles, ComposeProject, LogOptions, UpOptions};
 use crate::error::DockerError;
-use crate::inspect::{inspect_json, label_map, parse_ids};
+use crate::inspect::{inspect_json, label_map, parse_ids, parse_inspect};
 use crate::labels::{Selector, ShipLabels};
 use crate::runner::Runner;
 use crate::stream::{Line, stream};
@@ -352,10 +352,18 @@ impl Drop for AbortOnDrop {
     }
 }
 
-/// `compose ps --all --quiet`: the id of every container in the project,
-/// with or without Ship's labels. Use [`crate::containers`] to read Ship's.
+/// `compose ps --all --quiet`, keeping only the containers that carry
+/// Ship's labels for the project's environment (checked with `container
+/// inspect`): the full id of each. A container without them is never
+/// returned.
 pub async fn ps(runner: &Runner, project: &ComposeProject) -> Result<Vec<String>, DockerError> {
-    ids(runner, &argv::compose_ps(project)?).await
+    let all = ids(runner, &argv::compose_ps(project)?).await?;
+    if all.is_empty() {
+        return Ok(all);
+    }
+    let json = inspect_json(runner, &argv::container_inspect(&all)?).await?;
+    let ours = parse_inspect(&json, &Selector::environment(project.environment()))?;
+    Ok(ours.into_iter().map(|c| c.id).collect())
 }
 
 /// Refuses with [`DockerError::Foreign`] when the Compose project holds a
