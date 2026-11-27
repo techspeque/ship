@@ -385,3 +385,12 @@ findings:
       status: open
       cycle: 1
       file: crates/ship-daemon/src/deploy.rs
+    - id: f-034
+      date: "2026-11-27"
+      slice: phase-1-ws-1.7
+      severity: P2
+      category: behavior
+      finding: 'crates/ship-daemon/src/deploy.rs:549 — Generated Compose values are JSON-escaped but not escaped for Compose interpolation (also volume targets at line 569). Reproduced with docker compose config: literal Dockerfile.${SHIP_REVIEW_UNSET_VAR:-wrong} becomes Dockerfile.wrong, and /data/$SHIP_REVIEW_UNSET_VAR becomes /data. These are accepted literal paths, so deployment can build the wrong file or mount a volume at the wrong path. Escape literal dollar signs in generated path values and test the canonical Compose output preserves Dockerfile, context, and volume paths exactly.'
+      status: open
+      cycle: 1
+      file: crates/ship-daemon/src/deploy.rs
