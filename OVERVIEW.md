@@ -271,6 +271,7 @@ ship logs PROJECT[/SERVICE] [--env E] [--follow]
 ship start|stop|restart|redeploy|remove PROJECT[/SERVICE] [--env E]
 ship vars set|unset|list KEY[=VALUE] --project P [--env E]
 ship secrets set|unset|list NAME (--prompt | --stdin) --project P [--env E]
+ship settings get|set compose.confirm (ask | accept) [--project P]
 ship open PROJECT
 ship dial-stdio                       # internal: ssh transport endpoint
 ```

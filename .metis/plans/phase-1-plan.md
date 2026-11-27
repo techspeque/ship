@@ -35,6 +35,12 @@ Decisions made in this plan:
 - **Confirmation without a terminal fails.** A Compose file that needs
   confirmation exits 3 unless the operator confirmed that same file before
   or passes `--confirm`. An agent session cannot confirm on its own.
+- **The operator can waive confirmation, on the host.** `ship settings set
+  compose.confirm accept [--project P]` makes the daemon accept the confirm
+  outcomes for the host or for one project, and records each one in the
+  audit log as accepted by policy. The default is `ask`. The setting lives
+  in the daemon's store, never in the pushed directory, so a push cannot
+  waive its own confirmation. Reject outcomes are not affected.
 - **The JSON shapes are already written.** The fixtures under
   `crates/ship/tests/fixtures/` came before the code; a slice matches them
   or changes them on purpose.
@@ -269,6 +275,8 @@ Tasks:
 - Confirm covers bind mounts to host paths, published ports, added capabilities, GPU reservations and non-default restart policies; reject covers `privileged`, host namespaces, `devices:` and the Docker socket
 - Add only labels, the project name, managed config and secrets, and resource limits; change no port, volume, network or privilege the file declares (rules 4 and 5)
 - Return the confirmation items and the diff to the client before the first deployment; record a confirmation, with its file fingerprint, in the audit log
+- Store the `compose.confirm` setting (`ask` or `accept`) for the host and per project, the project's value winning; under `accept`, deploy without asking, list the items in the operation's events and record them in the audit log as accepted by policy, with who set the policy and when
+- Ignore any attempt to set the policy from the pushed directory or its manifest
 - Deploy several services as one operation; record one service row per Compose service
 - Mount bind sources inside the snapshot read-only by default
 
@@ -282,6 +290,7 @@ Acceptance criteria:
 - [ ] A file needing confirmation starts nothing until confirmed; the confirmation is in the audit log; the same file redeploys without asking again, and a changed file asks again
 - [ ] A multi-service file with a named volume and a health check deploys against real Docker
 - [ ] A host-path bind mount and a GPU reservation deploy after confirmation
+- [ ] With `compose.confirm` set to `accept` for a project, that project's file deploys without asking and the audit log names each item and the policy; another project still asks; a rejected file is still rejected
 - [ ] The interpolated Compose output appears in no log, event or API response
 
 ---
@@ -300,6 +309,7 @@ Tasks:
 - With `--wait`, stream ordered progress, survive a reconnect by resuming the event stream, and exit with the codes in `docs/contracts/cli-json.md`
 - With `-o json`, print one object per line ending with the result line, matching `push-wait-succeeded.jsonl` and `push-wait-failed.jsonl`
 - Ask for confirmation on a terminal; with no terminal and no `--confirm`, print the items and exit 3
+- Implement `ship settings get|set compose.confirm (ask | accept) [--project P]`; setting `accept` names what it waives and asks for confirmation on a terminal
 - Print the endpoint only when one exists; otherwise `Endpoint: not configured`
 - With `--detach`, print the operation id and return
 
@@ -477,7 +487,7 @@ Composition scenarios to validate:
 - [ ] A GPU workload runs under Ship on the machine that has the GPU, after confirmation of its reservation
 - [ ] The workloads above run under Ship in place of the orchestrator that ran them before, for at least two days
 - [ ] A failed build and a failed health check each leave the previous release serving
-- [ ] A user in the `ship` group, with no terminal, runs `ship push --wait -o json` and gets the result line and exit code of the contract; a file needing confirmation exits 3
+- [ ] A user in the `ship` group, with no terminal, runs `ship push --wait -o json` and gets the result line and exit code of the contract; a file needing confirmation exits 3, and deploys once the operator has set `compose.confirm accept` for that project
 - [ ] Stopping Docker shows `unknown` everywhere and changes nothing; killing the daemon mid-deploy leaves an `interrupted` operation
 - [ ] Containers, networks and volumes that Ship did not create are unchanged on both machines
 - [ ] Every `-o json` output matches its recorded fixture, and no test secret appears in any output

@@ -34,7 +34,7 @@ recorded in the audit log) and **reject**.
 ### Rules this decision implies:
 
 1. Allow: named volumes, networks, health checks, `depends_on`, bind mounts whose source is inside the revision's snapshot (mounted read-only by default).
-2. Confirm: bind mounts to other host paths, published ports, added capabilities, GPU reservations through a container runtime (`deploy.resources.reservations.devices`, `gpus`), `restart` policies that differ from Ship's default.
+2. Confirm: bind mounts to other host paths, published ports, added capabilities, GPU reservations through a container runtime (`deploy.resources.reservations.devices`, `gpus`), `restart` policies that differ from Ship's default. The operator may set the host, or one project, to accept these without asking (`compose.confirm accept`); the setting is held by the daemon, cannot come from the pushed files, and every item accepted under it is recorded in the audit log.
 3. Reject: `privileged`, host PID/IPC/network namespaces, raw device passthrough (`devices:`), mounts of the Docker socket. An audited override may come later; it is off by default.
 4. Ship adds only labels, the environment's project name, managed config and secrets, and resource limits. It shows the resulting diff before the first deployment.
 5. Ship never silently changes a port, volume, network or privilege the file declares.

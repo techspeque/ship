@@ -50,7 +50,7 @@ the same.
 | 0 | `succeeded` | Deployed and met its verification criteria | replaced |
 | 1 | `failed` | The upload, build, deployment or verification failed; `failure` names the phase and a stable code | untouched |
 | 2 | `usage` | Bad flags or arguments | untouched |
-| 3 | `confirmation_required` | The Compose file needs an operator's confirmation (ADR-0008 rule 2) and none was given | untouched |
+| 3 | `confirmation_required` | The Compose file needs an operator's confirmation (ADR-0008 rule 2) and none was given: no terminal, no `--confirm`, and no `compose.confirm accept` setting on the host | untouched |
 | 90 | `daemon_unreachable` | No daemon answered on the target | untouched |
 | 91 | `version_mismatch` | Client and daemon API versions are incompatible | untouched |
 | 92 | `docker_unavailable` | The host's Docker Engine or Compose is unreachable or unsupported | untouched |
