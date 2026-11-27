@@ -81,10 +81,11 @@ present() {
   done
 }
 before_state=$(present)
-if err=$(sudo "$userbin" service install 2>&1); then
-  fail "service install accepted $userbin"
-fi
+rc=0
+err=$(sudo "$userbin" service install 2>&1) || rc=$?
 echo "$err"
+[ "$rc" -ne 0 ] || fail "service install accepted $userbin"
+[ "$rc" -eq 1 ] || fail "refusal exited $rc, want 1"
 echo "$err" | grep -qF "sudo install -m 0755 $userbin $ship" ||
   fail "refusal lacks the install command"
 echo "$err" | grep -qF "sudo $ship service install" ||
