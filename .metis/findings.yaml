@@ -271,3 +271,12 @@ findings:
       file: crates/ship-daemon/src/queue.rs
       commit: afcc9845825c1334030547276cfe1917f7caee2d
       evidence: test a_concurrent_replay_of_a_queue_full_refusal_is_refused
+    - id: f-024
+      date: "2026-11-27"
+      slice: phase-1-ws-1.4
+      severity: P1
+      category: security
+      finding: 'crates/ship-source/src/pack.rs:166 — O_NOFOLLOW protects only the final path component: after scanning sub/data containing public, replacing sub with a symlink to an outside directory containing same-length data SECRET makes pack succeed and archive SECRET (reproduced). This violates the no-symlink-following contract. Resolve/open the root and every directory component without following symlinks, using race-safe directory-relative handles, and add a regression for a parent directory swapped between scan and pack.'
+      status: open
+      cycle: 1
+      file: crates/ship-source/src/pack.rs
