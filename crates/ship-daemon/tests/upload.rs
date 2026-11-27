@@ -28,9 +28,14 @@ struct Daemon {
 }
 
 async fn daemon(limits: UnpackLimits) -> Daemon {
+    daemon_with(limits, ship_daemon::Redactor::new()).await
+}
+
+async fn daemon_with(limits: UnpackLimits, redactor: ship_daemon::Redactor) -> Daemon {
     let dir = tempfile::tempdir().unwrap();
     let mut config = common::config(dir.path());
     config.upload_limits = limits;
+    config.redactor = redactor;
     let state = config.state_dir.clone();
     let running = ship_daemon::start(&config).await.unwrap();
     let target = Target::Local {
@@ -375,6 +380,50 @@ async fn a_broken_transfer_leaves_nothing_behind() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
     assert_failed(&d, &failed, "my-app", 400, "invalid_request").await;
+    d.running.shutdown().await.unwrap();
+}
+
+/// A compressed archive of one symlink entry named `name`, then the end of
+/// the archive.
+fn symlink_archive(name: &str) -> Vec<u8> {
+    let mut h = [0u8; 512];
+    h[..name.len()].copy_from_slice(name.as_bytes());
+    h[100..108].copy_from_slice(b"0000777\0");
+    h[108..116].copy_from_slice(b"0000000\0");
+    h[116..124].copy_from_slice(b"0000000\0");
+    h[124..136].copy_from_slice(b"00000000000\0");
+    h[136..148].copy_from_slice(b"00000000000\0");
+    h[156] = b'2';
+    h[157..161].copy_from_slice(b"/etc");
+    h[148..156].copy_from_slice(b"        ");
+    let sum: u32 = h.iter().map(|&b| u32::from(b)).sum();
+    h[148..156].copy_from_slice(format!("{sum:06o}\0 ").as_bytes());
+    let mut t = h.to_vec();
+    t.extend_from_slice(&[0u8; 1024]);
+    ship_source::fuzzing::compress(&t).unwrap()
+}
+
+/// A failure naming a registered secret answers redacted, first time and
+/// on replay alike (f-026).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failure_answers_redacted() {
+    const SECRET: &str = "hunter2-upload-secret";
+    let redactor = ship_daemon::Redactor::new();
+    redactor.register(&ship_core::SecretValue::new(SECRET));
+    let d = daemon_with(UnpackLimits::default(), redactor).await;
+    let hostile = symlink_archive(SECRET);
+    let sha = "a".repeat(64);
+
+    let first = upload_bytes(&d, "my-app", "k1", &sha, &hostile).await;
+    assert_failed(&d, &first, "my-app", 422, "unsafe_snapshot").await;
+    let again = upload_bytes(&d, "my-app", "k1", &sha, b"").await;
+    assert_eq!(again.status, 422, "{}", again.json);
+    for a in [&first, &again] {
+        let text = a.json.to_string();
+        assert!(!text.contains(SECRET), "{text}");
+        assert!(text.contains(ship_core::secret::REDACTED), "{text}");
+    }
+    assert_eq!(first.json["message"], again.json["message"]);
     d.running.shutdown().await.unwrap();
 }
 

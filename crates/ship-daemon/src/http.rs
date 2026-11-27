@@ -220,9 +220,24 @@ async fn upload(
             };
             (status, Json(view)).into_response()
         }
-        Ok(Err(failure)) => {
-            error_response(ApiError::new(failure.code, failure.message).with_operation(op.id))
-        }
+        // The stored failure, never the job's own: the queue redacts the
+        // message before storing it.
+        Ok(Err(_)) => match state.store.get_operation(op.id).await {
+            Ok(stored) => match crate::upload::replay(&state.store, &stored, &request).await {
+                crate::upload::Replay::Done(view) => (StatusCode::OK, Json(view)).into_response(),
+                crate::upload::Replay::Failed(e) => error_response(e),
+            },
+            Err(e) => {
+                tracing::error!(error = %e, "reading the failed upload failed");
+                error_response(
+                    ApiError::new(
+                        ErrorCode::Internal,
+                        "the daemon could not read its database",
+                    )
+                    .with_operation(op.id),
+                )
+            }
+        },
         Err(_) => error_response(
             ApiError::new(ErrorCode::Internal, "the upload ended inside the daemon")
                 .with_operation(op.id),
