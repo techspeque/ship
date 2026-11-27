@@ -113,6 +113,11 @@ pub struct DeployRequest {
     /// `--port`: `N` or `HOST:CONTAINER`; `None` publishes nothing.
     #[serde(default)]
     pub port: Option<PortSpec>,
+    /// The operator confirms the Compose file's confirm items (ADR-0008
+    /// rule 2): `--confirm`, or a yes on a terminal. Recorded in the audit
+    /// log with the file's fingerprint. Never waives a reject item.
+    #[serde(default)]
+    pub confirm: bool,
 }
 
 /// Prefix of the daemon settings: `GET {SETTINGS_PATH}/{key}` is a
@@ -124,10 +129,21 @@ pub const SETTINGS_KIND: &str = "settings";
 /// Where the ports Ship publishes bind: `auto` or an address
 /// ([`crate::deploy::PublishAddress`]).
 pub const PUBLISH_ADDRESS_KEY: &str = "publish.address";
+/// Whether the confirm items of a Compose file are asked for (`ask`) or
+/// accepted by policy (`accept`), for the host or one project
+/// ([`crate::trust::ConfirmPolicy`]).
+pub const COMPOSE_CONFIRM_KEY: &str = "compose.confirm";
 
 /// `GET` and `POST` path of the setting `key`.
 pub fn setting_path(key: &str) -> String {
     format!("{SETTINGS_PATH}/{key}")
+}
+
+/// `GET` and `POST` path of the project-scoped setting `key`
+/// ([`COMPOSE_CONFIRM_KEY`] only). `GET` gives the value in effect for the
+/// project: its own, else the host's, else the default.
+pub fn project_setting_path(project: &Slug, key: &str) -> String {
+    format!("{PROJECTS_PATH}/{}/settings/{key}", project.as_str())
 }
 
 /// A daemon setting.
@@ -331,6 +347,7 @@ mod tests {
                 "revision_id": "rev_01aryz6s41tsv4rrffq69g5fav",
                 "file": null,
                 "port": "8080:3000",
+                "confirm": false,
             })
         );
         let bad = json!({ "revision_id": "rev_01aryz6s41tsv4rrffq69g5fav", "port": "0" });

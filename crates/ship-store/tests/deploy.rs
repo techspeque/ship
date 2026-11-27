@@ -8,7 +8,7 @@ use ship_core::{
 };
 use ship_store::{
     DATABASE_FILE, LATEST_VERSION, NewDeployment, NewOperation, NewRelease, NewRevision, NewRoute,
-    NewService, Store, StoreError,
+    NewService, SettingScope, Store, StoreError,
 };
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::{AssertSqlSafe, ConnectOptions, Connection};
@@ -28,7 +28,7 @@ fn web() -> NewService {
 }
 
 #[tokio::test]
-async fn a_version_2_database_migrates_to_version_3_with_a_backup() {
+async fn a_version_2_database_migrates_to_the_latest_version_with_a_backup() {
     let dir = tempfile::tempdir().unwrap();
     let ts = 1_767_225_600_000_u64;
     let prj = ProjectId::from_parts(ts, 1).unwrap().to_string();
@@ -93,8 +93,8 @@ async fn a_version_2_database_migrates_to_version_3_with_a_backup() {
     let store = Store::open(dir.path()).await.unwrap();
     let report = store.open_report().clone();
     assert_eq!(report.from_version, 2);
-    assert_eq!(report.to_version, 3);
-    assert_eq!(LATEST_VERSION, 3);
+    assert_eq!(report.to_version, 4);
+    assert_eq!(LATEST_VERSION, 4);
     let backup = report.backup.expect("a backup was taken");
 
     // Every row survived.
@@ -118,7 +118,7 @@ async fn a_version_2_database_migrates_to_version_3_with_a_backup() {
     // Settings storage is there and works.
     assert_eq!(store.host_setting("publish.address").await.unwrap(), None);
     let set = store
-        .set_host_setting("publish.address", "127.0.0.1")
+        .set_host_setting("publish.address", "127.0.0.1", "operator")
         .await
         .unwrap();
     assert_eq!(
@@ -154,7 +154,7 @@ async fn a_version_2_database_migrates_to_version_3_with_a_backup() {
 
     // Reopening is clean, takes no second backup and keeps the setting.
     let store = Store::open(dir.path()).await.unwrap();
-    assert_eq!(store.open_report().from_version, 3);
+    assert_eq!(store.open_report().from_version, 4);
     assert_eq!(store.open_report().backup, None);
     assert_eq!(
         store
@@ -174,7 +174,7 @@ async fn host_settings_are_stored_and_replaced() {
     assert_eq!(store.host_setting("publish.address").await.unwrap(), None);
 
     let first = store
-        .set_host_setting("publish.address", "127.0.0.1")
+        .set_host_setting("publish.address", "127.0.0.1", "operator")
         .await
         .unwrap();
     assert_eq!(first.value, "127.0.0.1");
@@ -184,7 +184,7 @@ async fn host_settings_are_stored_and_replaced() {
     );
 
     let second = store
-        .set_host_setting("publish.address", "auto")
+        .set_host_setting("publish.address", "auto", "operator")
         .await
         .unwrap();
     let read = store
@@ -200,7 +200,7 @@ async fn host_settings_are_stored_and_replaced() {
     for (key, value) in [("", "x"), ("k", ""), ("k", long.as_str())] {
         assert!(
             matches!(
-                store.set_host_setting(key, value).await,
+                store.set_host_setting(key, value, "operator").await,
                 Err(StoreError::Invalid { .. })
             ),
             "{key:?}"
@@ -216,6 +216,77 @@ async fn host_settings_are_stored_and_replaced() {
             .value,
         "auto"
     );
+    store.close().await;
+}
+
+#[tokio::test]
+async fn project_settings_win_over_the_host() {
+    let (_dir, store) = open().await;
+    let a = store
+        .get_or_create_project(&Slug::parse("a").unwrap())
+        .await
+        .unwrap()
+        .project;
+    let b = store
+        .get_or_create_project(&Slug::parse("b").unwrap())
+        .await
+        .unwrap()
+        .project;
+    let key = "compose.confirm";
+    assert_eq!(store.effective_setting(a.id, key).await.unwrap(), None);
+
+    let host = store
+        .set_host_setting(key, "ask", "operator")
+        .await
+        .unwrap();
+    assert_eq!(host.scope, SettingScope::Host);
+    assert_eq!(host.updated_by, "operator");
+    let own = store
+        .set_setting(SettingScope::Project(a.id), key, "accept", "adam")
+        .await
+        .unwrap();
+    assert_eq!(own.scope, SettingScope::Project(a.id));
+    assert_eq!(
+        store.effective_setting(a.id, key).await.unwrap(),
+        Some(own.clone())
+    );
+    assert_eq!(
+        store.effective_setting(b.id, key).await.unwrap(),
+        Some(host.clone())
+    );
+    assert_eq!(store.host_setting(key).await.unwrap(), Some(host));
+    assert_eq!(
+        store
+            .setting(SettingScope::Project(b.id), key)
+            .await
+            .unwrap(),
+        None
+    );
+
+    // Replacing a project's value leaves one row; the actor is kept.
+    let again = store
+        .set_setting(SettingScope::Project(a.id), key, "ask", "operator")
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .setting(SettingScope::Project(a.id), key)
+            .await
+            .unwrap(),
+        Some(again)
+    );
+    // An unknown project and an empty actor are refused.
+    let ghost = ProjectId::from_parts(1, 1).unwrap();
+    assert!(
+        store
+            .set_setting(SettingScope::Project(ghost), key, "ask", "operator")
+            .await
+            .is_err()
+    );
+    assert!(matches!(
+        store.set_host_setting(key, "ask", "").await,
+        Err(StoreError::Invalid { .. })
+    ));
     store.close().await;
 }
 

@@ -1,5 +1,9 @@
 //! Dockerfile deployments (phase-1-ws-1.7): a revision with a Dockerfile
-//! becomes a release running as a single-service Compose project.
+//! becomes a release running as a single-service Compose project. A
+//! revision whose build definition is a Compose file takes the same
+//! operation through [`crate::compose_import`] (phase-1-ws-1.8). Every
+//! release's directory names the files that define it ([`FILES_FILE`]), so
+//! a failure brings the previous release back the same way for both.
 //!
 //! One `deploy` operation, serialised on its environment (ADR-0011), moves
 //! through:
@@ -57,6 +61,7 @@ use ship_store::{
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+use crate::compose_import;
 use crate::queue::{Context, JobFailure};
 use crate::upload::snapshot_dir;
 
@@ -79,9 +84,63 @@ pub fn release_dir(state_dir: &Path, release: ReleaseId) -> PathBuf {
     state_dir.join(RELEASES_DIR).join(release.to_string())
 }
 
+/// Which files define a release: its project directory and its Compose
+/// files in order (JSON, `{ "directory": …, "files": [ … ] }`). Holds paths
+/// only. A release from before it was written (phase-1-ws-1.7) is
+/// [`COMPOSE_FILE`] and [`LABELS_FILE`] in its own directory.
+pub const FILES_FILE: &str = "files.json";
+
 /// The tag a release's image is built under: `ship_<env id>-web:<release id>`.
 pub fn image_tag(environment: EnvironmentId, release: ReleaseId) -> String {
-    format!("{}-{SERVICE}:{release}", compose_project_name(&environment))
+    service_image_tag(environment, SERVICE, release)
+}
+
+/// The tag Ship builds `service`'s image under for `release`, when the
+/// Compose file names none: `ship_<env id>-<service>:<release id>`.
+pub fn service_image_tag(environment: EnvironmentId, service: &str, release: ReleaseId) -> String {
+    format!("{}-{service}:{release}", compose_project_name(&environment))
+}
+
+/// The files that define `release`, from its [`FILES_FILE`].
+pub fn release_files(state_dir: &Path, release: ReleaseId) -> Result<ComposeFiles, DockerError> {
+    let dir = release_dir(state_dir, release);
+    let manifest = match fs::read(dir.join(FILES_FILE)) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            return ComposeFiles::new(&dir, [dir.join(COMPOSE_FILE), dir.join(LABELS_FILE)]);
+        }
+        Err(e) => {
+            return Err(DockerError::InvalidArgument(format!(
+                "the files of release {release} cannot be read: {e}"
+            )));
+        }
+    };
+    let bad = || {
+        DockerError::InvalidArgument(format!(
+            "the {FILES_FILE} of release {release} is malformed"
+        ))
+    };
+    let v: Value = serde_json::from_slice(&manifest).map_err(|_| bad())?;
+    let directory = v["directory"].as_str().ok_or_else(bad)?;
+    let files: Vec<PathBuf> = v["files"]
+        .as_array()
+        .ok_or_else(bad)?
+        .iter()
+        .map(|f| f.as_str().map(PathBuf::from).ok_or_else(bad))
+        .collect::<Result<_, _>>()?;
+    ComposeFiles::new(directory, files)
+}
+
+/// Writes `files` as the [`FILES_FILE`] of the release in `dir`.
+pub(crate) fn write_manifest(dir: &Path, files: &ComposeFiles) -> Result<(), JobFailure> {
+    let text = |p: &Path| path_text(p).map(Value::String);
+    let list: Vec<Value> = files
+        .files()
+        .iter()
+        .map(|f| text(f))
+        .collect::<Result<_, _>>()?;
+    let manifest = json!({ "directory": text(files.directory())?, "files": list });
+    write_file(&dir.join(FILES_FILE), manifest.to_string().as_bytes())
 }
 
 /// How long the steps of a deployment may take.
@@ -147,6 +206,14 @@ impl Deployer {
         &self.state_dir
     }
 
+    pub(crate) fn docker(&self) -> &Runner {
+        &self.docker
+    }
+
+    pub(crate) fn build_timeout(&self) -> Duration {
+        self.build_timeout
+    }
+
     /// Where a published port binds now: the `publish.address` setting,
     /// `auto` resolved through the host's tailnet.
     pub async fn publish_ip(&self) -> Result<(IpAddr, String), JobFailure> {
@@ -185,6 +252,8 @@ pub struct DeployJob {
     pub file: Option<String>,
     /// `--port`.
     pub port: Option<PortSpec>,
+    /// The operator confirmed the Compose file's confirm items.
+    pub confirm: bool,
 }
 
 /// A deployment that succeeded.
@@ -222,18 +291,28 @@ pub async fn run(ctx: &Context, d: &Deployer, job: &DeployJob) -> Result<Deploye
     if let Some(note) = &detected.note {
         ctx.log(note).await?;
     }
-    if detected.kind == BuildKind::Compose {
-        return Err(JobFailure::new(
-            ErrorCode::InvalidRequest,
-            format!(
-                "{} is a Compose file; deploying Compose files is not available yet \
-                 (pass --file to deploy a Dockerfile)",
-                detected.path
-            ),
-        ));
-    }
-    ctx.log(&format!("deploying {} as service {SERVICE}", detected.path))
-        .await?;
+    // A Compose file is read and put through the trust profile before
+    // anything is recorded: a rejected or unconfirmed file leaves no
+    // deployment behind (ADR-0008 rules 2 and 3).
+    let compose = match detected.kind {
+        BuildKind::Compose => {
+            if job.port.is_some() {
+                return Err(JobFailure::new(
+                    ErrorCode::InvalidRequest,
+                    format!(
+                        "--port applies to a Dockerfile; {} publishes the ports it declares",
+                        detected.path
+                    ),
+                ));
+            }
+            Some(compose_import::check(ctx, d, job, &snapshot, &detected.path).await?)
+        }
+        BuildKind::Dockerfile => {
+            ctx.log(&format!("deploying {} as service {SERVICE}", detected.path))
+                .await?;
+            None
+        }
+    };
 
     let history = d.store.list_deployments(env.id).await?;
     // Newest first: the release serving now, and the oldest release, which
@@ -260,16 +339,33 @@ pub async fn run(ctx: &Context, d: &Deployer, job: &DeployJob) -> Result<Deploye
         started: false,
         routes_before: None,
     };
-    let steps = Steps {
-        ctx,
-        d,
-        job,
-        snapshot,
-        dockerfile: detected.path,
-        deployment: &deployment,
-        first_release,
+    let outcome = match compose {
+        Some(checked) => {
+            compose_import::steps(
+                ctx,
+                d,
+                job,
+                &deployment,
+                first_release,
+                checked,
+                &mut attempt,
+            )
+            .await
+        }
+        None => {
+            let steps = Steps {
+                ctx,
+                d,
+                job,
+                snapshot,
+                dockerfile: detected.path,
+                deployment: &deployment,
+                first_release,
+            };
+            steps.run(&mut attempt).await
+        }
     };
-    match steps.run(&mut attempt).await {
+    match outcome {
         Ok(deployed) => Ok(deployed),
         Err(failure) => {
             attempt.undo(ctx, d).await;
@@ -300,15 +396,15 @@ fn detect_failure(e: DetectError) -> JobFailure {
 }
 
 /// What a failure must undo.
-struct Attempt {
-    environment: EnvironmentId,
-    project: ComposeProject,
-    previous: Option<ReleaseId>,
+pub(crate) struct Attempt {
+    pub(crate) environment: EnvironmentId,
+    pub(crate) project: ComposeProject,
+    pub(crate) previous: Option<ReleaseId>,
     /// `compose up` has run for the new release.
-    started: bool,
+    pub(crate) started: bool,
     /// The environment's routes before this attempt replaced them; `None`
     /// until it did.
-    routes_before: Option<Vec<Route>>,
+    pub(crate) routes_before: Option<Vec<Route>>,
 }
 
 impl Attempt {
@@ -341,8 +437,7 @@ impl Attempt {
                 let _ = ctx
                     .log(&format!("bringing release {previous} up again"))
                     .await;
-                let dir = release_dir(&d.state_dir, previous);
-                match ComposeFiles::new(&dir, [dir.join(COMPOSE_FILE), dir.join(LABELS_FILE)]) {
+                match release_files(&d.state_dir, previous) {
                     Ok(files) => up(ctx, d, &self.project, &files)
                         .await
                         .map(|()| format!("release {previous} is running again")),
@@ -351,14 +446,14 @@ impl Attempt {
             }
             None => {
                 let _ = ctx
-                    .log(&format!(
-                        "there is no earlier release; stopping {SERVICE} and keeping its \
-                         container for inspection"
-                    ))
+                    .log(
+                        "there is no earlier release; stopping the new containers and keeping \
+                         them for inspection",
+                    )
                     .await;
                 stop(ctx, d, &self.project)
                     .await
-                    .map(|()| format!("{SERVICE} is stopped"))
+                    .map(|()| "the new containers are stopped".to_owned())
             }
         };
         let line = match outcome {
@@ -470,6 +565,7 @@ impl Steps<'_> {
             .await?;
         }
         let files = write_files(d, &attempt.project, &dir, &shape, &labels).await?;
+        write_manifest(&dir, &files)?;
         let release = d
             .store
             .create_release_as(
@@ -498,7 +594,11 @@ impl Steps<'_> {
         // verifying
         ctx.enter(OperationPhase::Verifying, &format!("verifying {SERVICE}"))
             .await?;
-        let status = verify(d, env.id, &service, release_id).await?;
+        let status = verify(d, env.id, std::slice::from_ref(&service), release_id)
+            .await?
+            .first()
+            .copied()
+            .unwrap_or(ServiceStatus::Unknown);
         let verdict = match status {
             ServiceStatus::Healthy => format!("{SERVICE} is healthy"),
             _ => format!(
@@ -643,7 +743,7 @@ impl Shape {
 }
 
 /// `text` escaped for Compose interpolation: `$` is written `$$`.
-fn literal(text: &str) -> String {
+pub(crate) fn literal(text: &str) -> String {
     text.replace('$', "$$")
 }
 
@@ -678,7 +778,7 @@ fn volume_name(path: &str) -> String {
     format!("{base}-{hex}")
 }
 
-fn path_text(path: &Path) -> Result<String, JobFailure> {
+pub(crate) fn path_text(path: &Path) -> Result<String, JobFailure> {
     path.to_str().map(str::to_owned).ok_or_else(|| {
         JobFailure::new(
             ErrorCode::Internal,
@@ -687,7 +787,7 @@ fn path_text(path: &Path) -> Result<String, JobFailure> {
     })
 }
 
-fn create_release_dir(state_dir: &Path, dir: &Path) -> Result<(), JobFailure> {
+pub(crate) fn create_release_dir(state_dir: &Path, dir: &Path) -> Result<(), JobFailure> {
     let made = fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -696,7 +796,7 @@ fn create_release_dir(state_dir: &Path, dir: &Path) -> Result<(), JobFailure> {
     made.map_err(|e| io_failure(&e, "the daemon could not create the release directory"))
 }
 
-fn io_failure(e: &io::Error, message: &str) -> JobFailure {
+pub(crate) fn io_failure(e: &io::Error, message: &str) -> JobFailure {
     tracing::error!(error = %e, "{message}");
     if e.kind() == io::ErrorKind::StorageFull {
         JobFailure::new(
@@ -709,7 +809,7 @@ fn io_failure(e: &io::Error, message: &str) -> JobFailure {
 }
 
 /// Writes `bytes` to `path` (mode 0600), replacing it.
-fn write_file(path: &Path, bytes: &[u8]) -> Result<(), JobFailure> {
+pub(crate) fn write_file(path: &Path, bytes: &[u8]) -> Result<(), JobFailure> {
     fs::OpenOptions::new()
         .write(true)
         .create(true)
@@ -744,14 +844,14 @@ async fn write_files(
     ComposeFiles::new(dir, [compose_path, labels_path]).map_err(internal_docker)
 }
 
-fn internal_docker(e: DockerError) -> JobFailure {
+pub(crate) fn internal_docker(e: DockerError) -> JobFailure {
     tracing::error!(error = %e, "the Docker adapter refused generated input");
     JobFailure::new(ErrorCode::Internal, e.to_string())
 }
 
 /// The failure for a Docker error: `docker_unavailable` when Docker did
 /// not answer, `conflict` for an object without Ship's labels, else `code`.
-fn docker_failure(e: DockerError, code: ErrorCode, what: &str) -> JobFailure {
+pub(crate) fn docker_failure(e: DockerError, code: ErrorCode, what: &str) -> JobFailure {
     match e {
         DockerError::Unreachable(_) => JobFailure::new(ErrorCode::DockerUnavailable, e.to_string()),
         DockerError::Foreign { .. } => JobFailure::new(ErrorCode::Conflict, e.to_string()),
@@ -759,7 +859,7 @@ fn docker_failure(e: DockerError, code: ErrorCode, what: &str) -> JobFailure {
     }
 }
 
-fn build_failure(e: DockerError) -> JobFailure {
+pub(crate) fn build_failure(e: DockerError) -> JobFailure {
     match e {
         DockerError::Failed { status, .. } => JobFailure::new(
             ErrorCode::BuildFailed,
@@ -780,6 +880,16 @@ fn build_failure(e: DockerError) -> JobFailure {
 const PORT_TAKEN: &[&str] = &["port is already allocated", "address already in use"];
 
 fn up_failure(e: DockerError, endpoint: Option<SocketAddr>) -> JobFailure {
+    up_failure_of(e, endpoint, &format!("starting {SERVICE} failed"))
+}
+
+/// The failure of `compose up`: `port_conflict` when Docker says a host
+/// port is taken, else `deploy_failed` saying `what`.
+pub(crate) fn up_failure_of(
+    e: DockerError,
+    endpoint: Option<SocketAddr>,
+    what: &str,
+) -> JobFailure {
     if let DockerError::Failed { detail, .. } = &e {
         let lower = detail.to_ascii_lowercase();
         if PORT_TAKEN.iter().any(|m| lower.contains(m)) {
@@ -790,18 +900,14 @@ fn up_failure(e: DockerError, endpoint: Option<SocketAddr>) -> JobFailure {
             );
         }
     }
-    docker_failure(
-        e,
-        ErrorCode::DeployFailed,
-        &format!("starting {SERVICE} failed"),
-    )
+    docker_failure(e, ErrorCode::DeployFailed, what)
 }
 
 /// Refuses an endpoint another process holds, before anything is started
 /// (ADR-0010 rule 3). An unspecified address is not probed (the probe would
 /// listen on every interface); a port the daemon may not bind (below 1024)
 /// is left to Docker. Either way `up` still reports a conflict.
-fn probe(endpoint: SocketAddr, mapping: PortMapping) -> Result<(), JobFailure> {
+pub(crate) fn probe(endpoint: SocketAddr, mapping: PortMapping) -> Result<(), JobFailure> {
     if endpoint.ip().is_unspecified() {
         return Ok(());
     }
@@ -834,7 +940,7 @@ fn probe(endpoint: SocketAddr, mapping: PortMapping) -> Result<(), JobFailure> {
 }
 
 /// `compose up --remove-orphans` with its output in the log.
-async fn up(
+pub(crate) async fn up(
     ctx: &Context,
     d: &Deployer,
     project: &ComposeProject,
@@ -881,42 +987,55 @@ async fn stop(ctx: &Context, d: &Deployer, project: &ComposeProject) -> Result<(
     result
 }
 
-/// Waits for the verdict on the release's container (ADR-0006 rule 2): a
-/// passing health check is `healthy`; with no check, still running and
-/// never restarted after the settle period is `running_unverified`; a
-/// failing check, an exit, a restart or no verdict in time fails.
-async fn verify(
+/// Waits for the verdict on each service's container of the release
+/// (ADR-0006 rule 2): a passing health check is `healthy`; with no check,
+/// still running and never restarted after the settle period is
+/// `running_unverified`; a failing check, an exit, a restart or no verdict
+/// in time fails, naming the service. Every service must pass; the
+/// statuses come back in the order of `services`.
+pub(crate) async fn verify(
     d: &Deployer,
     environment: EnvironmentId,
-    service: &Service,
+    services: &[Service],
     release: ReleaseId,
-) -> Result<ServiceStatus, JobFailure> {
+) -> Result<Vec<ServiceStatus>, JobFailure> {
     let started = tokio::time::Instant::now();
     let deadline = started + d.settings.verify_timeout;
-    let selector = Selector::environment(environment).service(service.id);
+    let selector = Selector::environment(environment);
     let failed = |message: String| JobFailure::new(ErrorCode::HealthCheckFailed, message);
-    let mut last = None;
+    let mut verdicts: Vec<Option<ServiceStatus>> = vec![None; services.len()];
+    let mut last: Vec<Option<ServiceStatus>> = vec![None; services.len()];
     loop {
         let found = containers(&d.docker, &selector).await.map_err(|e| {
-            docker_failure(e, ErrorCode::HealthCheckFailed, "reading the container")
+            docker_failure(e, ErrorCode::HealthCheckFailed, "reading the containers")
         })?;
-        if let Some(c) = found.iter().find(|c| c.labels.release == release) {
+        for (i, service) in services.iter().enumerate() {
+            if verdicts[i].is_some() {
+                continue;
+            }
+            let name = &service.name;
+            let Some(c) = found
+                .iter()
+                .find(|c| c.labels.release == release && c.labels.service == Some(service.id))
+            else {
+                continue;
+            };
             let status = ServiceStatus::from_observation(c.observation, DesiredState::Running);
-            last = Some(status);
+            last[i] = Some(status);
             match status {
-                ServiceStatus::Healthy => return Ok(status),
+                ServiceStatus::Healthy => verdicts[i] = Some(status),
                 ServiceStatus::RunningUnverified if c.restart_count > 0 => {
                     return Err(failed(format!(
-                        "{SERVICE} restarted {} times after starting",
+                        "{name} restarted {} times after starting",
                         c.restart_count
                     )));
                 }
                 ServiceStatus::RunningUnverified if started.elapsed() >= d.settings.settle => {
-                    return Ok(status);
+                    verdicts[i] = Some(status);
                 }
                 ServiceStatus::RunningUnverified | ServiceStatus::Starting => {}
                 ServiceStatus::Unhealthy => {
-                    return Err(failed(format!("the health check of {SERVICE} failed")));
+                    return Err(failed(format!("the health check of {name} failed")));
                 }
                 ServiceStatus::Failed
                 | ServiceStatus::Stopped
@@ -926,18 +1045,27 @@ async fn verify(
                         FailureDetail::from_observation(c.observation, DesiredState::Running)
                             .map(|f| format!(": {f}"))
                             .unwrap_or_default();
-                    return Err(failed(format!("{SERVICE} is {status}{detail}")));
+                    return Err(failed(format!("{name} is {status}{detail}")));
                 }
             }
         }
+        if verdicts.iter().all(Option::is_some) {
+            return Ok(verdicts.into_iter().flatten().collect());
+        }
         if tokio::time::Instant::now() >= deadline {
             let secs = d.settings.verify_timeout.as_secs();
-            return Err(failed(match last {
-                None => format!("no container of {SERVICE} appeared within {secs} s"),
+            let (i, service) = services
+                .iter()
+                .enumerate()
+                .find(|(i, _)| verdicts[*i].is_none())
+                .expect("a service has no verdict yet");
+            let name = &service.name;
+            return Err(failed(match last[i] {
+                None => format!("no container of {name} appeared within {secs} s"),
                 Some(ServiceStatus::Starting) => {
-                    format!("the health check of {SERVICE} did not pass within {secs} s")
+                    format!("the health check of {name} did not pass within {secs} s")
                 }
-                Some(status) => format!("{SERVICE} was still {status} after {secs} s"),
+                Some(status) => format!("{name} was still {status} after {secs} s"),
             }));
         }
         tokio::time::sleep(d.settings.poll).await;
@@ -945,13 +1073,13 @@ async fn verify(
 }
 
 /// Carries output lines from a synchronous sink to the operation's log.
-struct LogForward {
+pub(crate) struct LogForward {
     tx: mpsc::UnboundedSender<String>,
     task: JoinHandle<Result<(), JobFailure>>,
 }
 
 impl LogForward {
-    fn start(ctx: &Context) -> LogForward {
+    pub(crate) fn start(ctx: &Context) -> LogForward {
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         let ctx = ctx.clone();
         let task = tokio::spawn(async move {
@@ -969,7 +1097,7 @@ impl LogForward {
     }
 
     /// A sink for one adapter call; drop it before [`LogForward::finish`].
-    fn sink(&self) -> impl FnMut(Line) + Send + 'static {
+    pub(crate) fn sink(&self) -> impl FnMut(Line) + Send + 'static {
         let tx = self.tx.clone();
         move |line: Line| {
             let _ = tx.send(line.text);
@@ -977,7 +1105,7 @@ impl LogForward {
     }
 
     /// Waits until every line sent is logged.
-    async fn finish(self) -> Result<(), JobFailure> {
+    pub(crate) async fn finish(self) -> Result<(), JobFailure> {
         drop(self.tx);
         self.task.await.unwrap_or_else(|_| {
             Err(JobFailure::new(

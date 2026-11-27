@@ -151,7 +151,7 @@ async fn phase0_database_migrates_in_place_with_a_backup() {
     let report = store.open_report().clone();
     assert_eq!(report.from_version, 1);
     assert_eq!(report.to_version, LATEST_VERSION);
-    assert_eq!(LATEST_VERSION, 3);
+    assert_eq!(LATEST_VERSION, 4);
     let backup = report.backup.expect("a backup was taken");
 
     // Every row survived; the deployment now names its revision.
@@ -1072,6 +1072,7 @@ async fn audit_log_is_append_only() {
             actor: "adam",
             action: "push",
             target: "app",
+            detail: None,
         })
         .await
         .unwrap();
@@ -1080,12 +1081,29 @@ async fn audit_log_is_append_only() {
             actor: "policy",
             action: "compose.confirm accepted",
             target: "app",
+            detail: Some(r#"{"fingerprint":"sha256:00"}"#),
         })
         .await
         .unwrap();
     assert!(b.id > a.id);
     assert_eq!(a.actor, "adam");
     assert_eq!(b.action, "compose.confirm accepted");
+    assert_eq!(a.detail, None);
+    assert_eq!(b.detail.as_deref(), Some(r#"{"fingerprint":"sha256:00"}"#));
+    assert_eq!(
+        store
+            .audit_events_for("compose.confirm accepted", "app")
+            .await
+            .unwrap(),
+        std::slice::from_ref(&b)
+    );
+    assert!(
+        store
+            .audit_events_for("push", "other")
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(store.list_audit_events().await.unwrap(), [a.clone(), b]);
     store.close().await;
 

@@ -31,7 +31,9 @@ use ship_core::{
     OperationPhase, ProjectList, ProjectSummary, ReceivedCode, SHIP_VERSION_HEADER, Slug,
 };
 use ship_docker::Runner;
-use ship_store::{DEVELOPMENT, Operation, OperationEvent, Store, StoreError};
+use ship_store::{
+    DEVELOPMENT, Operation, OperationEvent, Project, SettingScope, Store, StoreError,
+};
 
 use crate::deploy::{DeployJob, DeploySettings, Deployer};
 use crate::queue::{Context, JobFailure, Queue, QueueError, Submission};
@@ -43,6 +45,8 @@ const UPLOADS_ROUTE: &str = "/api/v1/projects/{project}/uploads";
 const DEPLOYMENTS_ROUTE: &str = "/api/v1/projects/{project}/deployments";
 /// `GET`: a setting; `POST`: change it.
 const SETTING_ROUTE: &str = "/api/v1/settings/{key}";
+/// `GET`: a project's setting in effect; `POST`: change the project's own.
+const PROJECT_SETTING_ROUTE: &str = "/api/v1/projects/{project}/settings/{key}";
 /// `GET`: [`OperationView`].
 const OPERATION_ROUTE: &str = "/api/v1/operations/{id}";
 /// `GET`: SSE stream of [`OperationEventView`].
@@ -114,6 +118,10 @@ pub fn router_with(
         .route(UPLOADS_ROUTE, post(upload))
         .route(DEPLOYMENTS_ROUTE, post(deploy))
         .route(SETTING_ROUTE, get(setting).post(set_setting))
+        .route(
+            PROJECT_SETTING_ROUTE,
+            get(project_setting).post(set_project_setting),
+        )
         .route(OPERATION_ROUTE, get(operation))
         .route(OPERATION_EVENTS_ROUTE, get(operation_events))
         // Everything else is the UI, which keeps `/api/*`'s JSON 404.
@@ -203,6 +211,7 @@ async fn deploy(
         revision,
         file: request.file,
         port: request.port,
+        confirm: request.confirm,
     };
     let deployer = Arc::clone(&state.deployer);
     let run = move |ctx: Context| async move {
@@ -250,8 +259,70 @@ async fn set_setting(
         Err(e) => return error_response(e),
     };
     let store = state.store.clone();
-    let run =
-        move |ctx: Context| async move { crate::settings::apply(&ctx, &store, &key, value).await };
+    let run = move |ctx: Context| async move {
+        crate::settings::apply(&ctx, &store, SettingScope::Host, &key, value).await
+    };
+    accept(&state.queue, &headers, SETTINGS_KIND, None, run).await
+}
+
+/// The project named by `project`: `400` for a bad slug, `404` for none.
+async fn find_project(store: &Store, project: &str) -> Result<Project, Response> {
+    let slug = Slug::parse(project).map_err(|e| error_response(e.into()))?;
+    match store.list_projects().await {
+        Ok(list) => list
+            .into_iter()
+            .find(|p| p.slug == slug)
+            .ok_or_else(|| error_response(ApiError::new(ErrorCode::NotFound, "no such project"))),
+        Err(e) => Err(database_error(&e)),
+    }
+}
+
+/// The value of a project setting in effect: the project's own, else the
+/// host's, else the default.
+async fn project_setting(
+    State(state): State<AppState>,
+    Path((project, key)): Path<(String, String)>,
+) -> Response {
+    if let Err(e) = crate::settings::check_project_key(&key) {
+        return error_response(e);
+    }
+    let project = match find_project(&state.store, &project).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    match state.store.effective_setting(project.id, &key).await {
+        Ok(stored) => Json(crate::settings::view(&key, stored)).into_response(),
+        Err(e) => database_error(&e),
+    }
+}
+
+/// Changes a project setting as a `settings` operation, answered `202`.
+async fn set_project_setting(
+    State(state): State<AppState>,
+    Path((project, key)): Path<(String, String)>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if let Err(e) = crate::settings::check_project_key(&key) {
+        return error_response(e);
+    }
+    let request: SetSettingRequest = match json_body(&body) {
+        Ok(request) => request,
+        Err(e) => return error_response(e),
+    };
+    let value = match crate::settings::parse_value(&key, &request.value) {
+        Ok(value) => value,
+        Err(e) => return error_response(e),
+    };
+    let project = match find_project(&state.store, &project).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    let store = state.store.clone();
+    let scope = SettingScope::Project(project.id);
+    let run = move |ctx: Context| async move {
+        crate::settings::apply(&ctx, &store, scope, &key, value).await
+    };
     accept(&state.queue, &headers, SETTINGS_KIND, None, run).await
 }
 

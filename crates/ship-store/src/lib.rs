@@ -30,7 +30,7 @@ pub use repo::{
     NewOperation, NewService, Operation, OperationEvent, OperationFailure, Project, Service,
 };
 pub use route::{NewRoute, Route};
-pub use settings::Setting;
+pub use settings::{Setting, SettingScope};
 
 /// The database file name inside the state directory.
 pub const DATABASE_FILE: &str = "ship.db";

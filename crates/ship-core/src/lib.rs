@@ -78,6 +78,7 @@ pub mod secret;
 pub mod slug;
 pub mod state;
 pub mod time;
+pub mod trust;
 
 pub use api::{
     API_PREFIX, API_VERSION, API_VERSION_HEADER, DockerInfo, DockerStatus, HostCapacity, HostInfo,

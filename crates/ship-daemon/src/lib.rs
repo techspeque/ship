@@ -16,6 +16,7 @@
 //! belongs to the `ship` binary, so this library builds and tests on any
 //! unix.
 
+pub mod compose_import;
 pub mod deploy;
 pub mod host;
 pub mod http;
