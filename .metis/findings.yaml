@@ -265,6 +265,9 @@ findings:
       severity: P2
       category: behavior
       finding: crates/ship-daemon/src/queue.rs:365 — A concurrent replay returns the newly persisted queued row before the original submission finishes admission refusal at lines 395-403, so submitted_response answers 202 instead of the required refusal status on every replay (brief lines 73-75). A real-SQLite probe with max_queue=0 and two joined submissions of the same key reproduced created=false/status=Queued/HTTP 202 while the original returned queue_full/429. — Coordinate admission completion with same-key replays so all responses observe the refusal decision, and add concurrent replay regression coverage for queue_full and insufficient_storage.
-      status: open
+      status: resolved
+      resolved_by: commit afcc9845825c; test a_concurrent_replay_of_a_queue_full_refusal_is_refused; afcc984; a_concurrent_replay_of_an_insufficient_storage_refusal_is_refused also passed in independent forced metis verify --post.
       cycle: 1
       file: crates/ship-daemon/src/queue.rs
+      commit: afcc9845825c1334030547276cfe1917f7caee2d
+      evidence: test a_concurrent_replay_of_a_queue_full_refusal_is_refused
