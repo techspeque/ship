@@ -232,3 +232,12 @@ findings:
       status: open
       cycle: 1
       file: crates/ship-store/migrations/0002_phase1.sql
+    - id: f-021
+      date: "2026-11-27"
+      slice: phase-1-ws-1.2
+      severity: P3
+      category: tests
+      finding: crates/ship-store/tests/phase1.rs:785 — The raw-SQL operation test ends immediately after establishing a failure; no test attempts to change the stored code, message or failure phase of an already failed/interrupted operation, despite brief lines 120-122 explicitly requiring changed-failure rejection. Add raw-SQL assertions that these edits are refused and the original failure remains unchanged.
+      status: open
+      cycle: 1
+      file: crates/ship-store/tests/phase1.rs
