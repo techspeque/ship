@@ -301,9 +301,12 @@ findings:
       severity: P1
       category: security
       finding: 'crates/ship-daemon/src/http.rs:224 — The first upload failure returns the raw JobFailure.message instead of the redacted stored failure. Reproduced with a refused symlink named with a registered secret: HTTP 422 contains the secret while the persisted operation redacts it. Return the persisted redacted failure or apply the same redactor before responding; add an HTTP regression covering initial response and replay.'
-      status: open
+      status: resolved
+      resolved_by: commit 6d8465207b4f; test a_failure_answers_redacted
       cycle: 1
       file: crates/ship-daemon/src/http.rs
+      commit: 6d8465207b4f3061cafee932017e55fb7e1684f2
+      evidence: test a_failure_answers_redacted
     - id: f-027
       date: "2026-11-27"
       slice: phase-1-ws-1.5
