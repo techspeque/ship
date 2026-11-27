@@ -486,6 +486,27 @@ fn usage_errors_exit_2() {
     }
 }
 
+/// A client config that cannot be read or parsed is Ship's own failure,
+/// 99, whether the current target or `--to` is resolved; nothing is sent.
+#[test]
+fn an_unreadable_config_exits_99_on_both_target_paths() {
+    let h = Harness::new();
+    let root = h.tree("app", DOCKERFILE);
+    let r = root.to_str().unwrap();
+    fs::write(h.config(), "{ not json").unwrap();
+    for args in [vec!["push", r], vec!["push", r, "--to", "t"]] {
+        let out = h.run(&args);
+        assert_eq!(code(&out), 99, "{args:?}\n{}", show(&out));
+    }
+    // A directory where the file should be: it cannot be read.
+    fs::remove_file(h.config()).unwrap();
+    fs::create_dir(h.config()).unwrap();
+    for args in [vec!["push", r], vec!["push", r, "--to", "t"]] {
+        let out = h.run(&args);
+        assert_eq!(code(&out), 99, "{args:?}\n{}", show(&out));
+    }
+}
+
 #[test]
 fn no_daemon_exits_90() {
     let h = Harness::new();

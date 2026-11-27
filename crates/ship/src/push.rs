@@ -213,11 +213,11 @@ fn render_dry_run(selection: &Selection, output: Output) -> String {
     }
 }
 
-/// The endpoint of `--to`, or the current target's.
+/// The endpoint of `--to`, or the current target's (the local daemon at
+/// the default socket when none is current). A config that cannot be
+/// located, read or parsed is Ship's own failure, 99, on both paths; a bad
+/// target name or URL is usage, 2.
 fn resolve_endpoint(to: Option<&str>) -> Result<Endpoint, ExitCode> {
-    let Some(name) = to else {
-        return crate::commands::endpoint();
-    };
     let fail = |e: crate::config::ConfigError| {
         let code = if e.is_usage() {
             exit::USAGE
@@ -228,6 +228,20 @@ fn resolve_endpoint(to: Option<&str>) -> Result<Endpoint, ExitCode> {
     };
     let path = crate::config::default_location().map_err(fail)?;
     let cfg = crate::config::Config::load(&path).map_err(fail)?;
+    let Some(name) = to else {
+        return Ok(match cfg.current().map_err(fail)? {
+            Some((name, target)) => Endpoint {
+                name: Some(name.to_owned()),
+                target,
+            },
+            None => Endpoint {
+                name: None,
+                target: ship_net::Target::Local {
+                    socket: PathBuf::from(ship_net::DEFAULT_SOCKET),
+                },
+            },
+        });
+    };
     let target = cfg.named(name).map_err(fail)?;
     Ok(Endpoint {
         name: Some(name.to_owned()),
