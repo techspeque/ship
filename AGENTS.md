@@ -378,7 +378,7 @@ No pasted prompt is needed. The CLI provides all context.
 
 ## Branch & Commit Rules
 
-- All work lands on the `dev` branch. Never commit to `main`.
+- All work lands on the `feature/phase-1-push` branch. Never commit to `main`.
 - Use `metis commit` for all commits — it enforces format and strips attribution.
 - Commit format: `{prefix}({slice_id}): {message}`
 - Allowed prefixes: feat, fix, refactor, docs, test, chore

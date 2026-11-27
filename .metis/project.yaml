@@ -2,7 +2,7 @@
 version: 1
 project:
   name: ship
-  integration_branch: dev
+  integration_branch: feature/phase-1-push
   release_branch: main
   overview: OVERVIEW.md
 agents:
