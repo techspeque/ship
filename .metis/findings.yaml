@@ -517,3 +517,12 @@ findings:
       status: open
       cycle: 1
       file: crates/ship/src/vars.rs
+    - id: f-045
+      date: "2026-11-27"
+      slice: phase-1-ws-1.10
+      severity: P2
+      category: behavior
+      finding: 'crates/ship-daemon/src/config.rs:668 — Prune enumerates only deployment.release_id, but prepare writes env files before the release is created/attached (deploy.rs:582-601; compose_import.rs:609-642). If a later service has an unreadable secret, or a subsequent preparation step fails, already-written secret env files have no deployment reference and are never pruned. Reproduced prepare with two services and a missing secret for the second: env/aaa.env remains after prune with an empty keep set. Track and clean the attempted release directory on pre-recording failures; add a partial-prepare failure regression.'
+      status: open
+      cycle: 1
+      file: crates/ship-daemon/src/config.rs
