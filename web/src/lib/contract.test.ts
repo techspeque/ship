@@ -5,7 +5,14 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { DOCKER_STATUSES, isApiError, isHostInfo, isProjectList } from './api';
+import {
+  DOCKER_STATUSES,
+  SERVICE_STATUSES,
+  isApiError,
+  isHostInfo,
+  isProjectList,
+  isServiceStatus,
+} from './api';
 
 const fixtures = import.meta.glob<unknown>('./contract/*.json', {
   eager: true,
@@ -56,6 +63,16 @@ describe('fixtures from the Rust types', () => {
 
   it('the TS DockerStatus list equals the Rust one, in order', () => {
     expect([...DOCKER_STATUSES]).toEqual(fixture('docker-statuses'));
+  });
+
+  it('the TS ServiceStatus list equals the Rust one, in order', () => {
+    expect([...SERVICE_STATUSES]).toEqual(fixture('service-statuses'));
+  });
+
+  it('isServiceStatus accepts every Rust service status, paused included', () => {
+    const statuses = fixture('service-statuses') as unknown[];
+    expect(statuses).toContain('paused');
+    for (const s of statuses) expect(isServiceStatus(s), String(s)).toBe(true);
   });
 
   it('there is a host fixture for every Docker status', () => {
@@ -111,5 +128,11 @@ describe('guards reject other shapes', () => {
     const h = copy('host-ready');
     at(h, 'docker')['status'] = 'stopped';
     expect(isHostInfo(h)).toBe(false);
+  });
+
+  it('rejects an unknown service status', () => {
+    for (const v of ['suspended', 'Paused', 'ready', '', null, 7, ['paused']]) {
+      expect(isServiceStatus(v), JSON.stringify(v)).toBe(false);
+    }
   });
 });

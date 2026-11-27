@@ -1,7 +1,8 @@
 //! The Rust half of the UI's type drift guard.
 //!
 //! Struct-literal samples of every type the UI reads, covering every field
-//! and every [`DockerStatus`], are serialised and compared byte for byte
+//! and every [`DockerStatus`], and the list of [`ServiceStatus`] values, are
+//! serialised and compared byte for byte
 //! with the fixtures in `web/src/lib/contract/`. `web/src/lib/contract.test.ts`
 //! runs the UI's runtime guards over the same files. So a changed Rust type
 //! fails here until the fixtures are regenerated, and the regenerated
@@ -17,7 +18,7 @@ use std::path::{Path, PathBuf};
 
 use ship_core::{
     ApiError, DockerInfo, DockerStatus, ErrorCode, HostCapacity, HostInfo, ProjectList,
-    ProjectSummary, Slug, SupportedVersions, Timestamp,
+    ProjectSummary, ServiceStatus, Slug, SupportedVersions, Timestamp,
 };
 
 fn contract_dir() -> PathBuf {
@@ -123,6 +124,15 @@ fn samples() -> Vec<(String, String)> {
         "docker-statuses".to_owned(),
         pretty(
             &DockerStatus::ALL
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>(),
+        ),
+    ));
+    out.push((
+        "service-statuses".to_owned(),
+        pretty(
+            &ServiceStatus::ALL
                 .iter()
                 .map(|s| s.as_str())
                 .collect::<Vec<_>>(),

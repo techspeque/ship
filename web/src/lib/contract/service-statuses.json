@@ -1,0 +1,10 @@
+[
+  "healthy",
+  "running_unverified",
+  "starting",
+  "unhealthy",
+  "failed",
+  "stopped",
+  "paused",
+  "unknown"
+]

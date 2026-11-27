@@ -83,7 +83,7 @@ pub use api::{
     ProjectList, ProjectSummary, SHIP_VERSION_HEADER, SupportedVersions, api_version_number,
 };
 pub use compose::compose_project_name;
-pub use error::{ApiError, ErrorCode};
+pub use error::{ApiError, ErrorCode, ReceivedCode, ReceivedError};
 pub use id::{
     DeploymentId, EnvironmentId, IdError, OperationId, ProjectId, ReleaseId, RevisionId, ServiceId,
 };
@@ -91,7 +91,7 @@ pub use model::{RecoveryPolicy, ServiceKind};
 pub use secret::SecretValue;
 pub use slug::{Slug, SlugError};
 pub use state::{
-    ContainerState, DesiredState, HealthCheck, Observation, OperationPhase, OperationStatus,
-    ServiceStatus, TransitionError,
+    ContainerState, DesiredState, FailureDetail, FailureReason, HealthCheck, Observation,
+    OperationPhase, OperationStatus, ServiceStatus, TransitionError,
 };
 pub use time::{Timestamp, TimestampError};

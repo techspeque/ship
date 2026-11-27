@@ -17,6 +17,19 @@ export const PROJECTS_PATH = '/api/v1/projects';
 export const DOCKER_STATUSES = ['ready', 'unreachable', 'unsupported_version'] as const;
 export type DockerStatus = (typeof DOCKER_STATUSES)[number];
 
+/** `ship_core::ServiceStatus` (ADR-0006 rule 2), in declaration order. */
+export const SERVICE_STATUSES = [
+  'healthy',
+  'running_unverified',
+  'starting',
+  'unhealthy',
+  'failed',
+  'stopped',
+  'paused',
+  'unknown',
+] as const;
+export type ServiceStatus = (typeof SERVICE_STATUSES)[number];
+
 export interface SupportedVersions {
   engine: string;
   compose: string;
@@ -85,6 +98,11 @@ function exact(v: unknown, shape: Record<string, Check>): v is Record<string, un
 
 export function isDockerStatus(v: unknown): v is DockerStatus {
   return typeof v === 'string' && (DOCKER_STATUSES as readonly string[]).includes(v);
+}
+
+/** A status the UI cannot name is rejected, never shown as another. */
+export function isServiceStatus(v: unknown): v is ServiceStatus {
+  return typeof v === 'string' && (SERVICE_STATUSES as readonly string[]).includes(v);
 }
 
 const isSupported: Check = (v) => exact(v, { engine: isString, compose: isString });

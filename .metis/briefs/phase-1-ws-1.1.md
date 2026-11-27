@@ -122,4 +122,21 @@ None.
 
 ## Report
 
-Filled at implementation.
+- `ship-core/src/state.rs`: `ServiceStatus::Paused` (ADR order, before
+  `unknown`); `from_observation(observation, desired)`; exited under
+  `stopped`/`removed` → `stopped`; `Observation::Reachable.oom_killed`;
+  `FailureReason`, `FailureDetail` (Some iff `failed`, Display names OOM).
+- `ship-core/src/error.rs`: fifteen codes appended with HTTP statuses per the
+  table; `ReceivedCode`, `ReceivedError` (same wire shape, unknown code kept
+  raw). `lib.rs` re-exports.
+- `ship/src/client.rs`: error bodies decoded as `ReceivedError`
+  (`decode_error`); `check_version` refuses any 426 and any
+  `unsupported_api_version` body on any status.
+- Web: `service-statuses.json` (written by hand to the exact
+  `to_string_pretty` form; the env-prefixed regeneration command was not
+  permitted in this session, and `fixtures_match_the_rust_types` passing
+  confirms the bytes), `SERVICE_STATUSES` / `isServiceStatus` in `api.ts`,
+  three tests in `contract.test.ts`.
+- `crates/ship/src/commands.rs` was declared but needed no change.
+- `metis verify --post --slice phase-1-ws-1.1`: ALL GREEN (all new Rust and
+  vitest tests listed in the test plan ran and passed).

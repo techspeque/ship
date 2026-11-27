@@ -4,7 +4,7 @@
 use std::fmt;
 use std::time::Duration;
 
-use ship_core::{API_VERSION, ApiError, ErrorCode, api_version_number};
+use ship_core::{API_VERSION, ErrorCode, ReceivedError, api_version_number};
 use ship_net::client::{self, Response, TransportError};
 use ship_net::{ConnectError, Target};
 
@@ -37,8 +37,9 @@ pub enum ClientError {
     },
     /// Client and daemon speak different API versions.
     Incompatible(String),
-    /// The daemon answered with an error.
-    Api(Box<ApiError>),
+    /// The daemon answered with an error, possibly with a code this build
+    /// does not know; its message is kept either way.
+    Api(Box<ReceivedError>),
     /// The daemon's answer could not be understood.
     BadResponse(String),
 }
@@ -85,19 +86,29 @@ pub async fn get_json<T: serde::de::DeserializeOwned>(
         })?;
     check_version(&response)?;
     if !(200..300).contains(&response.status) {
-        return Err(match serde_json::from_slice::<ApiError>(&response.body) {
-            Ok(e) => ClientError::Api(Box::new(e)),
-            Err(_) => ClientError::BadResponse(format!("HTTP {}", response.status)),
-        });
+        return Err(decode_error(&response));
     }
     serde_json::from_slice(&response.body).map_err(|e| ClientError::BadResponse(e.to_string()))
 }
 
+/// The error for a non-2xx answer: the daemon's error body, whatever its
+/// code, or the bare status when the body is not one.
+fn decode_error(response: &Response) -> ClientError {
+    match serde_json::from_slice::<ReceivedError>(&response.body) {
+        Ok(e) => ClientError::Api(Box::new(e)),
+        Err(_) => ClientError::BadResponse(format!("HTTP {}", response.status)),
+    }
+}
+
 /// Fails unless the daemon speaks this client's API version.
+///
+/// A 426 is a refusal whatever its body says, and so is an error body whose
+/// code is `unsupported_api_version` on any status: a body this build
+/// cannot fully read is never taken as agreement.
 fn check_version(response: &Response) -> Result<(), ClientError> {
     let refused = response.status == 426
-        && serde_json::from_slice::<ApiError>(&response.body)
-            .is_ok_and(|e| e.code == ErrorCode::UnsupportedApiVersion);
+        || serde_json::from_slice::<ReceivedError>(&response.body)
+            .is_ok_and(|e| e.code.known() == Some(ErrorCode::UnsupportedApiVersion));
     let daemon = response.api_version.as_deref();
     if !refused && daemon == Some(API_VERSION) {
         return Ok(());
@@ -201,5 +212,50 @@ mod tests {
             r#"{"code":"unsupported_api_version","message":"x","details":{},"operation_id":null}"#;
         let e = check_version(&response(426, Some(API_VERSION), body)).unwrap_err();
         assert!(matches!(e, ClientError::Incompatible(_)), "{e:?}");
+    }
+
+    #[test]
+    fn refusal_426_with_an_unknown_or_unreadable_body_fails() {
+        let unknown =
+            r#"{"code":"api_version_retired","message":"x","details":{},"operation_id":null}"#;
+        for body in [unknown, "{}", "not json", ""] {
+            let e = check_version(&response(426, Some(API_VERSION), body)).unwrap_err();
+            assert!(matches!(e, ClientError::Incompatible(_)), "{body}: {e:?}");
+        }
+    }
+
+    #[test]
+    fn unsupported_api_version_code_fails_on_any_status() {
+        let body =
+            r#"{"code":"unsupported_api_version","message":"x","details":{},"operation_id":null}"#;
+        for status in [200, 400, 409, 500] {
+            let e = check_version(&response(status, Some(API_VERSION), body)).unwrap_err();
+            assert!(matches!(e, ClientError::Incompatible(_)), "{status}: {e:?}");
+        }
+    }
+
+    #[test]
+    fn unknown_code_is_decoded_with_the_daemons_message() {
+        let body = r#"{"code":"quota_exceeded","message":"the project is over its quota","details":{"limit":3},"operation_id":null}"#;
+        let r = response(409, Some(API_VERSION), body);
+        assert!(check_version(&r).is_ok());
+        let e = decode_error(&r);
+        let ClientError::Api(api) = &e else {
+            panic!("{e:?}");
+        };
+        assert_eq!(api.code.as_str(), "quota_exceeded");
+        assert_eq!(api.code.known(), None);
+        assert_eq!(api.details, serde_json::json!({ "limit": 3 }));
+        assert_eq!(
+            e.to_string(),
+            "the daemon refused: the project is over its quota (quota_exceeded)"
+        );
+    }
+
+    #[test]
+    fn non_error_body_is_a_bad_response() {
+        let e = decode_error(&response(500, Some(API_VERSION), "oops"));
+        assert!(matches!(e, ClientError::BadResponse(_)), "{e:?}");
+        assert_eq!(e.to_string(), "unexpected answer from the daemon: HTTP 500");
     }
 }
