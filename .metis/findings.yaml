@@ -217,6 +217,9 @@ findings:
       severity: P2
       category: testing
       finding: .metis/briefs/phase-0-gate.md:170-177 — Scenario 3 requires the live UI to change to unreachable when Docker stops, but the report explicitly records no live UI observation and substitutes a locally served bundle with a stub response; this demonstrates rendering, not the composed daemon/transport/polling transition — Provide an observation of the release UI reached through ship open transitioning from ready to unreachable during a real Docker stop, with contemporaneous ship host output and evidence the daemon remains running.
-      status: open
+      status: resolved
+      resolved_by: commit 309024925958; .metis/briefs/phase-0-gate.md:162; live observer samples 13:29:56-13:37:36Z, 77 lines, gitignored .local/gate-f019/samples.log
       cycle: 1
       file: metis/briefs/phase-0-gate.md
+      commit: 3090249259585ef57c0262e166f017b49ae065e4
+      evidence: .metis/briefs/phase-0-gate.md:162
