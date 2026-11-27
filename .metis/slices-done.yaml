@@ -309,3 +309,17 @@ slices:
       reviewed: true
       review_cycles: 1
       created: ""
+    - id: phase-1-ws-1.5
+      title: Upload and safe unpack
+      type: feat
+      priority: p2
+      risk: high
+      stage: push
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-1-plan.md
+      plan_section: §1.5
+      coded: true
+      reviewed: true
+      review_cycles: 1
+      created: ""
