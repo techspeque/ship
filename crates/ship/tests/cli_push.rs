@@ -498,6 +498,41 @@ fn no_daemon_exits_90() {
     assert_eq!(result["failure"]["code"], "daemon_unreachable");
 }
 
+/// A tree that cannot be packed (no temporary directory) exits 1 and, with
+/// `-o json`, still ends with exactly one result line, its ids null.
+#[test]
+fn a_tree_that_cannot_be_packed_exits_1_with_one_result_line() {
+    let h = Harness::new();
+    let root = h.tree("app", DOCKERFILE);
+    let out = h
+        .ship()
+        .args(["push", root.to_str().unwrap(), "-o", "json"])
+        .env("TMPDIR", h.path().join("no-such-tmp"))
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 1, "{}", show(&out));
+    let lines = json_lines(&out);
+    assert_eq!(lines.len(), 1, "{}", show(&out));
+    let result = &lines[0];
+    assert_eq!(result["type"], "result");
+    assert_eq!(result["status"], "failed");
+    assert_eq!(result["failure"]["code"], "failed");
+    assert_eq!(result["failure"]["phase"], Value::Null);
+    assert!(
+        result["failure"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("packing"),
+        "{result}"
+    );
+    for id in ["operation_id", "revision_id", "release_id", "deployment_id"] {
+        assert_eq!(result[id], Value::Null, "{id}: {result}");
+    }
+    assert_eq!(result["project"]["id"], Value::Null);
+    assert_eq!(result["project"]["slug"], "app");
+    assert_eq!(result["environment"]["id"], Value::Null);
+}
+
 /// A fake daemon on `socket` answering every request, once its body has
 /// been read, with `status`, the API version `api` and `body`.
 fn fake_daemon(socket: &Path, status: u16, api: &'static str, body: &'static str) {

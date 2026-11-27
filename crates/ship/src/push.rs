@@ -132,7 +132,8 @@ pub fn push(args: PushArgs) -> ExitCode {
     }
     let selection = match scan(&root, &Options::default()) {
         Ok(s) => s,
-        Err(e) => return failed(e, exit::FAILED),
+        Err(e) if args.dry_run => return failed(e, exit::FAILED),
+        Err(e) => return local_failure(args.output, &slug, e),
     };
     if args.dry_run {
         print!("{}", render_dry_run(&selection, args.output));
@@ -144,7 +145,13 @@ pub fn push(args: PushArgs) -> ExitCode {
     };
     let (file, packed) = match pack_to_temp(&selection) {
         Ok(p) => p,
-        Err(e) => return failed(format!("packing {}: {e}", root.display()), exit::FAILED),
+        Err(e) => {
+            return local_failure(
+                args.output,
+                &slug,
+                format!("packing {}: {e}", root.display()),
+            );
+        }
     };
     if args.output == Output::Text {
         println!(
@@ -172,6 +179,25 @@ pub fn push(args: PushArgs) -> ExitCode {
     // Drop the runtime now so an ssh child is reaped before exiting.
     drop(rt);
     ExitCode::from(code)
+}
+
+/// The tree could not be scanned or packed: exit 1, with `-o json` as the
+/// one result line, every id unknown.
+fn local_failure(output: Output, slug: &Slug, message: impl std::fmt::Display) -> ExitCode {
+    match output {
+        Output::Text => failed(message, exit::FAILED),
+        Output::Json => {
+            let line = failure_line(
+                slug,
+                None,
+                Known::default(),
+                exit::name(exit::FAILED),
+                &message.to_string(),
+            );
+            println!("{}", render_result_json(&line));
+            ExitCode::from(exit::FAILED)
+        }
+    }
 }
 
 /// `--dry-run`: the report as text, or as one JSON object.
@@ -504,28 +530,39 @@ impl Run<'_> {
         code: &str,
         message: &str,
     ) -> ResultLine {
-        ResultLine {
-            kind: "result",
-            operation_id: op,
-            status: "failed".to_owned(),
-            failure: Some(FailureLine {
-                code: code.to_owned(),
-                phase: None,
-                message: message.to_owned(),
-            }),
-            project: ProjectRef {
-                id: known.project_id,
-                slug: self.slug.clone(),
-            },
-            environment: EnvironmentRef {
-                id: known.environment_id,
-                name: DEVELOPMENT,
-            },
-            revision_id: known.revision_id,
-            release_id: None,
-            deployment_id: None,
-            services: Vec::new(),
-        }
+        failure_line(self.slug, op, known, code, message)
+    }
+}
+
+/// The result line of a failure of the client itself, with what it knows.
+fn failure_line(
+    slug: &Slug,
+    op: Option<OperationId>,
+    known: Known,
+    code: &str,
+    message: &str,
+) -> ResultLine {
+    ResultLine {
+        kind: "result",
+        operation_id: op,
+        status: "failed".to_owned(),
+        failure: Some(FailureLine {
+            code: code.to_owned(),
+            phase: None,
+            message: message.to_owned(),
+        }),
+        project: ProjectRef {
+            id: known.project_id,
+            slug: slug.clone(),
+        },
+        environment: EnvironmentRef {
+            id: known.environment_id,
+            name: DEVELOPMENT,
+        },
+        revision_id: known.revision_id,
+        release_id: None,
+        deployment_id: None,
+        services: Vec::new(),
     }
 }
 
