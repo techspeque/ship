@@ -9,7 +9,7 @@ slices:
       reviewer: codex/gpt-6-astra
       plan: .metis/plans/phase-0-plan.md
       plan_section: Phase Gate
-      coded: false
+      coded: true
       reviewed: false
       review_cycles: 0
       created: ""
