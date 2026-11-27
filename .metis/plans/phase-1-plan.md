@@ -33,9 +33,16 @@ Decisions made in this plan:
 - **Routes are published ports only.** The route table is created with the
   `port` provider; tailnet and Caddy providers are Phase 2.
 - **A published port binds the host's publish address** (Human, 2026-11-27).
-  `ship settings set publish.address ADDR` is held by the daemon, like
-  `compose.confirm`, and defaults to `127.0.0.1`: `--port` exposes nothing
-  beyond the host until the operator says where. It applies to the Compose
+  `publish.address` is a daemon setting, like `compose.confirm`, and
+  defaults to `auto`: the host's tailnet IPv4 address when Tailscale is
+  running there, asked from the local `tailscale` CLI or `tailscaled`
+  socket at deploy time, and `127.0.0.1` otherwise. A tailnet is private by
+  identity, so this exposes nothing publicly and needs no setup on a host
+  that is already on one. `ship settings set publish.address ADDR` fixes an
+  address instead (`127.0.0.1`, a host address, or `0.0.0.0`). Ship embeds
+  no tailnet client and manages no tailnet key for this (ADR-0003 rule 4).
+  The address resolved at deploy is recorded on the route, so a later
+  change of setting or of tailnet address moves nothing by itself. It applies to the Compose
   file Ship generates for a Dockerfile; an imported Compose file keeps the
   addresses it declares (ADR-0008 rule 5). The address `192.0.2.10` in the
   fixtures is a documentation example standing for the configured address.
@@ -254,7 +261,7 @@ Acceptance criteria:
 
 Tasks:
 - Detect a Dockerfile or a Compose file in a revision; `--file` overrides; with both present and no `--file`, Compose wins and the choice is stated
-- For a Dockerfile, generate a single-service Compose project outside the snapshot, named from the environment id, publishing `--port` when given, on the daemon's `publish.address` (default `127.0.0.1`), mapped by the `EXPOSE` rule in the decisions above; store and serve the `publish.address` setting (`ship settings get|set publish.address ADDR`), validated as an address of the host or `0.0.0.0`
+- For a Dockerfile, generate a single-service Compose project outside the snapshot, named from the environment id, publishing `--port` when given, on the daemon's `publish.address` (default `auto`: the tailnet address when the host has one, else `127.0.0.1`), mapped by the `EXPOSE` rule in the decisions above; store and serve the `publish.address` setting (`ship settings get|set publish.address ADDR`), validated as `auto`, an address of the host or `0.0.0.0`; resolve `auto` behind a small trait so tests fake a host with and without a tailnet; a `tailscale` that is installed but logged out, stopped or slow counts as no tailnet, with a bounded wait
 - Add the route read and write functions the store lacks, and reading built image ids to the Docker adapter; both crates are in this slice's scope
 - Run the deployment as an operation through its phases: build, prepare, deploy, verify (ADR-0011 rule 2)
 - Verify: a passing health check gives `healthy`; with none, a container still running after a settle period gives `running_unverified`
@@ -270,7 +277,7 @@ Suggested packages:
 
 Acceptance criteria:
 - [ ] A Dockerfile project is built, started and reachable on its published port against real Docker
-- [ ] With the default `publish.address` the port answers on 127.0.0.1 and on no other address of the host; after setting another address it answers there; the endpoint printed is the address bound
+- [ ] With the default `publish.address` on a host without a tailnet, the port answers on 127.0.0.1 and on no other address of the host; with a (faked) tailnet address it binds that address and no other; after setting a fixed address it answers there; the endpoint printed is the address bound and recorded on the route
 - [ ] `--port 8080` on a Dockerfile exposing 3000 serves the app on host port 8080; with two `EXPOSE` ports it fails naming both, and `--port 8080:3000` works
 - [ ] A failing build, a port conflict and a failing health check each end as `failed` with a typed code and the phase, and the previous release still serves
 - [ ] The generated Compose file is outside the snapshot and contains no secret value
@@ -501,6 +508,7 @@ Composition scenarios to validate:
 - [ ] Ship is installed from a release with `install.sh` on two of the maintainer's own machines, as two independent targets
 - [ ] A real Dockerfile project and a real multi-service Compose project are pushed from a laptop over ssh and serve on their published ports
 - [ ] A database with its data on a host path runs under Ship, and its data is intact after redeploy, stop, start, remove and a host reboot
+- [ ] After a host reboot, a service published on the tailnet address is serving again without a person; if Docker starts before the tailnet address exists and the bind fails, `ship status` says so, and what the host needs (unit ordering) is found here and written into `docs/service.md`
 - [ ] A GPU workload runs under Ship on the machine that has the GPU, after confirmation of its reservation
 - [ ] The workloads above run under Ship in place of the orchestrator that ran them before, for at least two days
 - [ ] A failed build and a failed health check each leave the previous release serving

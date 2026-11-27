@@ -272,7 +272,7 @@ ship start|stop|restart|redeploy|remove PROJECT[/SERVICE] [--env E]
 ship vars set|unset|list KEY[=VALUE] --project P [--env E]
 ship secrets set|unset|list NAME (--prompt | --stdin) --project P [--env E]
 ship settings get|set compose.confirm (ask | accept) [--project P]
-ship settings get|set publish.address ADDR   # where --port binds; default 127.0.0.1
+ship settings get|set publish.address (auto | ADDR)   # where --port binds; auto = tailnet address, else 127.0.0.1
 ship open PROJECT
 ship dial-stdio                       # internal: ssh transport endpoint
 ```
