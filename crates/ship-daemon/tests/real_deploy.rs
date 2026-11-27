@@ -286,6 +286,39 @@ async fn real_dockerfile_deployments_and_their_failures() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a real Docker Engine; run by CI's docker job"]
+async fn real_two_expose_ports_need_the_explicit_form() {
+    let d = daemon(None).await;
+    let port = free_port();
+    let at = loopback(port);
+    // The server still listens on 3000; the image also exposes 8080.
+    let two = format!("{SERVER}EXPOSE 8080\n");
+    let v1 = upload(&d, &two, "two").await;
+
+    // `--port N` cannot choose between them: refused naming both, before
+    // anything starts.
+    let op = deploy(&d, "e1", v1, Some(port.to_string())).await;
+    assert_failed(&op, "invalid_request", OperationPhase::Preparing);
+    let message = op.failure_message.clone().unwrap();
+    assert!(
+        message.contains("3000/tcp") && message.contains("8080/tcp"),
+        "{message}"
+    );
+    assert!(refused(at), "{at}");
+    let env = environment(&d).await;
+    assert_eq!(d.store().list_routes(env).await.unwrap(), []);
+
+    // `--port HOST:CONTAINER` picks one: served on host N from 3000.
+    let op = deploy(&d, "e2", v1, Some(format!("{port}:3000"))).await;
+    assert_eq!(op.phase, OperationPhase::Succeeded, "{op:?}");
+    assert_eq!(http_get(at, "/index.html").as_deref(), Some("two"));
+    let routes = d.store().list_routes(env).await.unwrap();
+    assert_eq!(routes.len(), 1);
+    assert_eq!(routes[0].address, at.to_string());
+    down(&d).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs a real Docker Engine on Linux; run by CI's docker job"]
 async fn real_tailnet_address_is_the_only_one_bound() {
     // 127.0.0.2 stands for the tailnet address: on Linux every 127/8
