@@ -22,13 +22,16 @@ use std::time::Duration;
 use tokio::sync::{oneshot, watch};
 
 use ship_core::api::{
-    DEPLOY_KIND, DeployRequest, HOST_PATH, IDEMPOTENCY_KEY_HEADER, LAST_EVENT_ID_HEADER,
-    OperationEventView, OperationFailureView, OperationView, PROJECTS_PATH, SETTINGS_KIND,
-    SetSettingRequest, UPLOAD_KIND, UploadView,
+    CONFIG_KIND, DEPLOY_KIND, DeployRequest, HOST_PATH, IDEMPOTENCY_KEY_HEADER,
+    LAST_EVENT_ID_HEADER, OperationEventView, OperationFailureView, OperationView, PROJECTS_PATH,
+    SETTINGS_KIND, SetSecretRequest, SetSettingRequest, SetVarRequest, UPLOAD_KIND, UnsetRequest,
+    UploadView,
 };
+use ship_core::config as config_rules;
 use ship_core::{
     API_VERSION, API_VERSION_HEADER, ApiError, EnvironmentId, ErrorCode, HostInfo, OperationId,
-    OperationPhase, ProjectList, ProjectSummary, ReceivedCode, SHIP_VERSION_HEADER, Slug,
+    OperationPhase, ProjectList, ProjectSummary, ReceivedCode, SHIP_VERSION_HEADER, SecretValue,
+    Slug,
 };
 use ship_docker::Runner;
 use ship_store::{
@@ -51,6 +54,14 @@ const OPERATION_DEPLOYMENT_ROUTE: &str = "/api/v1/operations/{id}/deployment";
 const SETTING_ROUTE: &str = "/api/v1/settings/{key}";
 /// `GET`: a project's setting in effect; `POST`: change the project's own.
 const PROJECT_SETTING_ROUTE: &str = "/api/v1/projects/{project}/settings/{key}";
+/// `GET`: a project's config values in one scope; `POST`: set one.
+const VARS_ROUTE: &str = "/api/v1/projects/{project}/vars";
+/// `POST`: unset a config value.
+const VARS_UNSET_ROUTE: &str = "/api/v1/projects/{project}/vars/unset";
+/// `GET`: a project's secrets in one scope, names only; `POST`: set one.
+const SECRETS_ROUTE: &str = "/api/v1/projects/{project}/secrets";
+/// `POST`: unset a secret.
+const SECRETS_UNSET_ROUTE: &str = "/api/v1/projects/{project}/secrets/unset";
 /// `GET`: [`OperationView`].
 const OPERATION_ROUTE: &str = "/api/v1/operations/{id}";
 /// `GET`: SSE stream of [`OperationEventView`].
@@ -127,6 +138,10 @@ pub fn router_with(
             PROJECT_SETTING_ROUTE,
             get(project_setting).post(set_project_setting),
         )
+        .route(VARS_ROUTE, get(list_vars).post(set_var))
+        .route(VARS_UNSET_ROUTE, post(unset_var))
+        .route(SECRETS_ROUTE, get(list_secrets).post(set_secret))
+        .route(SECRETS_UNSET_ROUTE, post(unset_secret))
         .route(OPERATION_ROUTE, get(operation))
         .route(OPERATION_EVENTS_ROUTE, get(operation_events))
         .route(OPERATION_DEPLOYMENT_ROUTE, get(operation_deployment))
@@ -366,6 +381,201 @@ async fn set_project_setting(
         crate::settings::apply(&ctx, &store, scope, &key, value).await
     };
     accept(&state.queue, &headers, SETTINGS_KIND, None, run).await
+}
+
+// ---- config values and secrets ----
+
+/// The scope a list's query names, or the error response.
+async fn list_scope(
+    state: &AppState,
+    project: &str,
+    uri: &Uri,
+) -> Result<crate::config::Scope, Response> {
+    let (env, service) = crate::config::parse_query(uri.query()).map_err(error_response)?;
+    crate::config::find_scope(&state.store, project, env.as_deref(), service.as_deref())
+        .await
+        .map_err(error_response)
+}
+
+async fn list_vars(
+    State(state): State<AppState>,
+    Path(project): Path<String>,
+    uri: Uri,
+) -> Response {
+    let scope = match list_scope(&state, &project, &uri).await {
+        Ok(scope) => scope,
+        Err(r) => return r,
+    };
+    match crate::config::var_list(&state.store, state.deployer.state_dir(), &scope).await {
+        Ok(list) => Json(list).into_response(),
+        Err(e) => error_response(e),
+    }
+}
+
+async fn list_secrets(
+    State(state): State<AppState>,
+    Path(project): Path<String>,
+    uri: Uri,
+) -> Response {
+    let scope = match list_scope(&state, &project, &uri).await {
+        Ok(scope) => scope,
+        Err(r) => return r,
+    };
+    match crate::config::secret_list(&state.store, state.deployer.state_dir(), &scope).await {
+        Ok(list) => Json(list).into_response(),
+        Err(e) => error_response(e),
+    }
+}
+
+/// Submits `change` to the scope named as a `config` operation on the
+/// project's `development` environment, answered `202`; an unknown
+/// project, environment or service is `404`, before any operation.
+async fn submit_change(
+    state: &AppState,
+    headers: &HeaderMap,
+    project: &str,
+    env: Option<&str>,
+    service: Option<&str>,
+    change: crate::config::Change,
+) -> Response {
+    let scope = match crate::config::find_scope(&state.store, project, env, service).await {
+        Ok(scope) => scope,
+        Err(e) => return error_response(e),
+    };
+    let store = state.store.clone();
+    let secrets = crate::secrets::SecretStore::new(state.deployer.state_dir());
+    let lock = scope.lock.id;
+    let run = move |ctx: Context| async move {
+        crate::config::apply(&ctx, &store, &secrets, &scope, change).await
+    };
+    accept(&state.queue, headers, CONFIG_KIND, Some(lock), run).await
+}
+
+/// Sets a config value: the name and value are checked (`400`) before
+/// any operation.
+async fn set_var(
+    State(state): State<AppState>,
+    Path(project): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let request: SetVarRequest = match json_body(&body) {
+        Ok(request) => request,
+        Err(e) => return error_response(e),
+    };
+    if let Err(e) = config_rules::check_name(&request.name) {
+        return error_response(crate::config::rule_error("name", e));
+    }
+    if let Err(e) = config_rules::check_value(&request.value) {
+        return error_response(crate::config::rule_error("value", e));
+    }
+    let change = crate::config::Change::SetVar {
+        name: request.name,
+        value: request.value,
+    };
+    submit_change(
+        &state,
+        &headers,
+        &project,
+        request.env.as_deref(),
+        request.service.as_deref(),
+        change,
+    )
+    .await
+}
+
+/// Sets a secret. A body that does not parse is refused with a fixed
+/// message, which quotes nothing of it; the name and value are checked
+/// before any operation, and the value is registered with the redactor as
+/// soon as it is known to be one, before anything could log it.
+async fn set_secret(
+    State(state): State<AppState>,
+    Path(project): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let request: SetSecretRequest = match serde_json::from_slice(&body) {
+        Ok(request) => request,
+        Err(_) => {
+            return error_response(ApiError::new(
+                ErrorCode::InvalidRequest,
+                "the request body is not a secret: a JSON object with the strings name and \
+                 value, and optionally env and service",
+            ));
+        }
+    };
+    if let Err(e) = config_rules::check_name(&request.name) {
+        return error_response(crate::config::rule_error("name", e));
+    }
+    if let Err(e) = config_rules::check_secret_value(&request.value) {
+        return error_response(crate::config::rule_error("value", e));
+    }
+    let SetSecretRequest {
+        env,
+        service,
+        name,
+        value,
+    } = request;
+    let value = SecretValue::new(value);
+    state.queue.redactor().register(&value);
+    let change = crate::config::Change::SetSecret { name, value };
+    submit_change(
+        &state,
+        &headers,
+        &project,
+        env.as_deref(),
+        service.as_deref(),
+        change,
+    )
+    .await
+}
+
+async fn unset(
+    state: &AppState,
+    project: &str,
+    headers: &HeaderMap,
+    body: &Bytes,
+    secret: bool,
+) -> Response {
+    let request: UnsetRequest = match json_body(body) {
+        Ok(request) => request,
+        Err(e) => return error_response(e),
+    };
+    if let Err(e) = config_rules::check_name(&request.name) {
+        return error_response(crate::config::rule_error("name", e));
+    }
+    let change = if secret {
+        crate::config::Change::UnsetSecret { name: request.name }
+    } else {
+        crate::config::Change::UnsetVar { name: request.name }
+    };
+    submit_change(
+        state,
+        headers,
+        project,
+        request.env.as_deref(),
+        request.service.as_deref(),
+        change,
+    )
+    .await
+}
+
+async fn unset_var(
+    State(state): State<AppState>,
+    Path(project): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    unset(&state, &project, &headers, &body, false).await
+}
+
+async fn unset_secret(
+    State(state): State<AppState>,
+    Path(project): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    unset(&state, &project, &headers, &body, true).await
 }
 
 /// The response for an [`ApiError`]: its code's status and the error as JSON.

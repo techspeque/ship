@@ -283,12 +283,24 @@ async fn change(
     value: &str,
     timeout: Duration,
 ) -> Result<OperationView, String> {
-    let deadline = Instant::now() + timeout;
     let body = serde_json::to_vec(&SetSettingRequest {
         value: value.to_owned(),
     })
     .expect("a request always serialises");
-    let idempotency_key = new_key();
+    submit(endpoint, path, body, "settings", timeout).await
+}
+
+/// `POST`s `body` to `path` under a new idempotency key starting with
+/// `kind`, and follows the operation it answers to its end.
+pub(crate) async fn submit(
+    endpoint: &Endpoint,
+    path: &str,
+    body: Vec<u8>,
+    kind: &str,
+    timeout: Duration,
+) -> Result<OperationView, String> {
+    let deadline = Instant::now() + timeout;
+    let idempotency_key = new_key(kind);
     let headers = [(IDEMPOTENCY_KEY_HEADER, idempotency_key.as_str())];
     let mut op: OperationView = client::post_json(endpoint, path, &headers, body, timeout)
         .await
@@ -313,12 +325,12 @@ async fn change(
 }
 
 /// A key no other request of this client uses: process id and the time.
-fn new_key() -> String {
+fn new_key(kind: &str) -> String {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    format!("settings-{}-{nanos}", std::process::id())
+    format!("{kind}-{}-{nanos}", std::process::id())
 }
 
 #[cfg(test)]
@@ -349,7 +361,7 @@ mod tests {
         );
         let json: serde_json::Value = serde_json::from_str(&render(&set, Output::Json)).unwrap();
         assert_eq!(json["value"], "127.0.0.1");
-        assert_ne!(new_key(), "");
+        assert!(new_key("settings").starts_with("settings-"));
         let confirm = SettingView {
             key: COMPOSE_CONFIRM_KEY.to_owned(),
             value: "accept".to_owned(),

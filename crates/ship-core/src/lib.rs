@@ -70,6 +70,7 @@ macro_rules! string_enum {
 
 pub mod api;
 pub mod compose;
+pub mod config;
 pub mod deploy;
 pub mod error;
 pub mod id;
@@ -85,6 +86,7 @@ pub use api::{
     ProjectList, ProjectSummary, SHIP_VERSION_HEADER, SupportedVersions, api_version_number,
 };
 pub use compose::compose_project_name;
+pub use config::ConfigScope;
 pub use error::{ApiError, ErrorCode, ReceivedCode, ReceivedError};
 pub use id::{
     DeploymentId, EnvironmentId, IdError, OperationId, ProjectId, ReleaseId, RevisionId, RouteId,

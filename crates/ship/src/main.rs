@@ -2,7 +2,8 @@
 //!
 //! Phase 0: `--version` / `-V`, `ship daemon`, `ship target`, `ship host`,
 //! `ship projects`, `ship open`, `ship dial-stdio` and `ship service`.
-//! Phase 1: `ship push` and `ship settings`. Exit codes: 0 success, 1
+//! Phase 1: `ship push`, `ship settings`, `ship vars` and `ship secrets`.
+//! Exit codes: 0 success, 1
 //! failure, 2 usage error; `ship push` has the contract's codes
 //! ([`exit`]).
 
@@ -15,6 +16,7 @@ mod open;
 mod push;
 mod service;
 mod settings;
+mod vars;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -63,6 +65,12 @@ enum Command {
     /// Show or change the current target's daemon settings.
     #[command(subcommand)]
     Settings(settings::SettingsCommand),
+    /// Set, unset or list a project's config values (not secret).
+    #[command(subcommand)]
+    Vars(vars::VarsCommand),
+    /// Set, unset or list a project's secrets (write-only).
+    #[command(subcommand)]
+    Secrets(vars::SecretsCommand),
     /// Open the current target's UI in a browser; over ssh, forward it
     /// until Ctrl-C.
     Open(open::OpenArgs),
@@ -202,6 +210,8 @@ fn main() -> ExitCode {
         Some(Command::Projects(args)) => commands::projects(args),
         Some(Command::Push(args)) => push::push(args),
         Some(Command::Settings(command)) => settings::settings(command),
+        Some(Command::Vars(command)) => vars::vars(command),
+        Some(Command::Secrets(command)) => vars::secrets(command),
         Some(Command::Open(args)) => open::open(args),
         Some(Command::DialStdio(args)) => commands::dial_stdio(args),
         Some(Command::Service(command)) => service(command),

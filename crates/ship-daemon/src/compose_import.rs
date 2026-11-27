@@ -22,7 +22,8 @@
 //!   service the file names no image for) and `files.json` (the snapshot's
 //!   Compose file, then the override); `building` the services that build;
 //!   `preparing` (built images read, the declared host ports probed, the
-//!   release recorded); `deploying` (`up --remove-orphans`); `verifying`
+//!   services' config values and secrets written to env files named by a
+//!   last override, [`crate::config::prepare`], the release recorded); `deploying` (`up --remove-orphans`); `verifying`
 //!   every service; then the routes of the declared published ports.
 //!
 //! Ship changes no port, volume, network or privilege the file declares
@@ -435,8 +436,12 @@ fn ship_override(
 
 /// `sha256:<hex>` of the release's effective non-secret configuration
 /// (ADR-0007 rule 3): the file's fingerprint, its services and what Ship
-/// added.
-fn release_fingerprint(checked: &Checked, tagged: &BTreeMap<String, String>) -> String {
+/// added, with the services' non-secret config.
+fn release_fingerprint(
+    checked: &Checked,
+    tagged: &BTreeMap<String, String>,
+    config: &Value,
+) -> String {
     let read_only: Vec<Value> = checked
         .evaluation
         .snapshot_binds
@@ -450,6 +455,7 @@ fn release_fingerprint(checked: &Checked, tagged: &BTreeMap<String, String>) -> 
         "services": checked.services,
         "read_only": read_only,
         "tagged": tagged.keys().collect::<Vec<_>>(),
+        "config": config,
     });
     format!("sha256:{}", sha256_hex(canonical.to_string().as_bytes()))
 }
@@ -598,13 +604,36 @@ pub(crate) async fn steps(
         ))
         .await?;
     }
+    // Config values and secrets: their own env files and override, added
+    // last, after the build and the trust profile read the file.
+    let config = crate::config::prepare(ctx, d, env, &rows, &dir).await?;
+    for (name, names) in &config.names {
+        let Some(declared) = model["services"][name.as_str()]["environment"].as_object() else {
+            continue;
+        };
+        let shadowed: Vec<&str> = names
+            .iter()
+            .filter(|n| declared.contains_key(n.as_str()))
+            .map(String::as_str)
+            .collect();
+        if !shadowed.is_empty() {
+            ctx.log(&format!(
+                "{name}: the Compose file also sets {}; an entry under the service's own \
+                 environment: takes precedence over Ship's value (Compose's rule)",
+                shadowed.join(", ")
+            ))
+            .await?;
+        }
+    }
+    let files = config.files(files)?;
+    write_manifest(&dir, &files)?;
     let release = store
         .create_release_as(
             release_id,
             job.revision.id,
             &NewRelease {
                 images: &images,
-                config_fingerprint: &release_fingerprint(&checked, &tags),
+                config_fingerprint: &release_fingerprint(&checked, &tags, &config.fingerprint),
             },
         )
         .await?;

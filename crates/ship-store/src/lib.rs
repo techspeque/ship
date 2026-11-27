@@ -6,6 +6,7 @@
 
 mod audit;
 mod clock;
+mod config;
 mod error;
 mod history;
 mod migrate;
@@ -22,6 +23,7 @@ use sqlx::sqlite::{
 use sqlx::{ConnectOptions, Connection};
 
 pub use audit::{AuditEvent, NewAuditEvent};
+pub use config::{ConfigTarget, ConfigValue, SecretRecord};
 pub use error::StoreError;
 pub use history::{Deployment, NewDeployment, NewRelease, NewRevision, Release, Revision};
 pub use migrate::{LATEST_VERSION, OpenReport};

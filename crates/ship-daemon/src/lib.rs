@@ -6,10 +6,12 @@
 //! [`start`] binds the unix socket and the 127.0.0.1 listener (ADR-0003),
 //! opens the store, marks operations a previous daemon left unfinished as
 //! `interrupted` ([`queue::recover`]), removes the staging directories of
-//! uploads it left half-written ([`upload::clean_staging`]), starts the
-//! operation [`queue`] and
-//! serves the router in [`http`] (uploads, [`deploy`]ments, [`push`]es and
-//! [`settings`] among its routes), with the embedded UI ([`ui`]) as its
+//! uploads it left half-written ([`upload::clean_staging`]), registers
+//! every stored secret with the redactor ([`secrets::register_all`]),
+//! starts the operation [`queue`] and
+//! serves the router in [`http`] (uploads, [`deploy`]ments, [`push`]es,
+//! [`settings`] and [`config`] values and secrets among its routes), with
+//! the embedded UI ([`ui`]) as its
 //! fallback; [`Running::shutdown`] stops it; [`run`] does both around
 //! SIGTERM/SIGINT.
 //! `ship daemon` is supported on Linux only (ADR-0002 rule 2); that check
@@ -17,12 +19,14 @@
 //! unix.
 
 pub mod compose_import;
+pub mod config;
 pub mod deploy;
 pub mod host;
 pub mod http;
 pub mod log;
 pub mod push;
 pub mod queue;
+pub mod secrets;
 pub mod settings;
 pub mod ui;
 pub mod upload;
@@ -188,6 +192,18 @@ pub async fn start(config: &Config) -> Result<Running, DaemonError> {
     };
     if interrupted > 0 {
         tracing::warn!(interrupted, "operations left unfinished were interrupted");
+    }
+    // Before anything runs or is served: every stored secret's value is
+    // redacted from the first log line on (ADR-0009 rule 7).
+    if let Err(e) = secrets::register_all(
+        &store,
+        &secrets::SecretStore::new(&config.state_dir),
+        &config.redactor,
+    )
+    .await
+    {
+        store.close().await;
+        return Err(DaemonError::Store(e));
     }
     // Uploads a dead daemon left half-written: their operations were just
     // interrupted, and nothing of them may remain (ADR-0005 rule 7).

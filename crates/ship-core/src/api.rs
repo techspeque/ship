@@ -321,6 +321,137 @@ pub struct SetSettingRequest {
     pub value: String,
 }
 
+// ---- config values and secrets (ADR-0009) ----
+
+/// The operation kind of a change to a config value or a secret.
+pub const CONFIG_KIND: &str = "config";
+
+/// `GET` (with [`config_query`]): a [`VarList`]; `POST` with a
+/// [`SetVarRequest`] and an idempotency key: set one, as a `config`
+/// operation answered `202`.
+pub fn vars_path(project: &Slug) -> String {
+    format!("{PROJECTS_PATH}/{}/vars", project.as_str())
+}
+
+/// `POST` with an [`UnsetRequest`]: remove a config value.
+pub fn vars_unset_path(project: &Slug) -> String {
+    format!("{PROJECTS_PATH}/{}/vars/unset", project.as_str())
+}
+
+/// `GET` (with [`config_query`]): a [`SecretList`], names and timestamps
+/// only; `POST` with a [`SetSecretRequest`]: set one.
+pub fn secrets_path(project: &Slug) -> String {
+    format!("{PROJECTS_PATH}/{}/secrets", project.as_str())
+}
+
+/// `POST` with an [`UnsetRequest`]: remove a secret.
+pub fn secrets_unset_path(project: &Slug) -> String {
+    format!("{PROJECTS_PATH}/{}/secrets/unset", project.as_str())
+}
+
+/// The query selecting a scope for a list: none for the project,
+/// `?env=E` for an environment, `?env=E&service=S` for a service (`env`
+/// defaults to `development` when only `service` is given).
+pub fn config_query(env: Option<&str>, service: Option<&str>) -> String {
+    let mut parts = Vec::new();
+    if let Some(e) = env {
+        parts.push(format!("env={}", percent_encode(e)));
+    }
+    if let Some(s) = service {
+        parts.push(format!("service={}", percent_encode(s)));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("?{}", parts.join("&"))
+    }
+}
+
+/// Sets a config value. With no `env` and no `service` it is the
+/// project's; with `env`, that environment's; with `service`, that service's
+/// (in `env`, by default `development`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetVarRequest {
+    #[serde(default)]
+    pub env: Option<String>,
+    #[serde(default)]
+    pub service: Option<String>,
+    pub name: String,
+    pub value: String,
+}
+
+/// Sets a secret, scoped as [`SetVarRequest`]. Its `Debug` never shows the
+/// value. The value is never answered back.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetSecretRequest {
+    #[serde(default)]
+    pub env: Option<String>,
+    #[serde(default)]
+    pub service: Option<String>,
+    pub name: String,
+    pub value: String,
+}
+
+impl std::fmt::Debug for SetSecretRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SetSecretRequest")
+            .field("env", &self.env)
+            .field("service", &self.service)
+            .field("name", &self.name)
+            .field("value", &crate::secret::REDACTED)
+            .finish()
+    }
+}
+
+/// Removes a config value or a secret, scoped as [`SetVarRequest`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnsetRequest {
+    #[serde(default)]
+    pub env: Option<String>,
+    #[serde(default)]
+    pub service: Option<String>,
+    pub name: String,
+}
+
+/// A config value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VarView {
+    pub name: String,
+    pub value: String,
+    pub updated_at: Timestamp,
+}
+
+/// A secret: its name and when it was last set. Never its value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SecretView {
+    pub name: String,
+    pub updated_at: Timestamp,
+}
+
+/// The config values set in one scope, and the services of the project's
+/// environment running with values older than the stored ones (ADR-0009
+/// rule 6), by name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VarList {
+    pub scope: crate::config::ConfigScope,
+    pub project: Slug,
+    pub environment: Option<String>,
+    pub service: Option<String>,
+    pub vars: Vec<VarView>,
+    pub stale_services: Vec<String>,
+}
+
+/// The secrets set in one scope, as [`VarList`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SecretList {
+    pub scope: crate::config::ConfigScope,
+    pub project: Slug,
+    pub environment: Option<String>,
+    pub service: Option<String>,
+    pub secrets: Vec<SecretView>,
+    pub stale_services: Vec<String>,
+}
+
 /// Whether `key` is an acceptable idempotency key: 1 to
 /// [`IDEMPOTENCY_KEY_MAX_LEN`] visible ASCII characters.
 pub fn valid_idempotency_key(key: &str) -> bool {
@@ -850,5 +981,35 @@ mod tests {
             "created_at": "2016-07-30T22:36:16.385Z",
         }]});
         assert!(serde_json::from_value::<ProjectList>(bad_slug).is_err());
+    }
+
+    #[test]
+    fn config_paths_and_requests() {
+        let p = Slug::parse("my-app").unwrap();
+        assert_eq!(vars_path(&p), "/api/v1/projects/my-app/vars");
+        assert_eq!(vars_unset_path(&p), "/api/v1/projects/my-app/vars/unset");
+        assert_eq!(secrets_path(&p), "/api/v1/projects/my-app/secrets");
+        assert_eq!(
+            secrets_unset_path(&p),
+            "/api/v1/projects/my-app/secrets/unset"
+        );
+        assert_eq!(config_query(None, None), "");
+        assert_eq!(config_query(Some("development"), None), "?env=development");
+        assert_eq!(
+            config_query(Some("dev elopment"), Some("web")),
+            "?env=dev%20elopment&service=web"
+        );
+        let request = SetSecretRequest {
+            env: None,
+            service: Some("web".to_owned()),
+            name: "TOKEN".to_owned(),
+            value: "hunter2-api-secret".to_owned(),
+        };
+        let debug = format!("{request:?} {request:#?}");
+        assert!(!debug.contains("hunter2"), "{debug}");
+        assert!(debug.contains("TOKEN"), "{debug}");
+        let back: SetSecretRequest =
+            serde_json::from_value(json!({ "name": "TOKEN", "value": "v" })).unwrap();
+        assert_eq!((back.env, back.service), (None, None));
     }
 }

@@ -18,8 +18,10 @@
 //! - `preparing`: the built image is read back (id, `EXPOSE`, `VOLUME`);
 //!   `--port` is mapped by the `EXPOSE` rule; the publish address is
 //!   resolved (`publish.address`, `auto` asking the host's tailnet) and
-//!   probed for a conflict; the final file is written and the release
-//!   recorded.
+//!   probed for a conflict; the service's config values and secrets are
+//!   written to the release's env file and its override
+//!   ([`crate::config::prepare`]); the final file is written and the
+//!   release recorded.
 //! - `deploying`: `compose up` replaces the environment's containers.
 //! - `verifying`: the new release's container must pass its health check
 //!   (`healthy`) or, with none, still run unrestarted after the settle
@@ -365,7 +367,7 @@ pub async fn run(ctx: &Context, d: &Deployer, job: &DeployJob) -> Result<Deploye
             steps.run(&mut attempt).await
         }
     };
-    match outcome {
+    let result = match outcome {
         Ok(deployed) => Ok(deployed),
         Err(failure) => {
             attempt.undo(ctx, d).await;
@@ -378,7 +380,17 @@ pub async fn run(ctx: &Context, d: &Deployer, job: &DeployJob) -> Result<Deploye
             }
             Err(failure)
         }
-    }
+    };
+    // Values stay on disk only for the release serving now and, after a
+    // success, the one a later failure would bring back.
+    let keep: Vec<ReleaseId> = match &result {
+        Ok(deployed) => std::iter::once(deployed.release.id)
+            .chain(previous)
+            .collect(),
+        Err(_) => previous.into_iter().collect(),
+    };
+    crate::config::prune(d, env.id, &keep).await;
+    result
 }
 
 /// Whether `rel` names a regular file inside `root`. Snapshots hold no
@@ -505,6 +517,7 @@ impl Steps<'_> {
             image: image_tag(env.id, release_id),
             publish: None,
             volumes: Vec::new(),
+            config: Value::Null,
         };
 
         // building
@@ -564,7 +577,13 @@ impl Steps<'_> {
             ))
             .await?;
         }
+        // The values go in their own env file and override, added after
+        // the build and after `compose config` read the generated file.
+        let config =
+            crate::config::prepare(ctx, d, env, std::slice::from_ref(&service), &dir).await?;
+        shape.config = config.fingerprint.clone();
         let files = write_files(d, &attempt.project, &dir, &shape, &labels).await?;
+        let files = config.files(files)?;
         write_manifest(&dir, &files)?;
         let release = d
             .store
@@ -657,6 +676,9 @@ struct Shape {
     image: String,
     publish: Option<(IpAddr, PortMapping)>,
     volumes: Vec<Mount>,
+    /// The service's non-secret config ([`crate::config::Prepared`]), for
+    /// the fingerprint only: no value is ever in the generated file.
+    config: Value,
 }
 
 impl Shape {
@@ -735,6 +757,7 @@ impl Shape {
             "restart": RESTART_POLICY,
             "publish": publish,
             "volumes": volumes,
+            "config": self.config,
         });
         let digest = Sha256::digest(canonical.to_string().as_bytes());
         let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
@@ -1140,6 +1163,7 @@ mod tests {
             image: "ship_env_x-web:rel_y".to_owned(),
             publish: None,
             volumes: Vec::new(),
+            config: Value::Null,
         }
     }
 
@@ -1185,6 +1209,7 @@ mod tests {
             image: "ship_env_x-web:rel_y".to_owned(),
             publish: None,
             volumes: volume_mounts(&["/data/$SHIP_REVIEW_UNSET_VAR".to_owned()]),
+            config: Value::Null,
         }
     }
 

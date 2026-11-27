@@ -327,6 +327,11 @@ impl Queue {
         &self.inner.store
     }
 
+    /// The secret values the queue redacts from logs, events and failures.
+    pub fn redactor(&self) -> &Redactor {
+        &self.inner.redactor
+    }
+
     /// Path of `operation`'s log file, which exists once a line is logged.
     pub fn log_path(&self, operation: OperationId) -> PathBuf {
         log_path(&self.inner.log_dir, operation)
