@@ -458,6 +458,143 @@ async fn a_refused_entry_answers_with_the_body_held_open() {
     d.running.shutdown().await.unwrap();
 }
 
+/// Uploads `stream` with the operation's log path made a directory while
+/// the body is still open, so the job's next log write fails.
+async fn upload_with_log_blocked(
+    d: &Daemon,
+    project: &str,
+    key: &str,
+    sha: &str,
+    stream: &[u8],
+) -> Answer {
+    let (tx, body) = RequestBody::channel(2);
+    let headers = [("idempotency-key", key), ("ship-snapshot-sha256", sha)];
+    let path = format!("/api/v1/projects/{project}/uploads");
+    let target = d.target.clone();
+    let headers: Vec<(String, String)> = headers
+        .iter()
+        .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+        .collect();
+    let posting = tokio::spawn(async move {
+        let headers: Vec<(&str, &str)> = headers
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        client::post(&target, &path, &headers, body, TIMEOUT).await
+    });
+    // The staging directory is named by the operation and exists once the
+    // unpacker runs.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let op: OperationId = loop {
+        if let Some(entry) = staging_entries(d).first() {
+            break entry
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .parse()
+                .unwrap();
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no staging directory"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    fs::create_dir_all(d.running.queue().log_path(op)).unwrap();
+    tx.send(Ok(Bytes::from(stream.to_vec()))).await.unwrap();
+    drop(tx);
+    let r = posting.await.unwrap().unwrap();
+    Answer {
+        status: r.status,
+        json: serde_json::from_slice(&r.body).unwrap(),
+    }
+}
+
+/// Makes every revision insert fail from now on.
+async fn refuse_revisions(d: &Daemon) {
+    use sqlx::Connection;
+    let url = format!(
+        "sqlite://{}",
+        d.state.join(ship_store::DATABASE_FILE).display()
+    );
+    let mut conn = sqlx::sqlite::SqliteConnection::connect(&url).await.unwrap();
+    sqlx::query(
+        "CREATE TRIGGER test_refuse_revision BEFORE INSERT ON revision \
+         BEGIN SELECT RAISE(ABORT, 'refused by the test'); END",
+    )
+    .execute(&mut conn)
+    .await
+    .unwrap();
+    conn.close().await.unwrap();
+}
+
+/// Asserts a failed `internal` upload with nothing staged.
+async fn assert_internal(d: &Daemon, a: &Answer) {
+    assert_eq!(a.status, 500, "{}", a.json);
+    assert_eq!(a.json["code"], "internal", "{}", a.json);
+    let op: OperationId = a.json["operation_id"].as_str().unwrap().parse().unwrap();
+    let op = d.running.store().get_operation(op).await.unwrap();
+    assert_eq!(op.phase, OperationPhase::Failed);
+    assert!(staging_entries(d).is_empty(), "{:?}", staging_entries(d));
+}
+
+/// A log write failing late in an upload leaves no new snapshot and no new
+/// revision, and keeps those that were already there (f-028).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_late_log_failure_publishes_nothing() {
+    let d = daemon(UnpackLimits::default()).await;
+    let src = tempfile::tempdir().unwrap();
+    let (stream, sha) = packed_tree(src.path(), "log");
+
+    // A new tree: nothing published.
+    let a = upload_with_log_blocked(&d, "my-app", "k1", &sha, &stream).await;
+    assert_internal(&d, &a).await;
+    assert!(!snapshot_dir(&d.state, &sha).exists());
+    assert!(revisions(&d, "my-app").await.is_empty());
+
+    // A tree the project already has: its snapshot and revision stay.
+    let ok = upload_bytes(&d, "my-app", "k2", &sha, &stream).await;
+    assert_eq!(ok.status, 201, "{}", ok.json);
+    let a = upload_with_log_blocked(&d, "my-app", "k3", &sha, &stream).await;
+    assert_internal(&d, &a).await;
+    assert!(snapshot_dir(&d.state, &sha).join("Dockerfile").is_file());
+    assert_eq!(revisions(&d, "my-app").await.len(), 1);
+    d.running.shutdown().await.unwrap();
+}
+
+/// A revision that cannot be recorded leaves no new snapshot, and never
+/// removes a snapshot another project's revision shares (f-028).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_revision_store_failure_publishes_nothing() {
+    let d = daemon(UnpackLimits::default()).await;
+    let src = tempfile::tempdir().unwrap();
+    let (stream, sha) = packed_tree(src.path(), "store");
+    let src2 = tempfile::tempdir().unwrap();
+    let (shared, shared_sha) = packed_tree(src2.path(), "shared");
+    let ok = upload_bytes(&d, "other-app", "k0", &shared_sha, &shared).await;
+    assert_eq!(ok.status, 201, "{}", ok.json);
+    refuse_revisions(&d).await;
+
+    // A new snapshot: removed again.
+    let a = upload_bytes(&d, "my-app", "k1", &sha, &stream).await;
+    assert_internal(&d, &a).await;
+    assert!(!snapshot_dir(&d.state, &sha).exists());
+    assert!(revisions(&d, "my-app").await.is_empty());
+
+    // A snapshot already shared with another project: kept.
+    let a = upload_bytes(&d, "my-app", "k2", &shared_sha, &shared).await;
+    assert_internal(&d, &a).await;
+    assert!(
+        snapshot_dir(&d.state, &shared_sha)
+            .join("Dockerfile")
+            .is_file()
+    );
+    assert!(revisions(&d, "my-app").await.is_empty());
+    assert_eq!(revisions(&d, "other-app").await.len(), 1);
+    d.running.shutdown().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn leftover_staging_is_removed_at_start() {
     let dir = tempfile::tempdir().unwrap();

@@ -265,13 +265,40 @@ pub async fn receive(
     }
 
     let _promoting = uploads.promote.lock().await;
+    // Everything fallible but recording the revision happens before the
+    // snapshot is published, so a failure leaves nothing new behind.
+    let existing = find_revision(store, project_id, &unpacked.sha256).await?;
+    match &existing {
+        Some(revision) => {
+            ctx.log(&format!(
+                "revision {} (sha256 {}), unchanged",
+                revision.id, revision.source_ref
+            ))
+            .await?
+        }
+        None => {
+            ctx.log(&format!(
+                "recording a new revision (sha256 {})",
+                unpacked.sha256
+            ))
+            .await?
+        }
+    }
     let target = snapshot_dir(&uploads.state_dir, &unpacked.sha256);
     let moved = {
         let (staging, target) = (staging.clone(), target.clone());
         tokio::task::spawn_blocking(move || promote(&staging, &target)).await
     };
+    // Removes the snapshot this upload published (never one that was
+    // already there) unless its revision is recorded.
+    let mut published = StagingGuard(None);
     match moved {
-        Ok(Ok(())) => guard.disarm(),
+        Ok(Ok(moved)) => {
+            guard.disarm();
+            if moved {
+                published = StagingGuard(Some(target.clone()));
+            }
+        }
         Ok(Err(e)) => {
             tracing::error!(error = %e, path = %target.display(), "promoting a snapshot failed");
             return Err(storage_failure(
@@ -288,7 +315,6 @@ pub async fn receive(
         }
     }
 
-    let existing = find_revision(store, project_id, &unpacked.sha256).await?;
     let (revision, new_revision) = match existing {
         Some(revision) => (revision, false),
         None => {
@@ -305,13 +331,7 @@ pub async fn receive(
             (revision, true)
         }
     };
-    ctx.log(&format!(
-        "revision {} (sha256 {}){}",
-        revision.id,
-        revision.source_ref,
-        if new_revision { "" } else { ", unchanged" }
-    ))
-    .await?;
+    published.disarm();
     Ok(Received {
         project_id,
         revision,
@@ -320,16 +340,16 @@ pub async fn receive(
     })
 }
 
-/// Moves `staging` to `target`, or discards it when `target` already holds
-/// the same content (same hash).
-fn promote(staging: &Path, target: &Path) -> io::Result<()> {
+/// Moves `staging` to `target` (`true`), or discards it when `target`
+/// already holds the same content, same hash (`false`).
+fn promote(staging: &Path, target: &Path) -> io::Result<bool> {
     match fs::symlink_metadata(target) {
-        Ok(meta) if meta.is_dir() => fs::remove_dir_all(staging),
+        Ok(meta) if meta.is_dir() => fs::remove_dir_all(staging).map(|()| false),
         Ok(_) => Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             "the snapshot path exists and is not a directory",
         )),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => fs::rename(staging, target),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => fs::rename(staging, target).map(|()| true),
         Err(e) => Err(e),
     }
 }

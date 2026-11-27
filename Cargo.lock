@@ -1098,6 +1098,7 @@ dependencies = [
  "ship-net",
  "ship-source",
  "ship-store",
+ "sqlx",
  "tempfile",
  "tokio",
  "tracing",
