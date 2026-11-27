@@ -52,6 +52,8 @@ paths:
   interfaces: .metis/interfaces.txt
 auto:
   mode: step
+  stop:
+    p1: false
 # Per phase and per risk, overriding auto.mode (metis mode sets these):
 # phases: { phase-9: auto, phase-10: manual }
 # by_risk: { high: step }
