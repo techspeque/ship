@@ -241,6 +241,9 @@ findings:
       severity: P3
       category: tests
       finding: crates/ship-store/tests/phase1.rs:785 — The raw-SQL operation test ends immediately after establishing a failure; no test attempts to change the stored code, message or failure phase of an already failed/interrupted operation, despite brief lines 120-122 explicitly requiring changed-failure rejection. Add raw-SQL assertions that these edits are refused and the original failure remains unchanged.
-      status: open
+      status: resolved
+      resolved_by: commit 60bc9febd940; test schema_rejects_illegal_operation_changes
       cycle: 1
       file: crates/ship-store/tests/phase1.rs
+      commit: 60bc9febd940c93747c9c8e9b944753e5baecbb2
+      evidence: test schema_rejects_illegal_operation_changes
