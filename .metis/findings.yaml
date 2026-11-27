@@ -427,3 +427,12 @@ findings:
       file: crates/ship-daemon/tests/real_deploy.rs
       commit: 04d1d239b1f6f7203071200d070cce006317233a
       evidence: test real_two_expose_ports_need_the_explicit_form
+    - id: f-037
+      date: "2026-11-27"
+      slice: phase-1-ws-1.8
+      severity: P2
+      category: behavior
+      finding: 'crates/ship-daemon/src/deploy.rs:1013 — Verification permanently skips a service after its first passing observation. Reproduced through the deployment API with poll 1 A=healthy/B=starting and poll 2 A=unhealthy/B=healthy: the operation succeeds and reports A healthy instead of failing and undoing. Recheck every service until the whole deployment is ready, require current passing observations, and add this staggered-readiness regression test.'
+      status: open
+      cycle: 1
+      file: crates/ship-daemon/src/deploy.rs
