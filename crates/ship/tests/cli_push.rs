@@ -720,6 +720,138 @@ fn a_dropped_stream_is_resumed_with_nothing_lost_or_repeated() {
     assert!(messages.contains(&"#3 resumed"), "{messages:?}");
 }
 
+/// How `faulty_proxy` answers event streams once faulted.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Fault {
+    /// `200` with an empty body.
+    Empty,
+    /// `200` with a body that ends inside a frame.
+    Truncated,
+    /// Accepts the connection and never answers.
+    Stalled,
+}
+
+/// A proxy from `listen` to `upstream` that, once `faulted` is set, cuts
+/// the open event stream and answers every new one with `fault`. Returns
+/// the number of event streams opened.
+fn faulty_proxy(
+    listen: &Path,
+    upstream: PathBuf,
+    fault: Fault,
+    faulted: Arc<AtomicBool>,
+) -> Arc<AtomicUsize> {
+    let listener = UnixListener::bind(listen).unwrap();
+    let streams = Arc::new(AtomicUsize::new(0));
+    let s = Arc::clone(&streams);
+    thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut client) = conn else { return };
+            let (upstream, streams, faulted) =
+                (upstream.clone(), Arc::clone(&s), Arc::clone(&faulted));
+            thread::spawn(move || {
+                let mut first = vec![0u8; 16 * 1024];
+                let Ok(n) = client.read(&mut first) else {
+                    return;
+                };
+                let is_events = String::from_utf8_lossy(&first[..n]).contains("/events");
+                if is_events {
+                    streams.fetch_add(1, Ordering::SeqCst);
+                }
+                if is_events && faulted.load(Ordering::SeqCst) {
+                    let body: &str = match fault {
+                        Fault::Empty => "",
+                        Fault::Truncated => "id: 99\ndata: {\"operation_id\":",
+                        Fault::Stalled => {
+                            thread::sleep(Duration::from_secs(120));
+                            return;
+                        }
+                    };
+                    let reply = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+                         ship-api-version: v1\r\nship-version: 9.9.9\r\n\
+                         content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = client.write_all(reply.as_bytes());
+                    return;
+                }
+                let Ok(mut daemon) = UnixStream::connect(&upstream) else {
+                    return;
+                };
+                if daemon.write_all(&first[..n]).is_err() {
+                    return;
+                }
+                let (mut c2, mut d2) = (client.try_clone().unwrap(), daemon.try_clone().unwrap());
+                thread::spawn(move || {
+                    let _ = std::io::copy(&mut c2, &mut d2);
+                    let _ = d2.shutdown(std::net::Shutdown::Write);
+                });
+                daemon
+                    .set_read_timeout(Some(Duration::from_millis(50)))
+                    .unwrap();
+                let mut buf = [0u8; 8192];
+                loop {
+                    match daemon.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            if client.write_all(&buf[..n]).is_err() {
+                                break;
+                            }
+                        }
+                        Err(e)
+                            if matches!(
+                                e.kind(),
+                                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                            ) => {}
+                        Err(_) => break,
+                    }
+                    if is_events && faulted.load(Ordering::SeqCst) {
+                        let _ = client.shutdown(std::net::Shutdown::Both);
+                        let _ = daemon.shutdown(std::net::Shutdown::Both);
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    streams
+}
+
+/// A reopened stream that answers but delivers no frame, or never answers,
+/// does not restore the connection: the reconnect window still ends the
+/// wait with 94, on time.
+#[test]
+fn empty_truncated_or_stalled_reconnects_still_exit_94_in_time() {
+    for fault in [Fault::Empty, Fault::Truncated, Fault::Stalled] {
+        let h = Harness::new();
+        h.control("build_wait", "");
+        let proxy = h.path().join("proxy.sock");
+        let faulted = Arc::new(AtomicBool::new(false));
+        let streams = faulty_proxy(&proxy, h.socket(), fault, Arc::clone(&faulted));
+        h.target("local", Some(&proxy));
+        let root = h.tree("app", DOCKERFILE);
+        let child = h.spawn(&[
+            "push",
+            root.to_str().unwrap(),
+            "-o",
+            "json",
+            "--reconnect",
+            "1",
+        ]);
+        h.wait_for("build_started");
+        let cut_at = Instant::now();
+        faulted.store(true, Ordering::SeqCst);
+        let out = child.wait_with_output().unwrap();
+        let took = cut_at.elapsed();
+        assert_eq!(code(&out), 94, "{fault:?}\n{}", show(&out));
+        assert!(took < Duration::from_secs(10), "{fault:?} took {took:?}");
+        assert!(streams.load(Ordering::SeqCst) >= 2, "{fault:?}: never reopened");
+        let result = json_lines(&out).pop().unwrap();
+        assert_eq!(result["type"], "result");
+        assert_eq!(result["failure"]["code"], "connection_lost");
+    }
+}
+
 #[test]
 fn a_push_over_ssh_deploys() {
     let h = Harness::new();

@@ -31,6 +31,7 @@ pub enum Halt {
 #[derive(Debug, Default)]
 pub struct SseParser {
     buf: Vec<u8>,
+    frames: u64,
 }
 
 impl SseParser {
@@ -42,6 +43,7 @@ impl SseParser {
         let mut out = Vec::new();
         while let Some(end) = find(&self.buf, b"\n\n") {
             let frame: Vec<u8> = self.buf.drain(..end + 2).collect();
+            self.frames += 1;
             let text = String::from_utf8_lossy(&frame[..end]);
             let data: Vec<&str> = text
                 .lines()
@@ -55,6 +57,12 @@ impl SseParser {
             }
         }
         out
+    }
+
+    /// Whether some complete frame, keep-alive included, has arrived: the
+    /// stream is live, not only its response head.
+    pub fn saw_frame(&self) -> bool {
+        self.frames > 0
     }
 }
 
@@ -91,7 +99,10 @@ pub fn take_new(
 /// Follows `operation`'s events after sequence `after` until its terminal
 /// event, calling `on_event` once for each, in order. A dropped stream is
 /// opened again from the last sequence received, for up to `reconnect`
-/// after it was lost. Returns the last sequence.
+/// after it was lost. The loss ends only when a reopened stream delivers a
+/// complete frame (an answer with no frame, or a truncated one, does not
+/// count), and every attempt meanwhile is bounded by the time left.
+/// Returns the last sequence.
 pub async fn follow(
     endpoint: &Endpoint,
     operation: OperationId,
@@ -105,12 +116,16 @@ pub async fn follow(
     loop {
         let resume = last.to_string();
         let headers = [(LAST_EVENT_ID_HEADER, resume.as_str())];
-        let why = match client::get_stream(endpoint, &path, &headers, REQUEST_TIMEOUT).await {
+        let opening = bounded(REQUEST_TIMEOUT, lost_at, reconnect);
+        let why = match client::get_stream(endpoint, &path, &headers, opening).await {
             Ok(mut stream) => {
-                lost_at = None;
                 let mut parser = SseParser::default();
                 loop {
-                    match tokio::time::timeout(IDLE, stream.next_chunk()).await {
+                    let idle = bounded(IDLE, lost_at, reconnect);
+                    match tokio::time::timeout(idle, stream.next_chunk()).await {
+                        Err(_) if lost_at.is_some() => {
+                            break "the reopened event stream sent nothing in time".to_owned();
+                        }
                         Err(_) => {
                             break format!("the daemon sent nothing for {} s", IDLE.as_secs());
                         }
@@ -127,6 +142,9 @@ pub async fn follow(
                                     })?;
                                 events.push(event);
                             }
+                            if parser.saw_frame() {
+                                lost_at = None;
+                            }
                             if take_new(&mut last, events, &mut on_event) {
                                 return Ok(last);
                             }
@@ -141,6 +159,15 @@ pub async fn follow(
     }
 }
 
+/// `limit`, or less while the daemon is lost: the time left of the
+/// reconnect window that began at `lost_at`.
+fn bounded(limit: Duration, lost_at: Option<Instant>, reconnect: Duration) -> Duration {
+    match lost_at {
+        Some(since) => limit.min(reconnect.saturating_sub(since.elapsed())),
+        None => limit,
+    }
+}
+
 /// After a failed attempt: waits before the next, or gives up once the
 /// daemon has been out of reach for `reconnect`.
 async fn wait_or_give_up(
@@ -152,7 +179,7 @@ async fn wait_or_give_up(
     if since.elapsed() >= reconnect {
         return Err(Halt::Lost(why));
     }
-    tokio::time::sleep(RETRY).await;
+    tokio::time::sleep(bounded(RETRY, Some(since), reconnect)).await;
     Ok(())
 }
 
@@ -165,7 +192,8 @@ pub async fn get_retrying<T: serde::de::DeserializeOwned>(
 ) -> Result<Option<T>, Halt> {
     let mut lost_at = None;
     loop {
-        match client::get_json::<T>(endpoint, path, REQUEST_TIMEOUT).await {
+        let timeout = bounded(REQUEST_TIMEOUT, lost_at, reconnect);
+        match client::get_json::<T>(endpoint, path, timeout).await {
             Ok(value) => return Ok(Some(value)),
             Err(ClientError::Api(e)) if e.code.known() == Some(ship_core::ErrorCode::NotFound) => {
                 return Ok(None);
