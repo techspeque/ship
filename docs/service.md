@@ -14,6 +14,21 @@ sudo ship service install
 sudo systemctl start ship
 ```
 
+The daemon runs as the `ship` user, so install refuses, before changing
+anything, a binary that user cannot run: one under a home directory
+(`/home`, `/root`, or the home of the user running `sudo`), or one where the
+binary or a directory above it is not executable by other users. systemd
+would otherwise fail to start it (`status=203/EXEC`) and retry forever. The
+refusal prints the two commands that fix it:
+
+```sh
+sudo install -m 0755 ~/.local/bin/ship /usr/local/bin/ship
+sudo /usr/local/bin/ship service install
+```
+
+`/usr/local/bin` is also on the PATH of a non-interactive ssh session,
+which ssh targets need; `~/.local/bin` usually is not.
+
 Install needs Docker Engine already on the host (it looks for the `docker`
 group). It does the following, skipping anything already in place:
 

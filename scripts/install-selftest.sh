@@ -141,6 +141,21 @@ else
 	fail "installed binary is executable and runs"
 fi
 
+# The prefix is inside a 0700 mktemp directory, which the ship service user
+# cannot traverse: on Linux the installer must point at a system path and
+# must not suggest service install from the prefix.
+if [ "$os" = linux ]; then
+	dir=$(cd "$(dirname "$last")" && pwd -P)
+	if grep -qF "sudo install -m 0755 $dir/ship /usr/local/bin/ship" "$work/out" &&
+		grep -qF "sudo /usr/local/bin/ship service install" "$work/out" &&
+		! grep -qF "sudo $dir/ship service install" "$work/out"; then
+		pass "per-user prefix points service install at a system path"
+	else
+		fail "per-user prefix points service install at a system path"
+		sed 's/^/#   /' "$work/out"
+	fi
+fi
+
 # 2. Archive changed and re-signed: only the checksum can catch it.
 d=$(copy tampered)
 printf 'x' >>"$d/$archive"

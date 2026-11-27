@@ -22,6 +22,7 @@ fail() {
 step() { echo "--- $*"; }
 
 cleanup() {
+  rm -rf "$HOME/ship-smoke-user"
   docker rm -f ship-smoke >/dev/null 2>&1 || true
   docker volume rm ship-smoke-vol >/dev/null 2>&1 || true
 }
@@ -41,8 +42,59 @@ wait_running() {
   fail "daemon not running with a new PID (old $old)"
 }
 
-step "install the binary where the ship user can run it"
-sudo install -m 0755 "$src" "$ship"
+step "non-root install.sh into a per-user prefix, as a login user would"
+# The documented path without root: install.sh as this user into a
+# directory under $HOME that other users cannot traverse (home directories
+# are 0750 on Ubuntu). The release is built from $src; a stub cosign accepts
+# it, since the signature checks are covered by install-selftest.sh.
+here=$(cd "$(dirname "$0")" && pwd)
+userdir="$HOME/ship-smoke-user"
+rm -rf "$userdir"
+mkdir -p "$userdir/bin" "$userdir/release" "$userdir/stub"
+chmod 0750 "$userdir"
+version=v0.0.0-smoke
+case "$(uname -m)" in aarch64 | arm64) arch=arm64 ;; *) arch=amd64 ;; esac
+name="ship-$version-linux-$arch"
+mkdir -p "$userdir/build/$name"
+install -m 0755 "$src" "$userdir/build/$name/ship"
+tar -czf "$userdir/release/$name.tar.gz" -C "$userdir/build" "$name"
+(cd "$userdir/release" && sha256sum "$name.tar.gz" >SHA256SUMS)
+: >"$userdir/release/$name.tar.gz.sigstore.json"
+: >"$userdir/release/SHA256SUMS.sigstore.json"
+printf '#!/bin/sh\nexit 0\n' >"$userdir/stub/cosign"
+chmod 0755 "$userdir/stub/cosign"
+out=$(PATH="$userdir/stub:$PATH" sh "$here/install.sh" --from "$userdir/release" \
+  --version "$version" --prefix "$userdir/bin")
+echo "$out"
+userbin=$(realpath "$userdir/bin/ship")
+echo "$out" | grep -qF "sudo install -m 0755 $userbin $ship" ||
+  fail "install.sh did not print the system-path install command"
+echo "$out" | grep -qF "sudo $userbin service install" &&
+  fail "install.sh suggested service install from a per-user prefix"
+
+step "service install from the per-user prefix is refused and changes nothing"
+present() {
+  for what in "getent group ship" "getent passwd ship" "test -e $unit" \
+    "test -e $state" "test -e /run/ship"; do
+    # shellcheck disable=SC2086 # $what is a command line, split on purpose
+    if sudo $what >/dev/null 2>&1; then echo "yes: $what"; else echo "no: $what"; fi
+  done
+}
+before_state=$(present)
+rc=0
+err=$(sudo "$userbin" service install 2>&1) || rc=$?
+echo "$err"
+[ "$rc" -ne 0 ] || fail "service install accepted $userbin"
+[ "$rc" -eq 1 ] || fail "refusal exited $rc, want 1"
+echo "$err" | grep -qF "sudo install -m 0755 $userbin $ship" ||
+  fail "refusal lacks the install command"
+echo "$err" | grep -qF "sudo $ship service install" ||
+  fail "refusal lacks the service install command"
+[ "$(present)" = "$before_state" ] || fail "refused install changed the host: $(present)"
+
+step "follow the printed command: install the binary where the ship user can run it"
+sudo install -m 0755 "$userbin" "$ship"
+rm -rf "$userdir"
 
 step "a labelled container and volume that uninstall must leave alone"
 docker volume create --label dev.ship.project=smoke ship-smoke-vol >/dev/null

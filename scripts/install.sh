@@ -223,6 +223,32 @@ case ":$PATH:" in
 *":$prefix:"*) ;;
 *) say "note: $prefix is not on PATH" ;;
 esac
+
+# True when every directory from $1 up to / is executable by other users and
+# $1 is not under a home directory: only then can the ship system user run
+# a binary there under systemd.
+system_path() {
+	case "$1" in
+	/home | /home/* | /root | /root/* | "$HOME" | "$HOME"/*) return 1 ;;
+	esac
+	p=$1
+	while :; do
+		[ -n "$(find "$p" -prune -perm -0001 2>/dev/null)" ] || return 1
+		[ "$p" = / ] && return 0
+		p=$(dirname "$p")
+	done
+}
+
 if [ "$os" = linux ]; then
-	say "to run the daemon under systemd: sudo $prefix/ship service install"
+	dir=$(cd "$prefix" && pwd -P)
+	if system_path "$dir"; then
+		say "to run the daemon under systemd: sudo $dir/ship service install"
+	else
+		say "$dir is under a home directory or closed to other users: the ship service user"
+		say "cannot run a binary there under systemd,"
+		say "and ssh targets need ship on the PATH of a non-interactive ssh session."
+		say "the daemon needs a system path; to run it under systemd:"
+		say "  sudo install -m 0755 $dir/ship /usr/local/bin/ship"
+		say "  sudo /usr/local/bin/ship service install"
+	fi
 fi

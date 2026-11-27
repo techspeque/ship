@@ -191,3 +191,15 @@ findings:
       file: scripts/daemon-smoke.sh
       commit: 5214130a47933524d412bc24680e164fde8d6162
       evidence: 'test scripts/daemon-smoke.sh: aarch64-unknown-linux-musl release in Docker; HTTP 200, SIGTERM exit 0, socket removed'
+    - id: f-017
+      date: "2026-11-27"
+      slice: fix-0006
+      severity: P2
+      category: testing
+      finding: scripts/service-smoke.sh:84-86 — The refusal regression accepts any non-zero exit status, so it does not assert exit 1 as required by brief DoD 4; a wrong exit code with the expected message still passes — Capture the failed command's status and assert it equals 1 while retaining the message and no-mutation checks.
+      status: resolved
+      resolved_by: commit f1e43f739c6f; scripts/service-smoke.sh:88
+      cycle: 1
+      file: scripts/service-smoke.sh
+      commit: f1e43f739c6fa827e49262e3e28149441ad6a0d7
+      evidence: scripts/service-smoke.sh:88
