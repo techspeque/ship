@@ -280,3 +280,12 @@ findings:
       status: open
       cycle: 1
       file: crates/ship-source/src/pack.rs
+    - id: f-025
+      date: "2026-11-27"
+      slice: phase-1-ws-1.4
+      severity: P2
+      category: tests
+      finding: crates/ship-source/tests/pack.rs:293 — The include tests cover exact file names and reaching a file through an excluded ancestor, but omit the under-directory and not-a-prefix-of-a-sibling cases expressly required by the brief test plan at lines 100-102. Add tests for naming a directory and its descendants, and for a similarly prefixed sibling remaining excluded, including default-excluded and ignored descendant cases so directory-include semantics are explicit.
+      status: open
+      cycle: 1
+      file: crates/ship-source/tests/pack.rs
