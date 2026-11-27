@@ -361,6 +361,9 @@ findings:
       severity: P2
       category: security
       finding: crates/ship-docker/src/compose.rs:275 — logs streams project containers without checking Ship labels, and ps at line 281 explicitly returns ids with or without those labels; this violates the brief requirement to select only labelled objects and never return foreign objects — filter or refuse foreign containers in both public read operations and cover a mixed owned/foreign project.
-      status: open
+      status: resolved
+      resolved_by: 'commit ce60c58b3ce2; test reads_of_a_mixed_project_return_only_ships_containers; ce60c58: mixed-project coverage and real-Docker foreign-container test passed independently'
       cycle: 1
       file: crates/ship-docker/src/compose.rs
+      commit: ce60c58b3ce27433150e572935df51d6df3a0f2e
+      evidence: test reads_of_a_mixed_project_return_only_ships_containers
