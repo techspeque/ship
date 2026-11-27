@@ -435,6 +435,14 @@ async fn deployment_lifecycle() {
         "deployment",
     );
     is_illegal(store.set_deployment_release(d1.id, rel).await, "deployment");
+    // The same result again is refused too, and the stored end stays.
+    is_illegal(
+        store
+            .finish_deployment(d1.id, DeploymentResult::Failed)
+            .await,
+        "deployment",
+    );
+    assert_eq!(store.get_deployment(d1.id).await.unwrap(), d1);
 
     // A successful one: release set once, then finished.
     let op2 = operation(&store, "k2", env).await;
@@ -454,11 +462,22 @@ async fn deployment_lifecycle() {
         store.set_deployment_release(d2.id, other_rel).await,
         "deployment",
     );
+    // The same release again, before the end, is refused.
+    is_illegal(store.set_deployment_release(d2.id, rel).await, "deployment");
     let d2 = store
         .finish_deployment(d2.id, DeploymentResult::Succeeded)
         .await
         .unwrap();
     assert_eq!(d2.result, Some(DeploymentResult::Succeeded));
+    // And after it; so is the same result again.
+    is_illegal(store.set_deployment_release(d2.id, rel).await, "deployment");
+    is_illegal(
+        store
+            .finish_deployment(d2.id, DeploymentResult::Succeeded)
+            .await,
+        "deployment",
+    );
+    assert_eq!(store.get_deployment(d2.id).await.unwrap(), d2);
 
     // Several deployments may use one release; newest first.
     let op3 = operation(&store, "k3", env).await;

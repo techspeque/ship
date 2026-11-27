@@ -194,6 +194,21 @@ BEGIN
                     WHERE l.id = NEW.release_id AND l.revision_id IS NOT NEW.revision_id);
 END;
 
+-- Writing the release or the result a second time is refused even when the
+-- value is unchanged: these fire on the columns named in SET, not on a
+-- difference between OLD and NEW.
+CREATE TRIGGER deployment_release_once BEFORE UPDATE OF release_id ON deployment
+BEGIN
+    SELECT RAISE(ABORT, 'illegal deployment change: the release is set once, before the end')
+     WHERE OLD.release_id IS NOT NULL OR OLD.result IS NOT NULL;
+END;
+
+CREATE TRIGGER deployment_result_once BEFORE UPDATE OF result, ended_at ON deployment
+BEGIN
+    SELECT RAISE(ABORT, 'illegal deployment change: the result is set once')
+     WHERE OLD.result IS NOT NULL;
+END;
+
 -- ---- audit_event --------------------------------------------------------
 
 CREATE TRIGGER audit_event_no_update BEFORE UPDATE ON audit_event
