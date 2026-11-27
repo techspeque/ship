@@ -349,9 +349,12 @@ findings:
       severity: P2
       category: security
       finding: crates/ship-docker/src/compose.rs:192 — build executes immediately without ensure_only_ours, contrary to the brief requirement that every mutating command reject foreign containers and networks in the project — perform the ownership check before building and add coverage proving foreign objects prevent the build invocation.
-      status: open
+      status: resolved
+      resolved_by: 'commit 899f3be9e910; test a_foreign_container_prevents_the_build; 899f3be: ownership guard precedes build; forced post verification passed'
       cycle: 1
       file: crates/ship-docker/src/compose.rs
+      commit: 899f3be9e91076e9271eda03be515bff18a0999d
+      evidence: test a_foreign_container_prevents_the_build
     - id: f-031
       date: "2026-11-27"
       slice: phase-1-ws-1.6
