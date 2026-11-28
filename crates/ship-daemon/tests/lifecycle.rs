@@ -686,6 +686,81 @@ async fn remove_keeps_volumes_and_history_and_then_refuses_the_rest() {
     assert_eq!(removes, 1);
 }
 
+/// A failed deployment of a new revision in `env`, recorded in the store.
+async fn failed_deployment(f: &Fixture, env: &Environment, key: &str) -> ship_store::Deployment {
+    let store = f.store();
+    let rev = store
+        .create_revision(
+            env.project_id,
+            &NewRevision {
+                kind: RevisionKind::Snapshot,
+                source_ref: key,
+                manifest_fingerprint: None,
+            },
+        )
+        .await
+        .unwrap()
+        .id;
+    let op = store
+        .create_operation(&NewOperation {
+            idempotency_key: key,
+            kind: "push",
+            environment_id: Some(env.id),
+        })
+        .await
+        .unwrap()
+        .operation
+        .id;
+    let dep = store
+        .create_deployment(&NewDeployment {
+            environment_id: env.id,
+            revision_id: rev,
+            operation_id: op,
+            previous_release_id: None,
+        })
+        .await
+        .unwrap();
+    let dep = store
+        .finish_deployment(dep.id, DeploymentResult::Failed)
+        .await
+        .unwrap();
+    let failure = ship_store::OperationFailure {
+        code: ship_core::ErrorCode::DeployFailed,
+        message: "failed",
+    };
+    store
+        .fail_operation(op, OperationPhase::Failed, &failure)
+        .await
+        .unwrap();
+    dep
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_removal_names_the_revision_and_release_serving() {
+    // Revision A serving, a later deploy of revision B failed: the removal
+    // names A and A's release.
+    let f = fixture(Fake::Services).await;
+    let s = seed(&f).await;
+    let serving = f.store().list_deployments(s.env.id).await.unwrap()[0].clone();
+    let failed = failed_deployment(&f, &s.env, "b").await;
+    assert_ne!(failed.revision_id, serving.revision_id);
+    succeeded(&f.act("remove", "", "remove").await);
+    let removal = f.store().list_deployments(s.env.id).await.unwrap()[0].clone();
+    assert_eq!(removal.action, DeploymentAction::Remove);
+    assert_eq!(removal.revision_id, serving.revision_id);
+    assert_eq!(removal.previous_release_id, Some(s.rel));
+
+    // Nothing ever served: the latest deployment's revision, no release.
+    let f = fixture(Fake::Services).await;
+    let env = development(&f).await;
+    let only = failed_deployment(&f, &env, "only").await;
+    succeeded(&f.act("remove", "", "remove").await);
+    let removal = f.store().list_deployments(env.id).await.unwrap()[0].clone();
+    assert_eq!(removal.action, DeploymentAction::Remove);
+    assert_eq!(removal.revision_id, only.revision_id);
+    assert_eq!(removal.previous_release_id, None);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_action_waits_for_the_operation_holding_its_environment() {
     let f = fixture(Fake::Services).await;

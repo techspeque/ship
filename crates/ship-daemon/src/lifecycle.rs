@@ -445,14 +445,21 @@ async fn remove(
     step(ctx, d, project, Step::Down, &[], "removing the containers").await?;
     store.replace_routes(env.id, &[]).await?;
     let history = store.list_deployments(env.id).await?;
-    match history.first() {
-        Some(latest) => {
+    // The removal names what was serving: its revision and its release.
+    // When nothing ever served, the latest deployment's revision, with no
+    // previous release.
+    let named = match serving(&history) {
+        Some(s) => Some((s.revision_id, s.release_id)),
+        None => history.first().map(|latest| (latest.revision_id, None)),
+    };
+    match named {
+        Some((revision_id, previous_release_id)) => {
             let removal = store
                 .record_removal(&NewDeployment {
                     environment_id: env.id,
-                    revision_id: latest.revision_id,
+                    revision_id,
                     operation_id: ctx.operation_id(),
-                    previous_release_id: serving(&history).and_then(|x| x.release_id),
+                    previous_release_id,
                 })
                 .await?;
             ctx.log(&format!("the removal is deployment {}", removal.id))
