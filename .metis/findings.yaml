@@ -637,9 +637,12 @@ findings:
       severity: P3
       category: testing
       finding: 'Independent metis verify --post --slice phase-1-ws-1.14 --force failed (metis exit 1): push::tests::only_an_answering_address_answers at crates/ship-daemon/src/push.rs:484, assertion !answers failed. This pre-existing failure is also noted in the brief lines 184-186; recorded as advisory under the narrowed re-review rule. The run stopped before the kill integration tests.'
-      status: advisory
+      status: resolved
+      resolved_by: duplicate of f-052
       cycle: 2
       file: crates/ship-daemon/src/push.rs
+      disposition: duplicate
+      of: f-052
     - id: f-055
       date: "2026-11-28"
       slice: phase-1-ws-1.14
