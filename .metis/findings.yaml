@@ -622,9 +622,12 @@ findings:
       severity: P2
       category: behavior
       finding: 're-raise f-051: crates/ship-daemon/src/recovery.rs:125 removes the operation marker before remove_dir at line 126. A recovery interrupted between those calls leaves an empty unrecorded release directory without its marker; staged_by at lines 164-168 skips it on every later start. Cleanup eligibility therefore still disappears before deletion succeeds. Keep durable ownership/cleanup eligibility outside the directory being deleted (or an equivalent crash-safe scheme) until deletion completes, and cover interruption after marker removal with a regression test.'
-      status: open
+      status: resolved
+      resolved_by: commit a0c24699825c; test staging_renamed_into_the_trash_by_a_dead_start_is_removed_by_the_next
       cycle: 2
       file: crates/ship-daemon/src/recovery.rs
+      commit: a0c24699825c06d06921528f5d43be68e821d7d8
+      evidence: test staging_renamed_into_the_trash_by_a_dead_start_is_removed_by_the_next
     - id: f-054
       date: "2026-11-28"
       slice: phase-1-ws-1.14
