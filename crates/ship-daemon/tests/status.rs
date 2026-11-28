@@ -3,7 +3,8 @@
 //! plays the Engine from control files: `ps` lists `$FAKE_DIR/ids`,
 //! `container inspect` prints `$FAKE_DIR/inspect.json`, `container logs`
 //! prints `<id>.out` on stdout and `<id>.err` on stderr (with `--follow`,
-//! then `<id>.late` a moment later, then it waits), and every command
+//! then `<id>.late` a moment later, then it waits; with `$FAKE_DIR/logs-fail`
+//! it then exits 1), and every command
 //! fails as Docker does when its socket is gone while
 //! `$FAKE_DIR/unreachable` exists. Every invocation is logged.
 
@@ -62,6 +63,7 @@ case "$1" in
           cat "$d/$id.late" 2>/dev/null
           sleep 30
         fi
+        if [ -f "$d/logs-fail" ]; then echo "Error response from daemon: read failed" >&2; exit 1; fi
         exit 0;;
     esac;;
 esac
@@ -658,6 +660,41 @@ async fn logs_tell_streams_apart_narrow_to_a_service_and_redact() {
         "{:?}",
         f.invocations()
     );
+    f.running.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_failed_log_read_cuts_the_answer_short() {
+    let f = fixture(Duration::from_secs(3600)).await;
+    let s = seed(f.store()).await;
+    run_both(&f, &s);
+    write_logs(&f);
+    f.control("logs-fail", "");
+
+    let mut stream = client::get_stream(
+        &f.target,
+        "/api/v1/projects/my-app/logs?service=worker",
+        &[],
+        TIMEOUT,
+    )
+    .await
+    .unwrap();
+    assert_eq!(stream.head.status, 200);
+    let mut seen = String::new();
+    let mut failed = false;
+    while let Some(chunk) = stream.next_chunk().await {
+        match chunk {
+            Ok(chunk) => seen.push_str(&String::from_utf8_lossy(&chunk)),
+            Err(_) => {
+                failed = true;
+                break;
+            }
+        }
+    }
+    // The body does not end cleanly, so the client cannot take what it
+    // received for all of the logs.
+    assert!(failed, "the answer ended cleanly: {seen}");
+    drop(stream);
     f.running.shutdown().await.unwrap();
 }
 

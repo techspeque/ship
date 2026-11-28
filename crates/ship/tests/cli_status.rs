@@ -43,6 +43,7 @@ case "$1" in
         cat "$d/$id.out" 2>/dev/null
         cat "$d/$id.err" >&2 2>/dev/null
         if [ -n "$follow" ]; then sleep 30; fi
+        if [ -f "$d/logs-fail" ]; then echo "Error response from daemon: read failed" >&2; exit 1; fi
         exit 0;;
     esac;;
 esac
@@ -488,6 +489,20 @@ fn follow_prints_lines_before_the_log_ends() {
     );
     child.kill().unwrap();
     child.wait().unwrap();
+}
+
+#[test]
+fn a_failed_log_read_exits_nonzero() {
+    let env = Env::new();
+    let _daemon = env.daemon();
+    fs::write(env.dir.path().join("fake").join("logs-fail"), "").unwrap();
+    for args in [
+        &["logs", "my-app/worker"][..],
+        &["logs", "my-app", "-o", "json"],
+    ] {
+        let out = env.run(args);
+        assert_eq!(out.status.code(), Some(1), "{args:?}: {}", show(&out));
+    }
 }
 
 #[test]

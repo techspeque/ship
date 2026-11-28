@@ -7,9 +7,11 @@
 //! logs` per container, selected by Ship's labels) in a task that is
 //! aborted, killing its readers, when the answer is dropped: the client
 //! went away, or the daemon is closing. Every line passes through the
-//! [`Redactor`] before it is sent.
+//! [`Redactor`] before it is sent. A reader that fails ends the answer with
+//! an error, so the body is cut short rather than ending cleanly and the
+//! client cannot take what it received for all of the logs.
 
-use std::convert::Infallible;
+use std::io;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::body::{Body, Bytes};
@@ -104,7 +106,7 @@ pub async fn handle(cx: LogsContext<'_>, project: &str, query: Option<&str>) -> 
         closing: cx.closing,
         redactor: cx.redactor.clone(),
     };
-    let stream = futures_util::stream::unfold(state, next_line);
+    let stream = futures_util::stream::unfold(Some(state), next_line);
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, NDJSON)
@@ -113,25 +115,29 @@ pub async fn handle(cx: LogsContext<'_>, project: &str, query: Option<&str>) -> 
         .unwrap_or_else(|_| error_response(ApiError::new(ErrorCode::Internal, "could not stream")))
 }
 
+/// A line read, or why a service's logs could not be read.
+type Item = Result<LogLineView, String>;
+
 /// Reads every service's lines into `out`: as they come with `follow`;
 /// otherwise all of them, then sorted by time (stably, so each container's
-/// order is kept), then sent.
+/// order is kept), then sent. A service whose read failed is sent as an
+/// `Err` after the lines.
 async fn read(
     docker: Runner,
     project: ComposeProject,
     services: Vec<String>,
     options: LogOptions,
-    out: mpsc::UnboundedSender<LogLineView>,
+    out: mpsc::UnboundedSender<Item>,
 ) {
     let timeout = (!options.follow).then_some(READ_TIMEOUT);
-    let (raw, mut lines) = mpsc::unbounded_channel::<LogLineView>();
+    let (raw, mut lines) = mpsc::unbounded_channel::<Item>();
     let readers = join_all(services.into_iter().map(|service| {
         let raw = raw.clone();
         let docker = &docker;
         let project = &project;
         async move {
             let mut sink = |line: Line| {
-                let _ = raw.send(parse_line(&service, &line));
+                let _ = raw.send(Ok(parse_line(&service, &line)));
             };
             let read = ship_docker::compose::logs(
                 docker,
@@ -144,6 +150,7 @@ async fn read(
             .await;
             if let Err(e) = read {
                 tracing::warn!(service = %service, error = %e, "reading a service's logs failed");
+                let _ = raw.send(Err(format!("reading {service}'s logs failed: {e}")));
             }
         }
     }));
@@ -160,11 +167,15 @@ async fn read(
     } else {
         readers.await;
         let mut all = Vec::new();
-        while let Ok(line) = lines.try_recv() {
-            all.push(line);
+        let mut failures = Vec::new();
+        while let Ok(item) = lines.try_recv() {
+            match item {
+                Ok(line) => all.push(line),
+                Err(why) => failures.push(why),
+            }
         }
         all.sort_by_key(|l| l.ts);
-        for line in all {
+        for line in all.into_iter().map(Ok).chain(failures.into_iter().map(Err)) {
             if out.send(line).is_err() {
                 return;
             }
@@ -236,13 +247,16 @@ impl Drop for AbortOnDrop {
 }
 
 struct Lines {
-    rx: mpsc::UnboundedReceiver<LogLineView>,
+    rx: mpsc::UnboundedReceiver<Item>,
     _task: AbortOnDrop,
     closing: watch::Receiver<bool>,
     redactor: Redactor,
 }
 
-async fn next_line(mut s: Lines) -> Option<(Result<Bytes, Infallible>, Lines)> {
+/// The next chunk of the answer. A read failure is an `Err`, which ends the
+/// body without its terminating chunk; nothing follows it.
+async fn next_line(s: Option<Lines>) -> Option<(Result<Bytes, io::Error>, Option<Lines>)> {
+    let mut s = s?;
     if *s.closing.borrow() {
         return None;
     }
@@ -253,8 +267,10 @@ async fn next_line(mut s: Lines) -> Option<(Result<Bytes, Infallible>, Lines)> {
         // that went away is noticed while its services are quiet.
         () = tokio::time::sleep(KEEPALIVE) => Some(None),
     };
-    let Some(line) = next? else {
-        return Some((Ok(Bytes::from_static(b"\n")), s));
+    let line = match next? {
+        None => return Some((Ok(Bytes::from_static(b"\n")), Some(s))),
+        Some(Ok(line)) => line,
+        Some(Err(why)) => return Some((Err(io::Error::other(why)), None)),
     };
     let line = LogLineView {
         line: String::from_utf8_lossy(&s.redactor.redact(line.line.as_bytes())).into_owned(),
@@ -262,7 +278,7 @@ async fn next_line(mut s: Lines) -> Option<(Result<Bytes, Infallible>, Lines)> {
     };
     let mut json = serde_json::to_string(&line).expect("a log line always serialises");
     json.push('\n');
-    Some((Ok(Bytes::from(json)), s))
+    Some((Ok(Bytes::from(json)), Some(s)))
 }
 
 #[cfg(test)]
