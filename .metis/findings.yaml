@@ -547,3 +547,12 @@ findings:
       file: crates/ship-daemon/src/logs.rs
       commit: 04df82e7ef126599f49e8a30fa9bc8356e2a5b0c
       evidence: test a_failed_log_read_cuts_the_answer_short
+    - id: f-047
+      date: "2026-11-28"
+      slice: phase-1-ws-1.12
+      severity: P2
+      category: data
+      finding: crates/ship-daemon/src/lifecycle.rs:448 — After revision A succeeds and revision B fails, remove records B as revision_id while previous_release_id belongs to A; a focused API test reproduced this, contradicting the removal contract naming the serving revision. Derive both revision and previous release from the serving deployment when present, retain an explicit fallback when nothing ever served, and add regression coverage.
+      status: open
+      cycle: 1
+      file: crates/ship-daemon/src/lifecycle.rs
