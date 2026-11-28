@@ -94,7 +94,8 @@ pub use id::{
     ServiceId,
 };
 pub use model::{
-    DeploymentResult, RecoveryPolicy, RevisionKind, RouteProvider, RouteStatus, ServiceKind,
+    DeploymentAction, DeploymentResult, RecoveryPolicy, RevisionKind, RouteProvider, RouteStatus,
+    ServiceKind,
 };
 pub use secret::SecretValue;
 pub use slug::{Slug, SlugError};

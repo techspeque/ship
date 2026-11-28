@@ -3,7 +3,8 @@
 //! Phase 0: `--version` / `-V`, `ship daemon`, `ship target`, `ship host`,
 //! `ship projects`, `ship open`, `ship dial-stdio` and `ship service`.
 //! Phase 1: `ship push`, `ship settings`, `ship vars`, `ship secrets`,
-//! `ship status`, `ship deployments` and `ship logs`.
+//! `ship status`, `ship deployments`, `ship logs`, and `ship start`,
+//! `stop`, `restart`, `redeploy` and `remove`.
 //! Exit codes: 0 success, 1
 //! failure, 2 usage error; `ship push` has the contract's codes
 //! ([`exit`]).
@@ -13,6 +14,7 @@ mod commands;
 mod config;
 mod exit;
 mod follow;
+mod lifecycle;
 mod open;
 mod push;
 mod service;
@@ -72,6 +74,20 @@ enum Command {
     /// Send a directory, uncommitted changes included, to the target's
     /// daemon, build it, start it and print its address.
     Push(push::PushArgs),
+    /// Start a project's stopped services, or one service.
+    Start(lifecycle::TargetArgs),
+    /// Stop a project's services, or one service; nothing in Ship starts
+    /// them again until `ship start`.
+    Stop(lifecycle::TargetArgs),
+    /// Restart a project's running services, or one service, on the
+    /// release serving now.
+    Restart(lifecycle::TargetArgs),
+    /// Deploy the serving revision of a project again, with the config
+    /// stored now.
+    Redeploy(lifecycle::ProjectArgs),
+    /// Remove a project's containers and networks, keeping every named
+    /// volume and the history; `ship push --recreate` brings it back.
+    Remove(lifecycle::RemoveArgs),
     /// Show or change the current target's daemon settings.
     #[command(subcommand)]
     Settings(settings::SettingsCommand),
@@ -229,6 +245,11 @@ fn main() -> ExitCode {
         Some(Command::Deployments(args)) => status::deployments(args),
         Some(Command::Logs(args)) => status::logs(args),
         Some(Command::Push(args)) => push::push(args),
+        Some(Command::Start(args)) => lifecycle::start(args),
+        Some(Command::Stop(args)) => lifecycle::stop(args),
+        Some(Command::Restart(args)) => lifecycle::restart(args),
+        Some(Command::Redeploy(args)) => lifecycle::redeploy(args),
+        Some(Command::Remove(args)) => lifecycle::remove(args),
         Some(Command::Settings(command)) => settings::settings(command),
         Some(Command::Vars(command)) => vars::vars(command),
         Some(Command::Secrets(command)) => vars::secrets(command),

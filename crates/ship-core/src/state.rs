@@ -56,6 +56,16 @@ impl DesiredState {
             Err(TransitionError { from: self, to })
         }
     }
+
+    /// What is asked of one service: the environment's desired state when
+    /// it is `stopped` or `removed`, which wins, else the service's own
+    /// (`ship stop P/S` records `stopped` for one service).
+    pub fn effective(environment: DesiredState, service: DesiredState) -> DesiredState {
+        match environment {
+            DesiredState::Running => service,
+            halted => halted,
+        }
+    }
 }
 
 string_enum! {
@@ -377,6 +387,16 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn the_environment_wins_unless_it_is_running() {
+        use DesiredState::*;
+        for &service in DesiredState::ALL {
+            assert_eq!(DesiredState::effective(Running, service), service);
+            assert_eq!(DesiredState::effective(Stopped, service), Stopped);
+            assert_eq!(DesiredState::effective(Removed, service), Removed);
         }
     }
 

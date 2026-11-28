@@ -35,6 +35,21 @@ latest that succeeded, so a later failure leaves it visible; before any
 success it is the latest deployment, whatever its result. `ship
 deployments` lists every deployment, failures included.
 
+On 2026-11-28 (phase-1-ws-1.12) `status.json` and `deployments.json`
+gained, on purpose:
+
+- `action` on every deployment and on `last_deployment`: `deploy`, or
+  `remove` for `ship remove`, which is recorded in the same history. A
+  removal names the revision that was serving, has `release_id: null`,
+  `previous_release_id` the release it took down, and result `succeeded`.
+  After a removal `last_deployment` is the removal until
+  `ship push --recreate` deploys again.
+- `desired_state` on every service of `ship status`: `running`, or
+  `stopped` after `ship stop PROJECT/SERVICE`. The environment's
+  `desired_state` wins when it is `stopped` or `removed`; a service's
+  `status` derives from the one that applies, so a service stopped on
+  purpose is `stopped`, never `failed`.
+
 ## Rules for every shape
 
 - Ids are strings with a type prefix. Timestamps are ISO 8601, UTC, with
@@ -62,7 +77,7 @@ the same.
 | 0 | `succeeded` | Deployed and met its verification criteria | replaced |
 | 1 | `failed` | The upload, build, deployment or verification failed; `failure` names the phase and a stable code | untouched |
 | 2 | `usage` | Bad flags or arguments | untouched |
-| 3 | `confirmation_required` | The Compose file needs an operator's confirmation (ADR-0008 rule 2) and none was given: no terminal, no `--confirm`, and no `compose.confirm accept` setting on the host | untouched |
+| 3 | `confirmation_required` | The Compose file needs an operator's confirmation (ADR-0008 rule 2) and none was given: no terminal, no `--confirm`, and no `compose.confirm accept` setting on the host; or the environment was removed and the push has no `--recreate` (the message starts `the environment was removed` and names the volumes that would be reattached). Nothing is deployed | untouched |
 | 90 | `daemon_unreachable` | No daemon answered on the target | untouched |
 | 91 | `version_mismatch` | Client and daemon API versions are incompatible | untouched |
 | 92 | `docker_unavailable` | The host's Docker Engine or Compose is unreachable or unsupported | untouched |
@@ -72,3 +87,33 @@ the same.
 
 Codes 90 to 99 are Ship's own failures. Code 1 is a failure of what was
 pushed. A caller that retries should retry only on 90 and 94.
+
+## Lifecycle commands
+
+`ship start|stop|restart PROJECT[/SERVICE]` and `ship redeploy|remove
+PROJECT`, each one operation followed to its end (phase-1-ws-1.12). Their
+`-o json` is the operation as it ended (`OperationView`, the shape
+`GET /api/v1/operations/{id}` answers); it is not a contract shape yet.
+Exit codes: 0 done; 1 the action failed or was refused (a removed
+environment, a stopped environment for one service, nothing deployed, an
+unknown project or service); 2 usage, including `redeploy` or `remove`
+with `/SERVICE`, refused before anything is sent because a release and a
+Compose project cover the whole environment; 3 `remove` with no terminal
+and no `--confirm`, nothing sent; 90, 92, 93 and 94 as for `ship push`.
+
+- `stop` records the stop first, so nothing in Ship starts it again until
+  `start`; a deployment (`push`, `redeploy`) asks for everything running
+  and so starts a stopped environment or service.
+- `restart` restarts the containers of the release serving now and skips
+  services stopped on purpose; `redeploy` deploys the serving revision
+  again with the options it was deployed with and the config stored now.
+- `remove` runs `compose down`, never with volumes: containers and
+  networks go, every named volume, the release files and the history
+  stay. A removed environment refuses `start`, `stop`, `restart` and
+  `redeploy`, and only `ship push --recreate` brings it back, as the same
+  environment with its volumes reattached.
+- Docker's restart policy decides what happens after a host reboot: the
+  `unless-stopped` policy Ship gives a Dockerfile project keeps a stopped
+  container stopped; a Compose file that asks for `restart: always` is
+  started again by Docker itself at boot, and `ship status` then shows it
+  running under desired `stopped`.

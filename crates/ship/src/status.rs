@@ -143,6 +143,13 @@ pub(crate) fn render_status(view: &StatusView, output: Output) -> String {
     );
     match &view.last_deployment {
         None => s.push_str("Deployment:  none yet\n"),
+        Some(d) if d.action == "remove" => {
+            let at = d.ended_at.unwrap_or(d.started_at);
+            s.push_str(&format!(
+                "Deployment:  removed at {at} ({}); `ship push --recreate` brings it back\n",
+                d.id
+            ));
+        }
         Some(d) => {
             let result = d.result.as_deref().unwrap_or("in progress");
             let at = d.ended_at.unwrap_or(d.started_at);
@@ -181,6 +188,7 @@ pub(crate) fn render_status(view: &StatusView, output: Output) -> String {
             vec![
                 svc.name.clone(),
                 svc.kind.clone(),
+                svc.desired_state.clone(),
                 status,
                 svc.restarts.to_string(),
                 endpoints,
@@ -188,7 +196,9 @@ pub(crate) fn render_status(view: &StatusView, output: Output) -> String {
         })
         .collect();
     s.push_str(&table(
-        &["SERVICE", "KIND", "STATUS", "RESTARTS", "ENDPOINT"],
+        &[
+            "SERVICE", "KIND", "DESIRED", "STATUS", "RESTARTS", "ENDPOINT",
+        ],
         &rows,
     ));
     s
@@ -209,6 +219,7 @@ pub(crate) fn render_deployments(list: &DeploymentList, output: Output) -> Strin
         .map(|d| {
             vec![
                 d.started_at.to_string(),
+                d.action.clone(),
                 d.result.clone().unwrap_or_else(|| "in progress".to_owned()),
                 d.release_id
                     .map_or_else(|| "-".to_owned(), |r| r.to_string()),
@@ -216,7 +227,10 @@ pub(crate) fn render_deployments(list: &DeploymentList, output: Output) -> Strin
             ]
         })
         .collect();
-    let text = table(&["STARTED", "RESULT", "RELEASE", "DEPLOYMENT"], &rows);
+    let text = table(
+        &["STARTED", "ACTION", "RESULT", "RELEASE", "DEPLOYMENT"],
+        &rows,
+    );
     let mut s = String::new();
     let mut lines = text.lines();
     if let Some(header) = lines.next() {
@@ -374,9 +388,22 @@ mod tests {
              Deployment:  succeeded at 2026-01-02T03:04:45.000Z \
              (dep_01aryz6s41tsv4rrffq69g5fav, release rel_01aryz6s41tsv4rrffq69g5fav)\n\
              \n\
-             SERVICE  KIND    STATUS              RESTARTS  ENDPOINT\n\
-             web      web     healthy             0         192.0.2.10:8080\n\
-             worker   worker  running_unverified  2         not configured\n"
+             SERVICE  KIND    DESIRED  STATUS              RESTARTS  ENDPOINT\n\
+             web      web     running  healthy             0         192.0.2.10:8080\n\
+             worker   worker  running  running_unverified  2         not configured\n"
+        );
+        let mut removed = view.clone();
+        if let Some(d) = removed.last_deployment.as_mut() {
+            d.action = "remove".to_owned();
+            d.release_id = None;
+        }
+        let text = render_status(&removed, Output::Text);
+        assert!(
+            text.contains(
+                "Deployment:  removed at 2026-01-02T03:04:45.000Z \
+                 (dep_01aryz6s41tsv4rrffq69g5fav); `ship push --recreate` brings it back\n"
+            ),
+            "{text}"
         );
         let mut stale = view.clone();
         stale.services[0].stale_config = true;
@@ -393,10 +420,10 @@ mod tests {
         let list: DeploymentList = serde_json::from_str(DEPLOYMENTS).unwrap();
         assert_eq!(
             render_deployments(&list, Output::Text),
-            "STARTED                   RESULT     RELEASE                         DEPLOYMENT\n\
-             2026-01-03T03:04:05.000Z  failed     -                               dep_01aryz6s41tsv4rrffq69g5faw\n\
+            "STARTED                   ACTION  RESULT     RELEASE                         DEPLOYMENT\n\
+             2026-01-03T03:04:05.000Z  deploy  failed     -                               dep_01aryz6s41tsv4rrffq69g5faw\n\
              \x20 build_failed in building: the image build exited 1\n\
-             2026-01-02T03:04:05.000Z  succeeded  rel_01aryz6s41tsv4rrffq69g5fav  dep_01aryz6s41tsv4rrffq69g5fav\n"
+             2026-01-02T03:04:05.000Z  deploy  succeeded  rel_01aryz6s41tsv4rrffq69g5fav  dep_01aryz6s41tsv4rrffq69g5fav\n"
         );
         assert_eq!(
             render_deployments(&DeploymentList::default(), Output::Text),

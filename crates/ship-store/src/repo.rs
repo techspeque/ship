@@ -73,6 +73,11 @@ pub struct Service {
     pub name: String,
     pub kind: ServiceKind,
     pub port: Option<u16>,
+    /// What the operator asked of this service alone: `running` (the
+    /// default) or `stopped` after `ship stop P/S` (migration 0005). The
+    /// environment's desired state wins when it is not `running`
+    /// ([`DesiredState::effective`]).
+    pub desired_state: DesiredState,
     pub created_at: Timestamp,
 }
 
@@ -222,6 +227,7 @@ fn service_from(row: &SqliteRow) -> Result<Service, StoreError> {
         name: row.try_get("name").map_err(db)?,
         kind: text(row, "kind", E)?,
         port,
+        desired_state: text(row, "desired_state", E)?,
         created_at: time(row, "created_at", E)?,
     })
 }
@@ -394,6 +400,7 @@ impl Store {
             name: new.name.clone(),
             kind: new.kind,
             port: new.port,
+            desired_state: DesiredState::Running,
             created_at,
         };
         sqlx::query(
@@ -437,7 +444,7 @@ impl Store {
         .await
         .map_err(write_err("service"))?;
         let row = sqlx::query(
-            "SELECT id, environment_id, name, kind, port, created_at FROM service \
+            "SELECT id, environment_id, name, kind, port, desired_state, created_at FROM service \
              WHERE environment_id = ? AND name = ?",
         )
         .bind(environment.to_string())
@@ -452,7 +459,8 @@ impl Store {
     /// The service with `id`.
     pub async fn get_service(&self, id: ServiceId) -> Result<Service, StoreError> {
         let row = sqlx::query(
-            "SELECT id, environment_id, name, kind, port, created_at FROM service WHERE id = ?",
+            "SELECT id, environment_id, name, kind, port, desired_state, created_at \
+             FROM service WHERE id = ?",
         )
         .bind(id.to_string())
         .fetch_optional(&self.pool)
@@ -468,7 +476,7 @@ impl Store {
         environment: EnvironmentId,
     ) -> Result<Vec<Service>, StoreError> {
         sqlx::query(
-            "SELECT id, environment_id, name, kind, port, created_at \
+            "SELECT id, environment_id, name, kind, port, desired_state, created_at \
              FROM service WHERE environment_id = ? ORDER BY id",
         )
         .bind(environment.to_string())
@@ -609,7 +617,7 @@ impl Store {
 }
 
 /// Reads one environment inside a transaction.
-async fn environment_in(
+pub(crate) async fn environment_in(
     conn: &mut SqliteConnection,
     id: EnvironmentId,
 ) -> Result<Environment, StoreError> {
@@ -626,7 +634,9 @@ async fn environment_in(
 
 /// Starts a transaction that holds SQLite's write lock from the start, so a
 /// read inside it cannot go stale before the write.
-async fn begin_immediate(store: &Store) -> Result<sqlx::Transaction<'static, Sqlite>, StoreError> {
+pub(crate) async fn begin_immediate(
+    store: &Store,
+) -> Result<sqlx::Transaction<'static, Sqlite>, StoreError> {
     store.pool.begin_with("BEGIN IMMEDIATE").await.map_err(db)
 }
 
@@ -748,6 +758,52 @@ impl Store {
             desired_state: to,
             ..env
         })
+    }
+
+    /// Records what the operator asked of one service: `running` or
+    /// `stopped` (`ship start|stop P/S`). Asking for the current state
+    /// changes nothing. `removed` is the environment's alone and is
+    /// [`StoreError::IllegalTransition`]; an unknown service is
+    /// [`StoreError::NotFound`].
+    pub async fn set_service_desired_state(
+        &self,
+        id: ServiceId,
+        to: DesiredState,
+    ) -> Result<Service, StoreError> {
+        if to == DesiredState::Removed {
+            return Err(illegal("service"));
+        }
+        let service = self.get_service(id).await?;
+        if service.desired_state == to {
+            return Ok(service);
+        }
+        sqlx::query("UPDATE service SET desired_state = ? WHERE id = ?")
+            .bind(to.as_str())
+            .bind(id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(write_err("service"))?;
+        Ok(Service {
+            desired_state: to,
+            ..service
+        })
+    }
+
+    /// Records every service of `environment` as desired `running`: what a
+    /// deployment or `ship start P` asks for. Returns how many changed.
+    pub async fn set_services_running(
+        &self,
+        environment: EnvironmentId,
+    ) -> Result<u64, StoreError> {
+        let done = sqlx::query(
+            "UPDATE service SET desired_state = 'running' \
+             WHERE environment_id = ? AND desired_state <> 'running'",
+        )
+        .bind(environment.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(write_err("service"))?;
+        Ok(done.rows_affected())
     }
 
     // ---- operation state ----

@@ -115,6 +115,8 @@ comes back only through `ship push --recreate` (Human, 2026-11-28).
   - docs/contracts/cli-json.md
   - Cargo.lock
   - .metis/briefs/phase-1-ws-1.12.md
+  - crates/ship-store/tests/deploy.rs — out-of-scope touch, below
+  - crates/ship-store/tests/phase1.rs — out-of-scope touch, below
 - **read_only_paths:** .metis/adr/, .metis/plans/phase-1-plan.md,
   OVERVIEW.md, crates/ship-store/migrations/ (other than 0005),
   crates/ship-docker/, crates/ship-net/, crates/ship-source/, web/,
@@ -185,7 +187,11 @@ comes back only through `ship push --recreate` (Human, 2026-11-28).
 
 ## Out-of-scope touches
 
-None.
+- `crates/ship-store/tests/deploy.rs` (3 lines) and
+  `crates/ship-store/tests/phase1.rs` (1 line): the literal schema version
+  `4` in `assert_eq!(…, 4)` becomes `5`. Why: both tests pin
+  `LATEST_VERSION` to 4, so any new migration fails them; migration 0005 is
+  what the plan asks for (§1.12 task 2). No assertion changes otherwise.
 
 ## Report
 

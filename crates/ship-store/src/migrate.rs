@@ -45,6 +45,10 @@ pub(crate) const MIGRATIONS: &[Migration] = &[
         version: 4,
         sql: include_str!("../migrations/0004_compose_confirm.sql"),
     },
+    Migration {
+        version: 5,
+        sql: include_str!("../migrations/0005_lifecycle.sql"),
+    },
 ];
 
 /// The schema version this binary migrates to.

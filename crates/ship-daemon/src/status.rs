@@ -41,6 +41,7 @@ pub async fn status_view(
     let deployments = store.list_deployments(environment.id).await?;
     let last_deployment = reported(&deployments).map(|d| LastDeploymentView {
         id: d.id,
+        action: d.action.as_str().to_owned(),
         release_id: d.release_id,
         operation_id: d.operation_id,
         result: d.result.map(|r| r.as_str().to_owned()),
@@ -74,6 +75,7 @@ pub async fn status_view(
             id: service.id,
             name: service.name.clone(),
             kind: service.kind.as_str().to_owned(),
+            desired_state: service.desired_state.as_str().to_owned(),
             status: status.as_str().to_owned(),
             restarts: stored.restarts,
             observed_at: stored.observed_at,
@@ -121,6 +123,7 @@ pub async fn deployment_list(
         deployments.push(DeploymentView {
             id: d.id,
             environment: environment.name.as_str().to_owned(),
+            action: d.action.as_str().to_owned(),
             revision_id: d.revision_id,
             release_id: d.release_id,
             previous_release_id: d.previous_release_id,
@@ -176,7 +179,9 @@ pub fn env_of(query: Option<&str>) -> Result<String, ApiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ship_core::{DeploymentId, EnvironmentId, OperationId, RevisionId, Timestamp};
+    use ship_core::{
+        DeploymentAction, DeploymentId, EnvironmentId, OperationId, RevisionId, Timestamp,
+    };
 
     fn deployment(n: u128, result: Option<DeploymentResult>) -> Deployment {
         Deployment {
@@ -189,6 +194,8 @@ mod tests {
             previous_release_id: None,
             started_at: Timestamp::from_unix_millis(0).unwrap(),
             ended_at: None,
+            action: DeploymentAction::Deploy,
+            options: None,
         }
     }
 

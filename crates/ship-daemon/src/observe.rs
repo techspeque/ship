@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use ship_core::{ContainerState, HealthCheck, Observation, ServiceId, ServiceStatus};
+use ship_core::{ContainerState, DesiredState, HealthCheck, Observation, ServiceId, ServiceStatus};
 use ship_docker::{ContainerObservation, Runner, Selector, containers};
 use ship_store::{Environment, NewObservation, Service, Store, StoreError, StoredObservation};
 use tokio::sync::watch;
@@ -28,11 +28,20 @@ pub struct Observed {
 }
 
 impl Observed {
-    /// The status the observation gives under `environment`'s desired
-    /// state.
+    /// The status the observation gives under what is asked of the
+    /// service: `environment`'s desired state when it is not `running`,
+    /// else the service's own ([`DesiredState::effective`]).
     pub fn status(&self, environment: &Environment) -> ServiceStatus {
-        ServiceStatus::from_observation(self.stored.observation, environment.desired_state)
+        ServiceStatus::from_observation(
+            self.stored.observation,
+            desired(environment, &self.service),
+        )
     }
+}
+
+/// What is asked of `service` of `environment`.
+pub fn desired(environment: &Environment, service: &Service) -> DesiredState {
+    DesiredState::effective(environment.desired_state, service.desired_state)
 }
 
 /// What no container means: the service is not running.
@@ -73,7 +82,7 @@ pub fn per_service(
         .map(|s| {
             let ours = by_service.get(&s.id).map(Vec::as_slice).unwrap_or(&[]);
             let worst = ours.iter().min_by_key(|c| {
-                ServiceStatus::from_observation(c.observation, environment.desired_state).severity()
+                ServiceStatus::from_observation(c.observation, desired(environment, s)).severity()
             });
             NewObservation {
                 service_id: s.id,
@@ -175,6 +184,7 @@ mod tests {
             name: format!("s{n}"),
             kind: ServiceKind::Web,
             port: None,
+            desired_state: DesiredState::Running,
             created_at: Timestamp::from_unix_millis(0).unwrap(),
         }
     }
@@ -236,6 +246,41 @@ mod tests {
         assert_eq!(got[2].observation, ABSENT);
         assert_eq!(
             ServiceStatus::from_observation(got[2].observation, env.desired_state),
+            ServiceStatus::Stopped
+        );
+    }
+
+    #[test]
+    fn a_service_stopped_on_purpose_is_stopped_not_failed() {
+        let exited = Observation::Reachable {
+            container: ContainerState::Exited { exit_code: 143 },
+            health: HealthCheck::None,
+            oom_killed: false,
+        };
+        let stored = |service: Service| Observed {
+            service,
+            stored: StoredObservation {
+                service_id: ServiceId::from_parts(1, 1).unwrap(),
+                observation: exited,
+                restarts: 0,
+                observed_at: Timestamp::from_unix_millis(0).unwrap(),
+            },
+        };
+        let mut stopped = service(1);
+        stopped.desired_state = DesiredState::Stopped;
+        let running_env = environment(DesiredState::Running);
+        assert_eq!(
+            stored(stopped.clone()).status(&running_env),
+            ServiceStatus::Stopped
+        );
+        assert_eq!(
+            stored(service(2)).status(&running_env),
+            ServiceStatus::Failed
+        );
+        // The environment's stop wins over a service desired running.
+        let stopped_env = environment(DesiredState::Stopped);
+        assert_eq!(
+            stored(service(2)).status(&stopped_env),
             ServiceStatus::Stopped
         );
     }

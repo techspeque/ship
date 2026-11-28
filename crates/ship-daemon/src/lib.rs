@@ -25,6 +25,7 @@ pub mod config;
 pub mod deploy;
 pub mod host;
 pub mod http;
+pub mod lifecycle;
 pub mod log;
 pub mod logs;
 pub mod observe;

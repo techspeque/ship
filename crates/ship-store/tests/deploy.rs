@@ -93,8 +93,8 @@ async fn a_version_2_database_migrates_to_the_latest_version_with_a_backup() {
     let store = Store::open(dir.path()).await.unwrap();
     let report = store.open_report().clone();
     assert_eq!(report.from_version, 2);
-    assert_eq!(report.to_version, 4);
-    assert_eq!(LATEST_VERSION, 4);
+    assert_eq!(report.to_version, 5);
+    assert_eq!(LATEST_VERSION, 5);
     let backup = report.backup.expect("a backup was taken");
 
     // Every row survived.
@@ -154,7 +154,7 @@ async fn a_version_2_database_migrates_to_the_latest_version_with_a_backup() {
 
     // Reopening is clean, takes no second backup and keeps the setting.
     let store = Store::open(dir.path()).await.unwrap();
-    assert_eq!(store.open_report().from_version, 4);
+    assert_eq!(store.open_report().from_version, 5);
     assert_eq!(store.open_report().backup, None);
     assert_eq!(
         store

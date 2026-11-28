@@ -10,6 +10,7 @@
   },
   "last_deployment": {
     "id": "dep_01aryz6s41tsv4rrffq69g5fav",
+    "action": "deploy",
     "release_id": "rel_01aryz6s41tsv4rrffq69g5fav",
     "operation_id": "op_01aryz6s41tsv4rrffq69g5fav",
     "result": "succeeded",
@@ -21,6 +22,7 @@
       "id": "svc_01aryz6s41tsv4rrffq69g5fav",
       "name": "web",
       "kind": "web",
+      "desired_state": "running",
       "status": "healthy",
       "restarts": 0,
       "observed_at": "2026-01-02T03:05:00.000Z",
@@ -36,6 +38,7 @@
       "id": "svc_01aryz6s41tsv4rrffq69g5faw",
       "name": "worker",
       "kind": "worker",
+      "desired_state": "running",
       "status": "running_unverified",
       "restarts": 2,
       "observed_at": "2026-01-02T03:05:00.000Z",

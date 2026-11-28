@@ -129,6 +129,7 @@ pub async fn handle(
             file,
             port,
             confirm,
+            recreate,
         } = options;
         move |ctx: Context| async move {
             let received = crate::upload::receive(&ctx, &store, &uploads, &request, body).await;
@@ -149,6 +150,7 @@ pub async fn handle(
                 file,
                 port,
                 confirm,
+                recreate,
             };
             crate::deploy::run(&ctx, &deployer, &job).await.map(|_| ())
         }
@@ -405,7 +407,12 @@ pub async fn deployment_of(
                 let statuses: Vec<ServiceStatus> = found
                     .iter()
                     .filter(|c| c.labels.release == release && c.labels.service == Some(service.id))
-                    .map(|c| ServiceStatus::from_observation(c.observation, env.desired_state))
+                    .map(|c| {
+                        ServiceStatus::from_observation(
+                            c.observation,
+                            crate::observe::desired(&env, &service),
+                        )
+                    })
                     .collect();
                 statuses
                     .iter()

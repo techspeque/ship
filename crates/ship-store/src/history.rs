@@ -6,16 +6,16 @@
 //! the store maps its refusals to typed errors.
 
 use ship_core::{
-    DeploymentId, DeploymentResult, EnvironmentId, OperationId, ProjectId, ReleaseId, RevisionId,
-    RevisionKind, Timestamp,
+    DeploymentAction, DeploymentId, DeploymentResult, DesiredState, EnvironmentId, OperationId,
+    ProjectId, ReleaseId, RevisionId, RevisionKind, Timestamp,
 };
 use sqlx::sqlite::SqliteRow;
 use sqlx::{AssertSqlSafe, Row};
 
 use crate::Store;
 use crate::clock::{new_id, now};
-use crate::error::{StoreError, db, invalid, not_found, write_err};
-use crate::repo::{opt_text, text, time};
+use crate::error::{StoreError, db, illegal, invalid, not_found, write_err};
+use crate::repo::{Environment, begin_immediate, environment_in, opt_text, text, time};
 
 /// Input for [`Store::create_revision`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +84,14 @@ pub struct Deployment {
     pub previous_release_id: Option<ReleaseId>,
     pub started_at: Timestamp,
     pub ended_at: Option<Timestamp>,
+    /// `deploy`, or `remove` for the removal of the environment, which
+    /// names the revision that was serving and records no release
+    /// (migration 0005).
+    pub action: DeploymentAction,
+    /// What a deploy was asked with (`--file`, `--port`) as JSON, so it
+    /// can be repeated (`ship redeploy`); `None` for a removal and a
+    /// deployment from before migration 0005.
+    pub options: Option<String>,
 }
 
 fn revision_from(row: &SqliteRow) -> Result<Revision, StoreError> {
@@ -134,13 +142,15 @@ fn deployment_from(row: &SqliteRow) -> Result<Deployment, StoreError> {
         previous_release_id: opt_text(row, "previous_release_id", E)?,
         started_at: time(row, "started_at", E)?,
         ended_at,
+        action: text(row, "action", E)?,
+        options: row.try_get("options").map_err(db)?,
     })
 }
 
 const REVISION_COLUMNS: &str = "id, project_id, kind, source_ref, manifest_fingerprint, created_at";
 const RELEASE_COLUMNS: &str = "id, revision_id, images, config_fingerprint, created_at";
 const DEPLOYMENT_COLUMNS: &str = "id, environment_id, revision_id, release_id, operation_id, \
-     result, previous_release_id, started_at, ended_at";
+     result, previous_release_id, started_at, ended_at, action, options";
 
 impl Store {
     // ---- revisions ----
@@ -299,33 +309,95 @@ impl Store {
     /// [`StoreError::Conflict`]. An operation of another environment, or a
     /// revision of another project, is [`StoreError::Invalid`].
     pub async fn create_deployment(&self, new: &NewDeployment) -> Result<Deployment, StoreError> {
-        let started_at = now()?;
-        let deployment = Deployment {
-            id: new_id(started_at, DeploymentId::from_parts)?,
-            environment_id: new.environment_id,
-            revision_id: new.revision_id,
-            release_id: None,
-            operation_id: new.operation_id,
-            result: None,
-            previous_release_id: new.previous_release_id,
-            started_at,
-            ended_at: None,
-        };
-        sqlx::query(
-            "INSERT INTO deployment \
-             (id, environment_id, revision_id, operation_id, previous_release_id, started_at) \
-             VALUES (?, ?, ?, ?, ?, ?)",
-        )
-        .bind(deployment.id.to_string())
-        .bind(deployment.environment_id.to_string())
-        .bind(deployment.revision_id.to_string())
-        .bind(deployment.operation_id.to_string())
-        .bind(deployment.previous_release_id.map(|r| r.to_string()))
-        .bind(deployment.started_at.unix_millis())
-        .execute(&self.pool)
-        .await
-        .map_err(write_err("deployment"))?;
+        self.create_deployment_with(new, None).await
+    }
+
+    /// [`Store::create_deployment`] recording the options the deploy was
+    /// asked with (JSON), so `ship redeploy` can repeat it.
+    pub async fn create_deployment_with(
+        &self,
+        new: &NewDeployment,
+        options: Option<&str>,
+    ) -> Result<Deployment, StoreError> {
+        let deployment = open_deployment(new, DeploymentAction::Deploy, options)?;
+        insert_deployment(&mut *self.pool.acquire().await.map_err(db)?, &deployment).await?;
         Ok(deployment)
+    }
+
+    /// Records the removal of `new.environment_id` in its history, opened
+    /// and succeeded at once: a `remove` deployment naming the revision
+    /// that was serving (`new.revision_id`) and the release it replaced
+    /// (`new.previous_release_id`), with no release of its own. The rules
+    /// of [`Store::create_deployment`] apply.
+    pub async fn record_removal(&self, new: &NewDeployment) -> Result<Deployment, StoreError> {
+        let deployment = open_deployment(new, DeploymentAction::Remove, None)?;
+        let mut tx = begin_immediate(self).await?;
+        insert_deployment(&mut tx, &deployment).await?;
+        let ended_at = now()?;
+        sqlx::query("UPDATE deployment SET result = 'succeeded', ended_at = ? WHERE id = ?")
+            .bind(ended_at.unix_millis())
+            .bind(deployment.id.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(write_err("deployment"))?;
+        tx.commit().await.map_err(db)?;
+        Ok(Deployment {
+            result: Some(DeploymentResult::Succeeded),
+            ended_at: Some(ended_at),
+            ..deployment
+        })
+    }
+
+    /// Brings a removed environment back to desired `running` through
+    /// `deployment`, the `ship push --recreate` that just succeeded (Human,
+    /// 2026-11-28). The only way out of `removed`: `deployment` must be a
+    /// succeeded `deploy` of this environment that started no earlier than
+    /// its latest removal ended, else [`StoreError::IllegalTransition`],
+    /// which the schema's trigger enforces too. An environment that is not
+    /// removed is returned unchanged.
+    pub async fn recreate_environment(
+        &self,
+        environment: EnvironmentId,
+        deployment: DeploymentId,
+    ) -> Result<Environment, StoreError> {
+        let mut tx = begin_immediate(self).await?;
+        let env = environment_in(&mut tx, environment).await?;
+        if env.desired_state != DesiredState::Removed {
+            return Ok(env);
+        }
+        // Built from a compile-time constant only; values are bound.
+        let sql = format!("SELECT {DEPLOYMENT_COLUMNS} FROM deployment WHERE id = ?");
+        let row = sqlx::query(AssertSqlSafe(sql))
+            .bind(deployment.to_string())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db)?
+            .ok_or(not_found("deployment"))?;
+        let d = deployment_from(&row)?;
+        let removed_at: Option<i64> = sqlx::query_scalar(
+            "SELECT MAX(ended_at) FROM deployment WHERE environment_id = ? AND action = 'remove'",
+        )
+        .bind(environment.to_string())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(db)?;
+        let through = d.environment_id == environment
+            && d.action == DeploymentAction::Deploy
+            && d.result == Some(DeploymentResult::Succeeded)
+            && d.started_at.unix_millis() >= removed_at.unwrap_or(0);
+        if !through {
+            return Err(illegal("environment"));
+        }
+        sqlx::query("UPDATE environment SET desired_state = 'running' WHERE id = ?")
+            .bind(environment.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(write_err("environment"))?;
+        tx.commit().await.map_err(db)?;
+        Ok(Environment {
+            desired_state: DesiredState::Running,
+            ..env
+        })
     }
 
     /// The deployment with `id`.
@@ -425,4 +497,50 @@ impl Store {
             .ok_or(not_found("deployment"))?;
         deployment_from(&row)
     }
+}
+
+/// A deployment of `action` about to be inserted, open.
+fn open_deployment(
+    new: &NewDeployment,
+    action: DeploymentAction,
+    options: Option<&str>,
+) -> Result<Deployment, StoreError> {
+    let started_at = now()?;
+    Ok(Deployment {
+        id: new_id(started_at, DeploymentId::from_parts)?,
+        environment_id: new.environment_id,
+        revision_id: new.revision_id,
+        release_id: None,
+        operation_id: new.operation_id,
+        result: None,
+        previous_release_id: new.previous_release_id,
+        started_at,
+        ended_at: None,
+        action,
+        options: options.map(str::to_owned),
+    })
+}
+
+async fn insert_deployment(
+    conn: &mut sqlx::sqlite::SqliteConnection,
+    d: &Deployment,
+) -> Result<(), StoreError> {
+    sqlx::query(
+        "INSERT INTO deployment \
+         (id, environment_id, revision_id, operation_id, previous_release_id, started_at, \
+          action, options) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(d.id.to_string())
+    .bind(d.environment_id.to_string())
+    .bind(d.revision_id.to_string())
+    .bind(d.operation_id.to_string())
+    .bind(d.previous_release_id.map(|r| r.to_string()))
+    .bind(d.started_at.unix_millis())
+    .bind(d.action.as_str())
+    .bind(d.options.as_deref())
+    .execute(&mut *conn)
+    .await
+    .map_err(write_err("deployment"))?;
+    Ok(())
 }

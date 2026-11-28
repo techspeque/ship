@@ -3,6 +3,7 @@
     {
       "id": "dep_01aryz6s41tsv4rrffq69g5faw",
       "environment": "development",
+      "action": "deploy",
       "revision_id": "rev_01aryz6s41tsv4rrffq69g5faw",
       "release_id": null,
       "previous_release_id": "rel_01aryz6s41tsv4rrffq69g5fav",
@@ -19,6 +20,7 @@
     {
       "id": "dep_01aryz6s41tsv4rrffq69g5fav",
       "environment": "development",
+      "action": "deploy",
       "revision_id": "rev_01aryz6s41tsv4rrffq69g5fav",
       "release_id": "rel_01aryz6s41tsv4rrffq69g5fav",
       "previous_release_id": null,

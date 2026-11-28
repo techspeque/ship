@@ -43,6 +43,17 @@ string_enum! {
 }
 
 string_enum! {
+    /// What a deployment did to its environment: applied a release
+    /// (`deploy`), or removed its containers and networks, keeping its
+    /// volumes and history (`remove`, phase-1-ws-1.12), which records no
+    /// release.
+    pub enum DeploymentAction {
+        Deploy => "deploy",
+        Remove => "remove",
+    }
+}
+
+string_enum! {
     /// How a route reaches a service (ADR-0010). Phase 1 has `port` only.
     pub enum RouteProvider {
         Port => "port",

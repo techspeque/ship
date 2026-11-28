@@ -13,8 +13,9 @@ use bytes::Bytes;
 use serde::Serialize;
 use ship_core::api::{
     DeployRequest, IDEMPOTENCY_KEY_HEADER, OperationDeploymentView, OperationEventView,
-    OperationView, PushView, SNAPSHOT_SHA256_HEADER, ServiceOutcomeView, deployments_path,
-    operation_deployment_path, operation_path, push_query, pushes_path,
+    OperationView, PushOptions, PushView, RECREATE_REQUIRED, SNAPSHOT_SHA256_HEADER,
+    ServiceOutcomeView, deployments_path, operation_deployment_path, operation_path, push_query,
+    pushes_path,
 };
 use ship_core::deploy::PortSpec;
 use ship_core::{
@@ -73,6 +74,10 @@ pub struct PushArgs {
     /// Confirm the Compose file's confirmation items (ADR-0008 rule 2).
     #[arg(long)]
     confirm: bool,
+    /// Bring back a removed environment: the same environment, its named
+    /// volumes reattached and its history continued.
+    #[arg(long)]
+    recreate: bool,
     /// Push to this target instead of the current one.
     #[arg(long, value_name = "TARGET")]
     to: Option<String>,
@@ -305,6 +310,21 @@ struct Run<'a> {
     slug: &'a Slug,
 }
 
+/// What the operator confirmed for a push.
+#[derive(Debug, Clone, Copy, Default)]
+struct Confirmed {
+    /// The Compose file's confirmation items (ADR-0008 rule 2).
+    compose: bool,
+    /// Bringing back a removed environment (`--recreate`).
+    recreate: bool,
+}
+
+/// Whether a `confirmation_required` failure asks to recreate a removed
+/// environment rather than to confirm a Compose file's items.
+fn is_recreate_required(message: &str) -> bool {
+    message.starts_with(RECREATE_REQUIRED)
+}
+
 /// What the result line knows of the push.
 #[derive(Debug, Clone, Copy, Default)]
 struct Known {
@@ -321,7 +341,12 @@ impl Run<'_> {
     /// Sends the snapshot and follows the operation; returns the exit code.
     async fn push(&self, file: File, packed: &Packed) -> u8 {
         let key = format!("push-{}", unique());
-        let query = push_query(self.args.file.as_deref(), self.args.port, self.args.confirm);
+        let query = push_query(&PushOptions {
+            file: self.args.file.clone(),
+            port: self.args.port,
+            confirm: self.args.confirm,
+            recreate: self.args.recreate,
+        });
         let path = format!("{}{query}", pushes_path(self.slug));
         let headers = [
             ("content-type", "application/zstd"),
@@ -370,6 +395,12 @@ impl Run<'_> {
     /// code. A Compose file that needs confirmation is confirmed here when
     /// a person is at a terminal, and the same revision deployed again.
     async fn finish(&self, mut op: OperationId, known: Known) -> u8 {
+        // What was confirmed so far: `--confirm` / `--recreate`, then each
+        // yes on a terminal.
+        let mut confirmed = Confirmed {
+            compose: self.args.confirm,
+            recreate: self.args.recreate,
+        };
         loop {
             let printer = &self.printer;
             if let Err(halt) =
@@ -397,16 +428,35 @@ impl Run<'_> {
                 (_, Some(f)) => exit::for_failure(&f.code),
                 (_, None) => exit::INTERNAL,
             };
+            let asks_recreate = view
+                .failure
+                .as_ref()
+                .is_some_and(|f| is_recreate_required(&f.message));
+            let unconfirmed = if asks_recreate {
+                !confirmed.recreate
+            } else {
+                !confirmed.compose
+            };
             if code == exit::CONFIRMATION_REQUIRED
-                && !self.args.confirm
+                && unconfirmed
                 && let Some(revision) = known.revision_id
                 && on_terminal()
             {
                 if let Some(f) = &view.failure {
                     eprintln!("{}", f.message);
                 }
-                if ask("Deploy with these items confirmed?") {
-                    match self.redeploy_confirmed(revision).await {
+                let question = if asks_recreate {
+                    "Recreate the environment, reattaching these volumes?"
+                } else {
+                    "Deploy with these items confirmed?"
+                };
+                if ask(question) {
+                    if asks_recreate {
+                        confirmed.recreate = true;
+                    } else {
+                        confirmed.compose = true;
+                    }
+                    match self.redeploy_confirmed(revision, confirmed).await {
                         Ok(next) => {
                             op = next;
                             continue;
@@ -452,13 +502,18 @@ impl Run<'_> {
         }
     }
 
-    /// Deploys `revision` again with its confirmation items confirmed.
-    async fn redeploy_confirmed(&self, revision: RevisionId) -> Result<OperationId, ClientError> {
+    /// Deploys `revision` again with what is `confirmed`.
+    async fn redeploy_confirmed(
+        &self,
+        revision: RevisionId,
+        confirmed: Confirmed,
+    ) -> Result<OperationId, ClientError> {
         let request = DeployRequest {
             revision_id: revision,
             file: self.args.file.clone(),
             port: self.args.port,
-            confirm: true,
+            confirm: confirmed.compose,
+            recreate: confirmed.recreate,
         };
         let body = serde_json::to_vec(&request).expect("a request serialises");
         let key = format!("confirm-{}", unique());
@@ -760,7 +815,15 @@ fn render_result_text(line: &ResultLine, slug: &Slug, code: u8) -> (String, Stri
     if let Some(op) = line.operation_id {
         err.push_str(&format!("Operation: {op}\n"));
     }
-    if code == exit::CONFIRMATION_REQUIRED {
+    let recreate = line
+        .failure
+        .as_ref()
+        .is_some_and(|f| is_recreate_required(&f.message));
+    if code == exit::CONFIRMATION_REQUIRED && recreate {
+        err.push_str(
+            "Nothing was deployed. Confirm on a terminal, or run again with --recreate.\n",
+        );
+    } else if code == exit::CONFIRMATION_REQUIRED {
         err.push_str(
             "Nothing was started. Confirm on a terminal, or run again with --confirm \
              (`ship settings set compose.confirm accept` waives it on the host).\n",

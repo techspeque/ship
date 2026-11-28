@@ -256,7 +256,12 @@ pub struct DeployJob {
     pub port: Option<PortSpec>,
     /// The operator confirmed the Compose file's confirm items.
     pub confirm: bool,
+    /// The operator brings a removed environment back (`--recreate`).
+    pub recreate: bool,
 }
+
+/// The audit action of a push that brought a removed environment back.
+pub const RECREATE_ACTION: &str = "recreate";
 
 /// A deployment that succeeded.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -271,7 +276,6 @@ pub struct Deployed {
 /// Runs `job` inside the operation `ctx`. Public so an operation that
 /// carries an upload before it (`ship push`) runs the same steps.
 pub async fn run(ctx: &Context, d: &Deployer, job: &DeployJob) -> Result<Deployed, JobFailure> {
-    let env = &job.environment;
     ctx.continue_in(
         OperationPhase::Validating,
         &format!(
@@ -280,6 +284,19 @@ pub async fn run(ctx: &Context, d: &Deployer, job: &DeployJob) -> Result<Deploye
         ),
     )
     .await?;
+    // Read again under the environment's lock: an operation queued before
+    // this one may have stopped or removed it.
+    let env = &d.store.get_environment(job.environment.id).await?;
+    if env.desired_state == DesiredState::Removed {
+        if !job.recreate {
+            return Err(recreate_required(d, env).await);
+        }
+        ctx.log(
+            "the environment was removed; recreating it with its named volumes and its \
+             history, as asked (--recreate)",
+        )
+        .await?;
+    }
     let snapshot = snapshot_dir(&d.state_dir, &job.revision.source_ref);
     if !snapshot.is_dir() {
         tracing::error!(revision = %job.revision.id, "the snapshot of a revision is missing");
@@ -326,14 +343,29 @@ pub async fn run(ctx: &Context, d: &Deployer, job: &DeployJob) -> Result<Deploye
     let first_release = history.iter().rev().find_map(|x| x.release_id);
     let deployment = d
         .store
-        .create_deployment(&NewDeployment {
-            environment_id: env.id,
-            revision_id: job.revision.id,
-            operation_id: ctx.operation_id(),
-            previous_release_id: previous,
-        })
+        .create_deployment_with(
+            &NewDeployment {
+                environment_id: env.id,
+                revision_id: job.revision.id,
+                operation_id: ctx.operation_id(),
+                previous_release_id: previous,
+            },
+            Some(&deploy_options(job.file.as_deref(), job.port)),
+        )
         .await?;
 
+    // What the operator stopped stays stopped if this attempt fails.
+    let halted: Vec<String> = match env.desired_state {
+        DesiredState::Running => d
+            .store
+            .list_services(env.id)
+            .await?
+            .into_iter()
+            .filter(|s| s.desired_state == DesiredState::Stopped)
+            .map(|s| s.name)
+            .collect(),
+        DesiredState::Stopped | DesiredState::Removed => Vec::new(),
+    };
     let mut attempt = Attempt {
         environment: env.id,
         project: ComposeProject::new(env.id),
@@ -341,6 +373,8 @@ pub async fn run(ctx: &Context, d: &Deployer, job: &DeployJob) -> Result<Deploye
         release: None,
         started: false,
         routes_before: None,
+        stopped: env.desired_state == DesiredState::Stopped,
+        halted,
     };
     let outcome = match compose {
         Some(checked) => {
@@ -369,7 +403,9 @@ pub async fn run(ctx: &Context, d: &Deployer, job: &DeployJob) -> Result<Deploye
         }
     };
     let result = match outcome {
-        Ok(deployed) => Ok(deployed),
+        Ok(deployed) => asked_running(ctx, d, env, &deployed)
+            .await
+            .map(|()| deployed),
         Err(failure) => {
             attempt.undo(ctx, d).await;
             if let Err(e) = d
@@ -392,6 +428,129 @@ pub async fn run(ctx: &Context, d: &Deployer, job: &DeployJob) -> Result<Deploye
     };
     crate::config::prune(d, env.id, attempt.release, &keep).await;
     result
+}
+
+/// The options a deploy records (`--file`, `--port`), as JSON, so
+/// `ship redeploy` can repeat it ([`recorded_options`]).
+pub fn deploy_options(file: Option<&str>, port: Option<PortSpec>) -> String {
+    json!({ "file": file, "port": port.map(|p| p.to_string()) }).to_string()
+}
+
+/// The `--file` and `--port` a deployment recorded; none for a deployment
+/// that recorded no options (from before migration 0005). Recorded text
+/// that does not read back is [`ErrorCode::Internal`].
+pub fn recorded_options(
+    options: Option<&str>,
+) -> Result<(Option<String>, Option<PortSpec>), JobFailure> {
+    let Some(text) = options else {
+        return Ok((None, None));
+    };
+    let bad = || {
+        JobFailure::new(
+            ErrorCode::Internal,
+            "the deployment's options are malformed",
+        )
+    };
+    let v: Value = serde_json::from_str(text).map_err(|_| bad())?;
+    let file = match &v["file"] {
+        Value::Null => None,
+        Value::String(s) => Some(s.clone()),
+        _ => return Err(bad()),
+    };
+    let port = match &v["port"] {
+        Value::Null => None,
+        Value::String(s) => Some(s.parse().map_err(|_| bad())?),
+        _ => return Err(bad()),
+    };
+    Ok((file, port))
+}
+
+/// The failure of a deployment to a removed environment without
+/// `--recreate`: `confirmation_required`, before anything is recorded,
+/// naming the named volumes a recreate would attach again (Human,
+/// 2026-11-28).
+async fn recreate_required(d: &Deployer, env: &Environment) -> JobFailure {
+    let volumes = match removed_volumes(d, env).await {
+        Some(v) if v.is_empty() => "it has no named volume".to_owned(),
+        Some(v) => format!("its named volumes are reattached: {}", v.join(", ")),
+        None => "its named volumes, if it has any, are reattached".to_owned(),
+    };
+    JobFailure::new(
+        ErrorCode::ConfirmationRequired,
+        format!(
+            "{}; pushing again recreates it, with its history; {volumes}. Push with \
+             --recreate, or confirm on a terminal",
+            ship_core::api::RECREATE_REQUIRED
+        ),
+    )
+}
+
+/// The named volumes of the release that served before `env` was removed,
+/// as `compose config` reads its files; `None` when that cannot be told.
+async fn removed_volumes(d: &Deployer, env: &Environment) -> Option<Vec<String>> {
+    let history = d.store.list_deployments(env.id).await.ok()?;
+    let release = history.iter().find_map(|x| match x.action {
+        ship_core::DeploymentAction::Remove => x.previous_release_id,
+        ship_core::DeploymentAction::Deploy => x.release_id,
+    })?;
+    let files = release_files(&d.state_dir, release).ok()?;
+    let config = compose::config(&d.docker, &ComposeProject::new(env.id), &files)
+        .await
+        .ok()?;
+    let volumes = config.expose().get("volumes").and_then(Value::as_object);
+    Some(
+        volumes
+            .into_iter()
+            .flatten()
+            .map(|(key, v)| {
+                v.get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or(key)
+                    .to_owned()
+            })
+            .collect(),
+    )
+}
+
+/// After a deployment succeeded: what it asked for is recorded. A removed
+/// environment is `running` again through this deployment, a stopped one
+/// `running`, and every service `running`: a deployment starts everything
+/// it deploys.
+async fn asked_running(
+    ctx: &Context,
+    d: &Deployer,
+    env: &Environment,
+    deployed: &Deployed,
+) -> Result<(), JobFailure> {
+    match env.desired_state {
+        DesiredState::Removed => {
+            d.store
+                .recreate_environment(env.id, deployed.deployment.id)
+                .await?;
+            d.store
+                .append_audit_event(&ship_store::NewAuditEvent {
+                    actor: crate::settings::OPERATOR,
+                    action: RECREATE_ACTION,
+                    target: &env.id.to_string(),
+                    detail: Some(&json!({ "deployment": deployed.deployment.id }).to_string()),
+                })
+                .await?;
+            ctx.log("the environment is running again").await?;
+        }
+        DesiredState::Stopped => {
+            d.store
+                .set_desired_state(env.id, DesiredState::Running)
+                .await?;
+            ctx.log("the environment was stopped; the deployment runs it again")
+                .await?;
+        }
+        DesiredState::Running => {}
+    }
+    if d.store.set_services_running(env.id).await? > 0 {
+        ctx.log("services that were stopped run again with this release")
+            .await?;
+    }
+    Ok(())
 }
 
 /// Whether `rel` names a regular file inside `root`. Snapshots hold no
@@ -421,6 +580,11 @@ pub(crate) struct Attempt {
     /// The environment's routes before this attempt replaced them; `None`
     /// until it did.
     pub(crate) routes_before: Option<Vec<Route>>,
+    /// The environment was desired `stopped`: the previous release brought
+    /// back after a failure is stopped again.
+    pub(crate) stopped: bool,
+    /// Services the operator stopped one by one: stopped again likewise.
+    pub(crate) halted: Vec<String>,
 }
 
 impl Attempt {
@@ -454,9 +618,10 @@ impl Attempt {
                     .log(&format!("bringing release {previous} up again"))
                     .await;
                 match release_files(&d.state_dir, previous) {
-                    Ok(files) => up(ctx, d, &self.project, &files)
-                        .await
-                        .map(|()| format!("release {previous} is running again")),
+                    Ok(files) => match up(ctx, d, &self.project, &files).await {
+                        Ok(()) => self.halt_again(ctx, d, previous).await,
+                        Err(e) => Err(e),
+                    },
                     Err(e) => Err(e),
                 }
             }
@@ -477,6 +642,31 @@ impl Attempt {
             Err(e) => format!("putting the previous state back failed: {e}"),
         };
         let _ = ctx.log(&line).await;
+    }
+
+    /// After the previous release came back: what the operator stopped is
+    /// stopped again, so a failed deployment never starts it (ADR-0006
+    /// rule 6).
+    async fn halt_again(
+        &self,
+        ctx: &Context,
+        d: &Deployer,
+        previous: ReleaseId,
+    ) -> Result<String, DockerError> {
+        if self.stopped {
+            stop(ctx, d, &self.project).await?;
+            return Ok(format!(
+                "release {previous} is back, stopped as the environment was"
+            ));
+        }
+        if !self.halted.is_empty() {
+            stop_services(ctx, d, &self.project, &self.halted).await?;
+            return Ok(format!(
+                "release {previous} is running again; {} stay stopped",
+                self.halted.join(", ")
+            ));
+        }
+        Ok(format!("release {previous} is running again"))
     }
 }
 
@@ -998,14 +1188,25 @@ pub(crate) async fn up(
 
 /// `compose stop` with its output in the log.
 async fn stop(ctx: &Context, d: &Deployer, project: &ComposeProject) -> Result<(), DockerError> {
+    let no_services: &[&str] = &[];
+    stop_services(ctx, d, project, no_services).await
+}
+
+/// `compose stop` of `services` (every one when empty) with its output in
+/// the log.
+pub(crate) async fn stop_services<S: AsRef<str> + Sync>(
+    ctx: &Context,
+    d: &Deployer,
+    project: &ComposeProject,
+    services: &[S],
+) -> Result<(), DockerError> {
     let forward = LogForward::start(ctx);
     let result = {
         let mut sink = forward.sink();
-        let no_services: &[&str] = &[];
         compose::stop(
             &d.docker,
             project,
-            no_services,
+            services,
             d.settings.step_timeout,
             &mut sink,
         )
@@ -1013,6 +1214,12 @@ async fn stop(ctx: &Context, d: &Deployer, project: &ComposeProject) -> Result<(
     };
     let _ = forward.finish().await;
     result
+}
+
+/// How long one lifecycle step (`compose start`, `stop`, `restart`,
+/// `down`) may take.
+pub(crate) fn step_timeout(d: &Deployer) -> Duration {
+    d.settings.step_timeout
 }
 
 /// Waits for the verdict on each service's containers of the release

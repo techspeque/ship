@@ -52,6 +52,12 @@ const STATUS_ROUTE: &str = "/api/v1/projects/{project}/status";
 const LOGS_ROUTE: &str = "/api/v1/projects/{project}/logs";
 /// `POST`: `ship push`, an upload and its deployment as one operation.
 const PUSHES_ROUTE: &str = "/api/v1/projects/{project}/pushes";
+/// `POST`: the lifecycle actions ([`crate::lifecycle`]).
+const START_ROUTE: &str = "/api/v1/projects/{project}/start";
+const STOP_ROUTE: &str = "/api/v1/projects/{project}/stop";
+const RESTART_ROUTE: &str = "/api/v1/projects/{project}/restart";
+const REDEPLOY_ROUTE: &str = "/api/v1/projects/{project}/redeploy";
+const REMOVE_ROUTE: &str = "/api/v1/projects/{project}/remove";
 /// `GET`: the deployment an operation recorded.
 const OPERATION_DEPLOYMENT_ROUTE: &str = "/api/v1/operations/{id}/deployment";
 /// `GET`: a setting; `POST`: change it.
@@ -139,6 +145,11 @@ pub fn router_with(
         .route(STATUS_ROUTE, get(status))
         .route(LOGS_ROUTE, get(logs))
         .route(PUSHES_ROUTE, post(push))
+        .route(START_ROUTE, post(start))
+        .route(STOP_ROUTE, post(stop))
+        .route(RESTART_ROUTE, post(restart))
+        .route(REDEPLOY_ROUTE, post(redeploy))
+        .route(REMOVE_ROUTE, post(remove))
         .route(SETTING_ROUTE, get(setting).post(set_setting))
         .route(
             PROJECT_SETTING_ROUTE,
@@ -239,6 +250,7 @@ async fn deploy(
         file: request.file,
         port: request.port,
         confirm: request.confirm,
+        recreate: request.recreate,
     };
     let deployer = Arc::clone(&state.deployer);
     let run = move |ctx: Context| async move {
@@ -250,6 +262,104 @@ async fn deploy(
         DEPLOY_KIND,
         Some(environment_id),
         run,
+    )
+    .await
+}
+
+// ---- lifecycle ----
+
+/// One lifecycle action: see [`crate::lifecycle::handle`].
+async fn lifecycle(
+    state: &AppState,
+    action: crate::lifecycle::Action,
+    project: &str,
+    uri: &Uri,
+    headers: &HeaderMap,
+) -> Response {
+    let cx = crate::lifecycle::LifecycleContext {
+        store: &state.store,
+        queue: &state.queue,
+        deployer: &state.deployer,
+    };
+    crate::lifecycle::handle(cx, action, project, uri.query(), headers).await
+}
+
+async fn start(
+    State(state): State<AppState>,
+    Path(project): Path<String>,
+    uri: Uri,
+    headers: HeaderMap,
+) -> Response {
+    lifecycle(
+        &state,
+        crate::lifecycle::Action::Start,
+        &project,
+        &uri,
+        &headers,
+    )
+    .await
+}
+
+async fn stop(
+    State(state): State<AppState>,
+    Path(project): Path<String>,
+    uri: Uri,
+    headers: HeaderMap,
+) -> Response {
+    lifecycle(
+        &state,
+        crate::lifecycle::Action::Stop,
+        &project,
+        &uri,
+        &headers,
+    )
+    .await
+}
+
+async fn restart(
+    State(state): State<AppState>,
+    Path(project): Path<String>,
+    uri: Uri,
+    headers: HeaderMap,
+) -> Response {
+    lifecycle(
+        &state,
+        crate::lifecycle::Action::Restart,
+        &project,
+        &uri,
+        &headers,
+    )
+    .await
+}
+
+async fn redeploy(
+    State(state): State<AppState>,
+    Path(project): Path<String>,
+    uri: Uri,
+    headers: HeaderMap,
+) -> Response {
+    lifecycle(
+        &state,
+        crate::lifecycle::Action::Redeploy,
+        &project,
+        &uri,
+        &headers,
+    )
+    .await
+}
+
+async fn remove(
+    State(state): State<AppState>,
+    Path(project): Path<String>,
+    uri: Uri,
+    headers: HeaderMap,
+) -> Response {
+    lifecycle(
+        &state,
+        crate::lifecycle::Action::Remove,
+        &project,
+        &uri,
+        &headers,
     )
     .await
 }

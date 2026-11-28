@@ -121,6 +121,54 @@ pub struct DeployRequest {
     /// log with the file's fingerprint. Never waives a reject item.
     #[serde(default)]
     pub confirm: bool,
+    /// The operator brings back an environment that was removed
+    /// (`--recreate`): the same environment, its named volumes reattached
+    /// and its history continued. Without it a deployment to a removed
+    /// environment fails `confirmation_required` (message starting with
+    /// [`RECREATE_REQUIRED`]) before anything is recorded.
+    #[serde(default)]
+    pub recreate: bool,
+}
+
+/// The start of the failure message of a deployment to a removed
+/// environment without `recreate`, so a client tells it apart from a
+/// Compose file's confirmation (both are `confirmation_required`).
+pub const RECREATE_REQUIRED: &str = "the environment was removed";
+
+// ---- lifecycle (phase-1-ws-1.12) ----
+
+/// `ship start`: start what is stopped; a project or one service.
+pub const START_KIND: &str = "start";
+/// `ship stop`: stop and record it, so nothing in Ship starts it again.
+pub const STOP_KIND: &str = "stop";
+/// `ship restart`: restart the containers of the release serving now.
+pub const RESTART_KIND: &str = "restart";
+/// `ship redeploy`: deploy the serving revision again with current config.
+pub const REDEPLOY_KIND: &str = "redeploy";
+/// `ship remove`: containers and networks go; volumes and history stay.
+pub const REMOVE_KIND: &str = "remove";
+
+/// The lifecycle actions, each its own operation kind and path segment.
+pub const LIFECYCLE_ACTIONS: &[&str] = &[
+    START_KIND,
+    STOP_KIND,
+    RESTART_KIND,
+    REDEPLOY_KIND,
+    REMOVE_KIND,
+];
+
+/// Whether `action` applies to the whole environment only: a release and a
+/// Compose project cover every service, so `redeploy` and `remove` take no
+/// service.
+pub fn is_environment_only(action: &str) -> bool {
+    matches!(action, REDEPLOY_KIND | REMOVE_KIND)
+}
+
+/// `POST` (with [`config_query`] naming `env` and, for `start`, `stop`
+/// and `restart`, `service`): one lifecycle action, answered `202` with
+/// its operation. Needs an idempotency key; takes no body.
+pub fn lifecycle_path(project: &Slug, action: &str) -> String {
+    format!("{PROJECTS_PATH}/{}/{action}", project.as_str())
 }
 
 /// `POST`: `ship push`. The body is a snapshot exactly as for
@@ -141,17 +189,21 @@ pub const PUSH_KIND: &str = "push";
 pub const PROJECT_KIND: &str = "project";
 
 /// The query of a push: `file` percent-encoded, `port` as `N` or
-/// `HOST:CONTAINER`, `confirm=true`; empty when none is set.
-pub fn push_query(file: Option<&str>, port: Option<PortSpec>, confirm: bool) -> String {
+/// `HOST:CONTAINER`, `confirm=true`, `recreate=true`; empty when none is
+/// set.
+pub fn push_query(options: &PushOptions) -> String {
     let mut pairs = Vec::new();
-    if let Some(file) = file {
+    if let Some(file) = &options.file {
         pairs.push(format!("file={}", percent_encode(file)));
     }
-    if let Some(port) = port {
+    if let Some(port) = options.port {
         pairs.push(format!("port={}", percent_encode(&port.to_string())));
     }
-    if confirm {
+    if options.confirm {
         pairs.push("confirm=true".to_owned());
+    }
+    if options.recreate {
+        pairs.push("recreate=true".to_owned());
     }
     if pairs.is_empty() {
         String::new()
@@ -166,6 +218,8 @@ pub struct PushOptions {
     pub file: Option<String>,
     pub port: Option<PortSpec>,
     pub confirm: bool,
+    /// `--recreate`: see [`DeployRequest::recreate`].
+    pub recreate: bool,
 }
 
 /// Reads a push query ([`push_query`]); an unknown or repeated key, a bad
@@ -192,6 +246,11 @@ pub fn parse_push_query(query: Option<&str>) -> Result<PushOptions, String> {
                 "true" => options.confirm = true,
                 "false" => options.confirm = false,
                 _ => return Err("`confirm` must be `true` or `false`".to_owned()),
+            },
+            "recreate" => match value.as_str() {
+                "true" => options.recreate = true,
+                "false" => options.recreate = false,
+                _ => return Err("`recreate` must be `true` or `false`".to_owned()),
             },
             _ => return Err(format!("unknown push option `{key}`")),
         }
@@ -718,7 +777,10 @@ pub struct EnvironmentView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LastDeploymentView {
     pub id: DeploymentId,
-    /// `None` when it failed before a release was recorded.
+    /// `deploy`, or `remove` for the removal of the environment.
+    pub action: String,
+    /// `None` when it failed before a release was recorded, and for a
+    /// removal.
     pub release_id: Option<ReleaseId>,
     pub operation_id: OperationId,
     /// A `DeploymentResult` string; `None` while in progress.
@@ -734,6 +796,10 @@ pub struct ServiceStatusView {
     pub name: String,
     /// A `ServiceKind` string.
     pub kind: String,
+    /// What was asked of this service (`running` or `stopped`, a
+    /// `DesiredState` string); the environment's desired state wins when
+    /// it is `stopped` or `removed`.
+    pub desired_state: String,
     /// A `ServiceStatus` string.
     pub status: String,
     /// Restarts Docker made under its restart policy, summed over the
@@ -772,8 +838,12 @@ pub struct DeploymentView {
     pub id: DeploymentId,
     /// The environment's name.
     pub environment: String,
+    /// `deploy`, or `remove` for the removal of the environment, which
+    /// names the revision that was serving and records no release.
+    pub action: String,
     pub revision_id: RevisionId,
-    /// `None` when it failed before a release was recorded.
+    /// `None` when it failed before a release was recorded, and for a
+    /// removal.
     pub release_id: Option<ReleaseId>,
     /// The release that was serving when it started.
     pub previous_release_id: Option<ReleaseId>,
@@ -856,6 +926,7 @@ mod tests {
                 "file": null,
                 "port": "8080:3000",
                 "confirm": false,
+                "recreate": false,
             })
         );
         let bad = json!({ "revision_id": "rev_01aryz6s41tsv4rrffq69g5fav", "port": "0" });
@@ -873,6 +944,26 @@ mod tests {
     }
 
     #[test]
+    fn lifecycle_paths() {
+        let slug = Slug::parse("my-app").unwrap();
+        for &action in LIFECYCLE_ACTIONS {
+            assert_eq!(
+                lifecycle_path(&slug, action),
+                format!("/api/v1/projects/my-app/{action}")
+            );
+        }
+        let only: Vec<&str> = LIFECYCLE_ACTIONS
+            .iter()
+            .copied()
+            .filter(|a| is_environment_only(a))
+            .collect();
+        assert_eq!(only, ["redeploy", "remove"]);
+        let request: DeployRequest =
+            serde_json::from_str(r#"{"revision_id":"rev_01aryz6s41tsv4rrffq69g5fav"}"#).unwrap();
+        assert!(!request.recreate && !request.confirm);
+    }
+
+    #[test]
     fn push_paths_and_query() {
         let slug = Slug::parse("my-app").unwrap();
         assert_eq!(pushes_path(&slug), "/api/v1/projects/my-app/pushes");
@@ -881,21 +972,24 @@ mod tests {
             operation_deployment_path(op),
             "/api/v1/operations/op_01aryz6s41tsv4rrffq69g5fav/deployment"
         );
-        assert_eq!(push_query(None, None, false), "");
+        assert_eq!(push_query(&PushOptions::default()), "");
         let port: PortSpec = "8080:3000".parse().unwrap();
-        let q = push_query(Some("deploy/My File é.yml"), Some(port), true);
+        let options = PushOptions {
+            file: Some("deploy/My File é.yml".to_owned()),
+            port: Some(port),
+            confirm: true,
+            recreate: true,
+        };
+        let q = push_query(&options);
         assert_eq!(
             q,
-            "?file=deploy%2FMy%20File%20%C3%A9.yml&port=8080%3A3000&confirm=true"
+            "?file=deploy%2FMy%20File%20%C3%A9.yml&port=8080%3A3000&confirm=true&recreate=true"
         );
         let parsed = parse_push_query(q.strip_prefix('?')).unwrap();
+        assert_eq!(parsed, options);
         assert_eq!(
-            parsed,
-            PushOptions {
-                file: Some("deploy/My File é.yml".to_owned()),
-                port: Some(port),
-                confirm: true,
-            }
+            parse_push_query(Some("recreate=false")).unwrap(),
+            PushOptions::default()
         );
         assert_eq!(parse_push_query(None).unwrap(), PushOptions::default());
         for bad in [
@@ -903,6 +997,8 @@ mod tests {
             "port=0",
             "port=x",
             "confirm=yes",
+            "recreate=1",
+            "recreate=true&recreate=true",
             "other=1",
             "file=%zz",
             "file=%c3",
@@ -1272,6 +1368,7 @@ mod tests {
         let d = DeploymentView {
             id: "dep_01aryz6s41tsv4rrffq69g5fav".parse().unwrap(),
             environment: "development".to_owned(),
+            action: "remove".to_owned(),
             revision_id: "rev_01aryz6s41tsv4rrffq69g5fav".parse().unwrap(),
             release_id: None,
             previous_release_id: None,
@@ -1282,6 +1379,7 @@ mod tests {
             ended_at: None,
         };
         let v = serde_json::to_value(&d).unwrap();
+        assert_eq!(v["action"], "remove");
         for key in [
             "release_id",
             "previous_release_id",
