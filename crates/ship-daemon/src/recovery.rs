@@ -4,8 +4,10 @@
 //!
 //! It runs no Docker command (ADR-0006 rule 11). Each deployment with no
 //! result is ended `interrupted`; its record says which release served
-//! before it, and that stays the one Ship reports serving. What the
-//! interrupted operation staged on disk is removed, and nothing else:
+//! before it, and that stays the one Ship reports serving. What an
+//! interrupted operation staged on disk is removed, and nothing else. The
+//! `interrupted` result is what makes it eligible, so every start retries
+//! staging an earlier start could not remove:
 //!
 //! - a release directory it allocated but never recorded (known by its
 //!   [`OPERATION_FILE`]) is removed whole: no release names it;
@@ -41,25 +43,33 @@ pub struct Recovered {
 }
 
 /// Ends every deployment left without a result as `interrupted` and
-/// removes what its operation staged. Run at start, after
-/// [`crate::queue::recover`] and before anything is served: no operation
-/// is running, so a deployment with no result is one a dead daemon left.
-/// A file that cannot be removed is logged; the store failing fails.
+/// removes what the operation of every `interrupted` deployment staged,
+/// including one an earlier start ended but could not clean up. Run at
+/// start, after [`crate::queue::recover`] and before anything is served:
+/// no operation is running, so a deployment with no result is one a dead
+/// daemon left. A file that cannot be removed is logged and retried at the
+/// next start; the store failing fails.
 pub async fn recover(store: &Store, state_dir: &Path) -> Result<Recovered, StoreError> {
     let mut open: Vec<Deployment> = Vec::new();
+    let mut operations: BTreeSet<OperationId> = BTreeSet::new();
     for project in store.list_projects().await? {
         for environment in store.list_environments(project.id).await? {
-            open.extend(
-                store
-                    .list_deployments(environment.id)
-                    .await?
-                    .into_iter()
-                    .filter(|d| d.result.is_none()),
-            );
+            for d in store.list_deployments(environment.id).await? {
+                match d.result {
+                    None => {
+                        operations.insert(d.operation_id);
+                        open.push(d);
+                    }
+                    Some(DeploymentResult::Interrupted) => {
+                        operations.insert(d.operation_id);
+                    }
+                    Some(_) => {}
+                }
+            }
         }
     }
     let mut done = Recovered::default();
-    if open.is_empty() {
+    if operations.is_empty() {
         return Ok(done);
     }
     for d in &open {
@@ -73,7 +83,6 @@ pub async fn recover(store: &Store, state_dir: &Path) -> Result<Recovered, Store
             "deployment interrupted by a daemon restart; Docker is left as it is"
         );
     }
-    let operations: BTreeSet<OperationId> = open.iter().map(|d| d.operation_id).collect();
     for (release, dir) in staged_by(state_dir, &operations) {
         // Recorded (the deployment may not name it yet): its files stay.
         match store.get_release(release).await {
@@ -82,7 +91,7 @@ pub async fn recover(store: &Store, state_dir: &Path) -> Result<Recovered, Store
                     done.pruned_releases += 1;
                 }
             }
-            Err(StoreError::NotFound { .. }) => match fs::remove_dir_all(&dir) {
+            Err(StoreError::NotFound { .. }) => match remove_staged(&dir) {
                 Ok(()) => done.staged_releases += 1,
                 Err(e) => {
                     tracing::error!(release = %release, error = %e,
@@ -93,6 +102,33 @@ pub async fn recover(store: &Store, state_dir: &Path) -> Result<Recovered, Store
         }
     }
     Ok(done)
+}
+
+/// Removes the unrecorded release directory `dir` whole, its
+/// [`OPERATION_FILE`] last: a removal that fails part-way leaves the
+/// marker, so the next start still knows the directory is staging to
+/// remove.
+fn remove_staged(dir: &Path) -> io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        if entry.file_name() == OPERATION_FILE {
+            continue;
+        }
+        if entry.file_type()?.is_dir() {
+            fs::remove_dir_all(entry.path())?;
+        } else {
+            fs::remove_file(entry.path())?;
+        }
+    }
+    let marker = dir.join(OPERATION_FILE);
+    let made_by = fs::read(&marker)?;
+    fs::remove_file(&marker)?;
+    if let Err(e) = fs::remove_dir(dir) {
+        // Put the marker back so the next start retries.
+        fs::write(&marker, made_by)?;
+        return Err(e);
+    }
+    Ok(())
 }
 
 /// Removes the env files of `release`, in `dir`; whether there were any.

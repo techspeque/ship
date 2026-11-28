@@ -631,3 +631,88 @@ fn only_the_interrupted_operations_staging_is_removed() {
         running.shutdown().await.unwrap();
     });
 }
+
+/// A start that cannot remove the interrupted operation's staging (here
+/// the releases directory denies writes) leaves it for the next start,
+/// which removes it although the deployment is already `interrupted`
+/// (f-051).
+#[cfg(unix)]
+#[test]
+fn staging_a_start_could_not_remove_is_removed_by_the_next() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let host = Host::new();
+    let rt = runtime();
+    let (running, good) = rt.block_on(async {
+        let running = ship_daemon::start(&host.config).await.unwrap();
+        let t = target(&running);
+        let store = running.store();
+        let v1 = upload(&t, "v1").await;
+        let a = post(
+            &t,
+            "/api/v1/projects/app/deployments",
+            "d1",
+            json!({ "revision_id": v1 }),
+        )
+        .await;
+        assert_eq!(
+            finished(store, op_id(&a)).await.phase,
+            OperationPhase::Succeeded
+        );
+        host.control("hang_build");
+        post(
+            &t,
+            "/api/v1/projects/app/deployments",
+            "d2",
+            json!({ "revision_id": v1 }),
+        )
+        .await;
+        let deadline = tokio::time::Instant::now() + TIMEOUT;
+        while !host.exists("at_build") {
+            assert!(tokio::time::Instant::now() < deadline);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let good = deployments(store).await[1].release_id.unwrap();
+        (running, good)
+    });
+    rt.shutdown_background();
+    std::mem::forget(running);
+    host.clear("hang_build");
+    let mut left: Vec<ReleaseId> = release_dirs(host.state());
+    assert_eq!(left.len(), 2, "the good release and the killed attempt's");
+    left.sort();
+
+    let releases = host.state().join(RELEASES_DIR);
+    let set_mode = |mode| fs::set_permissions(&releases, fs::Permissions::from_mode(mode)).unwrap();
+    set_mode(0o555);
+    if fs::create_dir(releases.join("probe")).is_ok() {
+        // Permissions do not bind this user (root): nothing to show.
+        fs::remove_dir(releases.join("probe")).unwrap();
+        set_mode(0o755);
+        return;
+    }
+    let rt = runtime();
+    rt.block_on(async {
+        let running = ship_daemon::start(&host.config).await.unwrap();
+        assert!(
+            deployments(running.store())
+                .await
+                .iter()
+                .any(|d| d.result == Some(DeploymentResult::Interrupted))
+        );
+        running.shutdown().await.unwrap();
+    });
+    set_mode(0o755);
+    assert_eq!(
+        release_dirs(host.state()),
+        left,
+        "the failed removal kept it"
+    );
+
+    let rt = runtime();
+    rt.block_on(async {
+        let running = ship_daemon::start(&host.config).await.unwrap();
+        assert_eq!(release_dirs(host.state()), vec![good]);
+        running.shutdown().await.unwrap();
+    });
+}
