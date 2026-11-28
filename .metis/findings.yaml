@@ -589,6 +589,9 @@ findings:
       severity: P2
       category: behavior
       finding: 'web/src/lib/OperationPage.svelte:32-44 — Live events update phase but never refresh operation status until a single GET after finished: an initially queued operation remains labelled queued while building. That final GET can also race terminal persistence (queue.rs:573-584 appends/announces finished before advancing the operation), leaving status running and failure details absent permanently. Reproduced by executing the component script with queued initial GET, building/finished events, and a still-running final GET. Refresh authoritative operation state during progress and retry terminal reads until terminal state is observed, with abort/error handling; add regressions for queued-to-running and finished-before-terminal-persistence.'
-      status: open
+      status: resolved
+      resolved_by: commit 30ed30d960e5; test web/src/lib/operation.test.ts; 30ed30d; independently verified queued-to-running refresh and finished-before-terminal-persistence retries; forced post verification ALL GREEN
       cycle: 1
       file: web/src/lib/OperationPage.svelte
+      commit: 30ed30d960e5b77761a9b9b73d8b083b083cd11c
+      evidence: test web/src/lib/operation.test.ts
