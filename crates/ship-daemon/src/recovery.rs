@@ -10,7 +10,11 @@
 //! staging an earlier start could not remove:
 //!
 //! - a release directory it allocated but never recorded (known by its
-//!   [`OPERATION_FILE`]) is removed whole: no release names it;
+//!   [`OPERATION_FILE`]) is removed whole: no release names it. It is
+//!   first renamed into [`TRASH_DIR`], atomically: before the rename it is
+//!   still marked, after it everything in the trash is garbage, and every
+//!   start empties the trash first, so a start that dies or fails at any
+//!   point leaves the next one something to finish (f-051, f-053);
 //! - a release it recorded keeps its files, since a release never changes,
 //!   and loses only its env files: no deployment will bring it up again,
 //!   so its values need not stay on disk (ADR-0009).
@@ -24,12 +28,18 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use ship_core::{DeploymentResult, OperationId, ReleaseId};
 use ship_store::{Deployment, Store, StoreError};
 
 use crate::config::ENV_DIR;
 use crate::deploy::{OPERATION_FILE, RELEASES_DIR, release_dir};
+
+/// The directory, in the state directory, that unrecorded release
+/// directories are renamed into before they are removed. Everything in it
+/// is garbage; [`recover`] empties it at every start.
+pub const TRASH_DIR: &str = "trash";
 
 /// What [`recover`] did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -50,6 +60,7 @@ pub struct Recovered {
 /// daemon left. A file that cannot be removed is logged and retried at the
 /// next start; the store failing fails.
 pub async fn recover(store: &Store, state_dir: &Path) -> Result<Recovered, StoreError> {
+    empty_trash(state_dir);
     let mut open: Vec<Deployment> = Vec::new();
     let mut operations: BTreeSet<OperationId> = BTreeSet::new();
     for project in store.list_projects().await? {
@@ -91,7 +102,7 @@ pub async fn recover(store: &Store, state_dir: &Path) -> Result<Recovered, Store
                     done.pruned_releases += 1;
                 }
             }
-            Err(StoreError::NotFound { .. }) => match remove_staged(&dir) {
+            Err(StoreError::NotFound { .. }) => match remove_staged(state_dir, &dir, release) {
                 Ok(()) => done.staged_releases += 1,
                 Err(e) => {
                     tracing::error!(release = %release, error = %e,
@@ -104,31 +115,55 @@ pub async fn recover(store: &Store, state_dir: &Path) -> Result<Recovered, Store
     Ok(done)
 }
 
-/// Removes the unrecorded release directory `dir` whole, its
-/// [`OPERATION_FILE`] last: a removal that fails part-way leaves the
-/// marker, so the next start still knows the directory is staging to
-/// remove.
-fn remove_staged(dir: &Path) -> io::Result<()> {
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        if entry.file_name() == OPERATION_FILE {
-            continue;
-        }
-        if entry.file_type()?.is_dir() {
-            fs::remove_dir_all(entry.path())?;
-        } else {
-            fs::remove_file(entry.path())?;
-        }
-    }
-    let marker = dir.join(OPERATION_FILE);
-    let made_by = fs::read(&marker)?;
-    fs::remove_file(&marker)?;
-    if let Err(e) = fs::remove_dir(dir) {
-        // Put the marker back so the next start retries.
-        fs::write(&marker, made_by)?;
-        return Err(e);
+/// Removes the unrecorded release directory `dir` whole: renames it into
+/// [`TRASH_DIR`], then removes it from there. A failed rename leaves `dir`
+/// where it was, marked, for the next start; once renamed it is garbage
+/// whatever happens, and a removal that fails is finished by the next
+/// start's [`empty_trash`].
+fn remove_staged(state_dir: &Path, dir: &Path, release: ReleaseId) -> io::Result<()> {
+    let trash = state_dir.join(TRASH_DIR);
+    create_private_dir(&trash)?;
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let entry = trash.join(format!("{release}-{nanos}"));
+    fs::rename(dir, &entry)?;
+    if let Err(e) = fs::remove_dir_all(&entry) {
+        tracing::error!(release = %release, error = %e,
+            "the staging of an interrupted release is in the trash; the next start removes it");
     }
     Ok(())
+}
+
+/// Removes everything in [`TRASH_DIR`]. An entry that cannot be removed is
+/// logged and left for the next start; the start goes on.
+fn empty_trash(state_dir: &Path) {
+    let Ok(entries) = fs::read_dir(state_dir.join(TRASH_DIR)) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let removed = match entry.file_type() {
+            Ok(t) if t.is_dir() => fs::remove_dir_all(&path),
+            Ok(_) => fs::remove_file(&path),
+            Err(e) => Err(e),
+        };
+        if let Err(e) = removed {
+            tracing::error!(path = %path.display(), error = %e,
+                "a trash entry was not removed; the next start retries");
+        }
+    }
+}
+
+/// Creates `dir`, readable by the daemon's user only, if it is missing.
+fn create_private_dir(dir: &Path) -> io::Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    match builder.create(dir) {
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(()),
+        other => other,
+    }
 }
 
 /// Removes the env files of `release`, in `dir`; whether there were any.

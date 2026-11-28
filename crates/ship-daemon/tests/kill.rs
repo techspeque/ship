@@ -23,6 +23,7 @@ use serde_json::{Value, json};
 use ship_core::{DeploymentResult, OperationId, OperationPhase, OperationStatus, ReleaseId, Slug};
 use ship_daemon::config::ENV_DIR;
 use ship_daemon::deploy::{OPERATION_FILE, RELEASES_DIR, release_dir};
+use ship_daemon::recovery::TRASH_DIR;
 use ship_daemon::{Config, DeploySettings};
 use ship_docker::Runner;
 use ship_net::client::{self, RequestBody};
@@ -715,4 +716,103 @@ fn staging_a_start_could_not_remove_is_removed_by_the_next() {
         assert_eq!(release_dirs(host.state()), vec![good]);
         running.shutdown().await.unwrap();
     });
+}
+
+/// Deploys v1, then kills the daemon while it builds v2, leaving v2's
+/// unrecorded, marked release directory on disk; the good release and
+/// that directory.
+fn kill_while_building(host: &Host) -> (ReleaseId, PathBuf) {
+    let rt = runtime();
+    let (running, good) = rt.block_on(async {
+        let running = ship_daemon::start(&host.config).await.unwrap();
+        let t = target(&running);
+        let store = running.store();
+        let v1 = upload(&t, "v1").await;
+        let a = post(
+            &t,
+            "/api/v1/projects/app/deployments",
+            "d1",
+            json!({ "revision_id": v1 }),
+        )
+        .await;
+        assert_eq!(
+            finished(store, op_id(&a)).await.phase,
+            OperationPhase::Succeeded
+        );
+        host.control("hang_build");
+        post(
+            &t,
+            "/api/v1/projects/app/deployments",
+            "d2",
+            json!({ "revision_id": v1 }),
+        )
+        .await;
+        let deadline = tokio::time::Instant::now() + TIMEOUT;
+        while !host.exists("at_build") {
+            assert!(tokio::time::Instant::now() < deadline);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let good = deployments(store).await[1].release_id.unwrap();
+        (running, good)
+    });
+    rt.shutdown_background();
+    std::mem::forget(running);
+    host.clear("hang_build");
+    let staged: Vec<ReleaseId> = release_dirs(host.state())
+        .into_iter()
+        .filter(|r| *r != good)
+        .collect();
+    assert_eq!(staged.len(), 1, "the killed attempt's own directory");
+    (good, release_dir(host.state(), staged[0]))
+}
+
+/// The entries of the trash directory.
+fn trash_entries(state: &Path) -> Vec<PathBuf> {
+    match fs::read_dir(state.join(TRASH_DIR)) {
+        Ok(entries) => entries.map(|e| e.unwrap().path()).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Starts a daemon on `host` and shuts it down.
+fn start_once(host: &Host) {
+    let rt = runtime();
+    rt.block_on(async {
+        let running = ship_daemon::start(&host.config).await.unwrap();
+        running.shutdown().await.unwrap();
+    });
+}
+
+/// A start whose removal of the renamed staging fails part-way (a
+/// directory in it denies writes) still starts and leaves the rest in the
+/// trash; the next start empties it (f-051).
+#[cfg(unix)]
+#[test]
+fn staging_whose_removal_failed_in_the_trash_is_removed_by_the_next_start() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let host = Host::new();
+    let (good, staged) = kill_while_building(&host);
+    let locked = staged.join("locked");
+    fs::create_dir(&locked).unwrap();
+    fs::write(locked.join("file"), "x").unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).unwrap();
+    if fs::write(locked.join("probe"), "x").is_ok() {
+        // Permissions do not bind this user (root): nothing to show.
+        return;
+    }
+
+    start_once(&host);
+    assert_eq!(release_dirs(host.state()), vec![good]);
+    let left = trash_entries(host.state());
+    assert_eq!(
+        left.len(),
+        1,
+        "what could not be removed stays in the trash"
+    );
+    fs::set_permissions(left[0].join("locked"), fs::Permissions::from_mode(0o755)).unwrap();
+
+    start_once(&host);
+    assert_eq!(release_dirs(host.state()), vec![good]);
+    assert!(trash_entries(host.state()).is_empty());
 }
