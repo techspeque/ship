@@ -604,3 +604,12 @@ findings:
       status: open
       cycle: 1
       file: crates/ship-daemon/src/recovery.rs
+    - id: f-052
+      date: "2026-11-28"
+      slice: phase-1-ws-1.14
+      severity: P3
+      category: tests
+      finding: crates/ship-daemon/src/push.rs:484 — Independent forced post-verification failed in the unchanged only_an_answering_address_answers test after dropping its listener; the brief report already notes this port-reuse flake. The 15 targeted recovery, kill, invariants, listeners and web-contract tests pass. Track the existing verification flake separately from this slice’s implementation.
+      status: advisory
+      cycle: 1
+      file: crates/ship-daemon/src/push.rs
