@@ -419,7 +419,9 @@ Acceptance criteria:
 - **Blocked by:** 1.11
 
 Tasks:
-- Implement `ship start`, `stop`, `restart`, `redeploy` and `remove` for a project or one service, each as an operation
+- Implement `ship start`, `stop` and `restart` for a project or one service, and `redeploy` and `remove` for a project only, each as an operation (Human, 2026-11-28). A release and a Compose project cover the whole environment, so `redeploy P/S` and `remove P/S` are refused with that reason
+- Add a desired state per service (a new migration), beside the environment's: `ship stop P/S` records the service as `stopped` and status derives from it, so a service stopped on purpose is never `failed`. The environment's desired state wins when it is `stopped` or `removed`
+- A removed environment keeps its history and its named volumes, and is brought back only by `ship push --recreate` (Human, 2026-11-28): same project and environment, one continuous deployment history showing the removal and the new deployment. On a terminal, a push without the flag asks, naming the volumes that will be reattached; with no terminal it exits 3 (`confirmation_required`). `start`, `stop` and `restart` on a removed environment refuse and say to push with `--recreate`. The store allows the transition out of `removed` only through that deployment
 - `stop` sets desired state `stopped`; nothing in Ship starts that environment again until `start` (OVERVIEW §3.3)
 - `restart` restarts containers on the current release; `redeploy` deploys the current revision again with current config; neither is the other (ADR-0006 rule 10)
 - `remove` stops and removes containers and networks, keeps every named volume and the history, and sets desired state `removed`
@@ -429,6 +431,8 @@ Tasks:
 Suggested packages:
 - `crates/ship`
 - `crates/ship-daemon`
+- `crates/ship-store`
+- `crates/ship-core`
 
 Acceptance criteria:
 - [ ] A stopped environment stays stopped across a daemon restart and a host reboot
@@ -436,6 +440,9 @@ Acceptance criteria:
 - [ ] Named volumes exist, with their data, after `remove`
 - [ ] `redeploy` after a config change clears `stale_config`; `restart` does not change the release
 - [ ] Each command on an environment with an operation in flight waits its turn
+- [ ] `ship stop P/S` stops one service of several; `ship status` shows it `stopped` and the others unchanged, across a daemon restart; `ship start P/S` brings it back
+- [ ] `redeploy P/S` and `remove P/S` are refused with the reason, and change nothing
+- [ ] After `remove`, a push without `--recreate` and without a terminal exits 3 and deploys nothing; with `--recreate` it deploys, the named volume's data is there, and `ship deployments` lists the old deployments, the removal and the new one
 
 ---
 
