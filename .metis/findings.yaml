@@ -565,3 +565,12 @@ findings:
       status: open
       cycle: 1
       file: crates/ship-daemon/src/lifecycle.rs
+    - id: f-049
+      date: "2026-11-28"
+      slice: phase-1-ws-1.12
+      severity: P2
+      category: data
+      finding: crates/ship-store/migrations/0005_lifecycle.sql:89 — Comparing deploy.started_at >= removal.ended_at allows a deploy created before removal in the same millisecond to authorize removed-to-running; a real SQLite reproduction resurrected the environment without any post-removal deploy. The same predicate exists in history.rs recreate_environment. Use unambiguous deployment ordering in both guards and add equal-timestamp regression tests that reject the earlier deploy while accepting a genuinely later one.
+      status: open
+      cycle: 1
+      file: crates/ship-store/migrations/0005_lifecycle.sql
