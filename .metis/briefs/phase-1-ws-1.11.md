@@ -105,6 +105,8 @@ Docker unreachable makes every service `unknown` and changes nothing else.
   - web/src/lib/contract/
   - Cargo.lock
   - .metis/briefs/phase-1-ws-1.11.md
+  - crates/ship-daemon/tests/common/mod.rs (out-of-scope touch, below)
+  - crates/ship/Cargo.toml (out-of-scope touch, below)
 - **read_only_paths:** .metis/adr/, .metis/plans/phase-1-plan.md,
   OVERVIEW.md, crates/ship/tests/fixtures/ (other than `projects.json`),
   crates/ship-store/migrations/, crates/ship-docker/, crates/ship-net/,
