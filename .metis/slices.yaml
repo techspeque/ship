@@ -1,5 +1,19 @@
 version: 1
 slices:
+    - id: fix-0007
+      title: A flaky verification test, and no restart hint after an in-place upgrade
+      type: fix
+      priority: p0
+      risk: low
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-1-plan.md
+      plan_section: 'Workstream 1.14: Recovery and invariants'
+      coded: false
+      reviewed: false
+      review_cycles: 0
+      notes: 'Two advisories to settle before the adoption gate. (1) f-052 and f-054: push::tests::only_an_answering_address_answers (crates/ship-daemon/src/push.rs:484) fails intermittently with ''assertion !answers failed'' after dropping its listener: another process or test reuses the freed port, so the address answers again. It has failed the Reviewer''s independent metis verify --post twice. Make the test deterministic without weakening what it proves (an address that does not answer is not printed); do not just retry or ignore it. The earlier flaky test failing_engine_is_unreachable (crates/ship-docker/tests/fake_docker.rs:130, seen once in CI on 2026-11-27) is the same family; look at it and fix it too if it has the same cause, and say so if it does not. (2) f-018, from the Phase 0 gate: after an in-place upgrade, nothing tells the operator to restart the daemon. service install prints ''sudo systemctl start ship'' unless the unit changed, which does nothing to a running daemon, so a host kept running the old version while ship --version printed the new one. When service install or install.sh finds a running daemon whose version differs from the installed binary, say so and print ''sudo systemctl restart ship''; ship host should make a client/daemon version difference visible. Resolve each finding with its evidence.'
+      created: "2026-11-28"
     - id: phase-1-gate
       title: 'Phase 1 gate: composed-system validation'
       type: gate
