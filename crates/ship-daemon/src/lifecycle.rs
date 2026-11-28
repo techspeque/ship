@@ -164,10 +164,15 @@ async fn run(
         (Action::Start, None) => start_environment(ctx, d, &env, &project).await?,
         (Action::Start, Some(s)) => start_service(ctx, d, &env, s, &project).await?,
         (Action::Stop, None) => stop_environment(ctx, d, &env, &project).await?,
-        (Action::Stop, Some(s)) => stop_service(ctx, d, s, &project).await?,
+        (Action::Stop, Some(s)) => stop_service(ctx, d, &env, s, &project).await?,
         (Action::Restart, s) => restart(ctx, d, &env, s.as_ref(), &project).await?,
         (Action::Redeploy, _) => redeploy(ctx, d, &target.project, &env).await?,
         (Action::Remove, _) => remove(ctx, d, &env, &project).await?,
+    }
+    // A stop is audited where its desired state is recorded, so a Docker
+    // failure after it still leaves the event.
+    if action == Action::Stop {
+        return Ok(());
     }
     audit(store, action, &env, service.as_ref()).await
 }
@@ -320,6 +325,7 @@ async fn stop_environment(
     d.store()
         .set_desired_state(env.id, DesiredState::Stopped)
         .await?;
+    audit(d.store(), Action::Stop, env, None).await?;
     ctx.log("the environment is desired stopped; nothing in Ship starts it until `ship start`")
         .await?;
     step(ctx, d, project, Step::Stop, &[], "stopping the services").await
@@ -328,6 +334,7 @@ async fn stop_environment(
 async fn stop_service(
     ctx: &Context,
     d: &Deployer,
+    env: &Environment,
     service: &Service,
     project: &ComposeProject,
 ) -> Result<(), JobFailure> {
@@ -339,6 +346,7 @@ async fn stop_service(
     d.store()
         .set_service_desired_state(service.id, DesiredState::Stopped)
         .await?;
+    audit(d.store(), Action::Stop, env, Some(service)).await?;
     ctx.log(&format!(
         "{} is desired stopped; nothing in Ship starts it until `ship start`",
         service.name

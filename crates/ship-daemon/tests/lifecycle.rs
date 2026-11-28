@@ -762,6 +762,42 @@ async fn a_removal_names_the_revision_and_release_serving() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stop_docker_refuses_is_still_recorded_and_audited_once() {
+    for (query, service) in [("", false), ("?service=worker", true)] {
+        let f = fixture(Fake::Services).await;
+        let s = seed(&f).await;
+        // A container without Ship's labels: the label check fails before
+        // any `compose stop`.
+        let foreign = json!({
+            "Id": WEB_ID,
+            "Name": "/someone-else",
+            "RestartCount": 0,
+            "State": { "Status": "running", "ExitCode": 0, "OOMKilled": false },
+            "Config": { "Labels": {} },
+        });
+        f.control("web.running.json", &foreign.to_string());
+        let op = f.act("stop", query, "stop").await;
+        assert_eq!(op.phase, OperationPhase::Failed, "{op:?}");
+        assert!(mutations(&f.invocations()).is_empty());
+        let target = if service {
+            let worker = f.store().get_service(s.worker.id).await.unwrap();
+            assert_eq!(worker.desired_state, DesiredState::Stopped);
+            s.worker.id.to_string()
+        } else {
+            let env = f.store().get_environment(s.env.id).await.unwrap();
+            assert_eq!(env.desired_state, DesiredState::Stopped);
+            s.env.id.to_string()
+        };
+        let audit = f.store().list_audit_events().await.unwrap();
+        let actions: Vec<(&str, &str)> = audit
+            .iter()
+            .map(|a| (a.action.as_str(), a.target.as_str()))
+            .collect();
+        assert_eq!(actions, [("stop", target.as_str())], "{query}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_action_waits_for_the_operation_holding_its_environment() {
     let f = fixture(Fake::Services).await;
     let s = seed(&f).await;
