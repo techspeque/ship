@@ -783,6 +783,28 @@ fn start_once(host: &Host) {
     });
 }
 
+/// A start that dies between renaming the staging into the trash and
+/// removing it leaves no marked directory in `releases`; the next start
+/// removes it from the trash all the same (f-053). The entry is put there
+/// as the dead start's rename left it.
+#[test]
+fn staging_renamed_into_the_trash_by_a_dead_start_is_removed_by_the_next() {
+    let host = Host::new();
+    let (good, staged) = kill_while_building(&host);
+    let trash = host.state().join(TRASH_DIR);
+    fs::create_dir(&trash).unwrap();
+    let name = staged.file_name().unwrap().to_str().unwrap();
+    let entry = trash.join(format!("{name}-1"));
+    fs::rename(&staged, &entry).unwrap();
+    // As far as the dead start got: its own marker already gone too.
+    fs::remove_file(entry.join(OPERATION_FILE)).unwrap();
+    assert_eq!(release_dirs(host.state()), vec![good]);
+
+    start_once(&host);
+    assert_eq!(release_dirs(host.state()), vec![good]);
+    assert!(trash_entries(host.state()).is_empty());
+}
+
 /// A start whose removal of the renamed staging fails part-way (a
 /// directory in it denies writes) still starts and leaves the rest in the
 /// trash; the next start empties it (f-051).
