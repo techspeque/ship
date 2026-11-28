@@ -489,8 +489,9 @@ Tasks:
 - Clean staging directories and partial uploads left by an interrupted operation, and nothing else
 - Add invariant tests over a full scenario: no known test secret in logs, events, API responses, generated Compose files or image history
 - Add an invariant test that every listener is on the unix socket or 127.0.0.1
-- Add a test that kills the daemon at each phase of a deployment and checks the previous release still serves
-- Update the README, the operator notes and `docs/contracts/cli-json.md` to what was built
+- Add a test that kills the daemon at each phase of a deployment. In `building` and `preparing` the previous release still serves. In `deploying` and `verifying` the new containers have already replaced the old in place, and the daemon takes no Docker action when it starts (Human, 2026-11-28): the operation is `interrupted`, the last good release stays the recorded one, and status reports what Docker runs
+- Make `ship status` say that a deployment was interrupted part-way and name the command that puts it right (`ship redeploy`), in text and as a field in the JSON, added to the fixtures on purpose
+- Update the README, the operator notes and `docs/contracts/cli-json.md` to what was built, including that exit 3 also covers a push to a removed environment without `--recreate`, and that the address `192.0.2.10` in the fixtures stands for the configured publish address
 
 Suggested packages:
 - `crates/ship-daemon`
@@ -498,7 +499,7 @@ Suggested packages:
 - `docs/`
 
 Acceptance criteria:
-- [ ] Killing the daemon in any phase leaves the previous release serving and the operation `interrupted`
+- [ ] Killing the daemon in `building` or `preparing` leaves the previous release serving and the operation `interrupted`; killing it in `deploying` or `verifying` leaves the operation `interrupted`, runs no Docker command at the next start, and `ship status` shows the interruption, what Docker runs and the command to recover; `ship redeploy` then brings the environment to a good release
 - [ ] After a restart, status matches what Docker reports with no operator action
 - [ ] The invariant tests fail when a secret is deliberately leaked or a listener is deliberately bound elsewhere
 - [ ] No object without Ship's labels changed during the whole test scenario
