@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { TONE_CLASSES } from './tone';
+  import { href } from './route';
+  import { FOCUS, TONE_CLASSES } from './tone';
   import type { ProjectsView } from './view';
 
   let { view }: { view: ProjectsView } = $props();
@@ -14,8 +15,17 @@
     <ul class="mt-3 divide-y divide-slate-200 dark:divide-slate-700">
       {#each view.rows as row (row.id)}
         <li class="flex flex-wrap items-baseline justify-between gap-2 py-2 text-sm">
-          <span class="font-medium">{row.slug}</span>
-          <span class="font-mono text-slate-500 dark:text-slate-400">{row.id}</span>
+          <a
+            href={href({ page: 'project', project: row.slug })}
+            class="rounded-sm font-medium text-sky-700 underline hover:text-sky-900 dark:text-sky-300 {FOCUS}"
+            >{row.slug}</a
+          >
+          {#each row.environments as env (env.id)}
+            <span class="text-slate-600 dark:text-slate-300">
+              {env.name}: desired <span class="font-mono">{env.desired}</span>, observed
+              <span class="font-mono">{env.status ?? 'no service'}</span>
+            </span>
+          {/each}
           <span class="text-slate-500 dark:text-slate-400">
             created <time datetime={row.created}>{row.created}</time>
           </span>

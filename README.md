@@ -6,10 +6,30 @@ hosted account. See [OVERVIEW.md](OVERVIEW.md) for the full specification.
 
 ## Status
 
-**Pre-alpha.** Nothing deploys yet. Phase 0 is the foundation: `ship
-daemon`, `ship service install`, `ship target`, `ship host` (host and
-Docker status), `ship projects` (an empty registry), `ship open` (the UI
-shell) and `ship --version`.
+**Pre-alpha.** Phase 1 (Push) is built and awaits its adoption gate. On
+top of the Phase 0 foundation (`ship daemon`, `ship service install`,
+`ship target`, `ship host`, `ship open`, `ship --version`) it has:
+
+- `ship push [PATH]`: the working tree, uncommitted changes included, sent
+  as a snapshot, built from its Dockerfile or imported from its Compose
+  file under the trust profile, started and verified, with `--port` to
+  publish on the host's publish address (`ship settings get|set
+  publish.address`; the tailnet address under `auto` when there is one,
+  else `127.0.0.1`). `--wait -o json` is the machine contract in
+  [docs/contracts/cli-json.md](docs/contracts/cli-json.md).
+- `ship projects`, `ship status`, `ship deployments` and `ship logs`, with
+  desired state, the last deployment and what Docker reports kept apart.
+- `ship start|stop|restart PROJECT[/SERVICE]`, `ship redeploy|remove
+  PROJECT`; a removed environment keeps its volumes and history and comes
+  back with `ship push --recreate`.
+- `ship vars` and write-only `ship secrets`, injected at deploy.
+- A UI with projects, services, live operation logs and history.
+- Recovery: a daemon that dies mid-operation starts again with no Docker
+  action. What it left in flight is `interrupted`, never resumed. A
+  deployment cut short while building or preparing changed nothing; one
+  cut short while deploying or verifying may have replaced containers in
+  part, and `ship status` says so and names the command that puts it right
+  (`ship redeploy PROJECT`). See [docs/service.md](docs/service.md).
 
 - Before v1.0 the CLI, the HTTP API and the storage formats may change
   without notice. Semantic versioning applies from v1.0.
@@ -31,13 +51,15 @@ added here when CI covers them.
 
 ## Footprint
 
-One measurement, taken at the Phase 0 gate, not a guarantee: on Ubuntu,
-x86_64, a static musl build, about 3 minutes after start with no projects,
-the idle daemon held 5.7 MB resident memory (VmRSS 5716 kB, peak the
-same), ran 10 threads and had used 0.21 s of CPU in total since start.
-`ship projects` over ssh on a LAN took 0.12–0.13 s per run with an
-already-open ssh connection; a bare `ssh HOST true` took 0.12 s on the same
-link.
+One measurement, taken at the Phase 0 gate (run 2, 2026-11-27), not a
+guarantee: the v0.0.2 release build under systemd on Ubuntu 26.04, x86_64,
+16 cores, 16 minutes after start with no projects. The idle daemon held
+6.3 MB resident memory (VmRSS 6448 kB, peak 6508 kB), ran 18 threads, used
+no measurable CPU over 60 idle seconds (0 ticks at 100 Hz) and 0.02 s of
+CPU in total since start. `ship projects` over ssh on a LAN took
+0.11–0.14 s per run, each run opening a new ssh connection; a bare
+`ssh HOST true` took 0.12 s on the same link, so almost all of it is the
+ssh handshake.
 
 ## Install
 

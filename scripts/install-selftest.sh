@@ -82,9 +82,24 @@ done
 # The good release.
 rel="$work/release"
 mkdir -p "$rel" "$work/build/$name"
+# Answers --version like ship, and `host -o json` with $FAKE_DAEMON_VERSION
+# as the local daemon's version (fails when it is empty), but only when
+# SHIP_CONFIG names no file: install.sh must ask the local daemon, never the
+# current target.
 cat >"$work/build/$name/ship" <<'EOF'
 #!/bin/sh
-echo "ship selftest binary $*"
+case "$1" in
+--version) echo "ship 0.0.0-selftest (commit selftest)" ;;
+host)
+	if [ -z "${SHIP_CONFIG:-}" ] || [ -e "$SHIP_CONFIG" ]; then
+		echo "selftest ship: host asked without an empty SHIP_CONFIG" >&2
+		exit 9
+	fi
+	[ -n "${FAKE_DAEMON_VERSION:-}" ] || { echo "selftest ship: no daemon" >&2; exit 1; }
+	printf '{\n  "api_version": "v1",\n  "version": "%s",\n  "os": "linux"\n}\n' "$FAKE_DAEMON_VERSION"
+	;;
+*) echo "ship selftest binary $*" ;;
+esac
 EOF
 chmod 0755 "$work/build/$name/ship"
 printf 'MIT\n' >"$work/build/$name/LICENSE"
@@ -135,7 +150,7 @@ stubbed="$work/stub:$PATH"
 # 1. A good release installs a working, executable binary.
 run "good release installs" "$stubbed" 0 "" "$rel"
 last="$work/prefix-$((n - 1))/ship"
-if [ -x "$last" ] && "$last" --version | grep -q "ship selftest binary"; then
+if [ -x "$last" ] && "$last" --version | grep -q "ship 0.0.0-selftest"; then
 	pass "installed binary is executable and runs"
 else
 	fail "installed binary is executable and runs"
@@ -210,6 +225,65 @@ if [ "$got" -eq 2 ] && grep -qF -- "--from needs --version" "$work/err"; then
 	pass "--from without --version is a usage error"
 else
 	fail "--from without --version is a usage error (exit $got)"
+fi
+
+# 13–16 (Linux). An upgrade over a running daemon (f-018): with a system-path
+# prefix and ship.service active, install.sh names a restart unless the
+# daemon reports the installed version. A stub systemctl answers is-active
+# from $FAKE_ACTIVE.
+if [ "$os" = linux ]; then
+	sysroot=$(mktemp -d 2>/dev/null || mktemp -d -t ship-selftest-sys)
+	trap 'rm -rf "$work" "$sysroot"' EXIT
+	chmod 0755 "$sysroot"
+	mkdir -p "$work/systemd"
+	cat >"$work/systemd/systemctl" <<'EOF'
+#!/bin/sh
+[ "$*" = "is-active --quiet ship.service" ] || { echo "stub systemctl: unexpected $*" >&2; exit 64; }
+[ "${FAKE_ACTIVE:-0}" = 1 ]
+EOF
+	chmod 0755 "$work/systemd/systemctl"
+
+	# hint CASE ACTIVE DAEMON_VERSION EXPECTED_FRAGMENT (empty: no restart hint)
+	hint() {
+		prefix="$sysroot/bin-$n"
+		mkdir -p "$prefix"
+		chmod 0755 "$prefix"
+		set +e
+		FAKE_ACTIVE=$2 FAKE_DAEMON_VERSION=$3 PATH="$work/systemd:$stubbed" \
+			sh "$installer" --from "$rel" --version "$version" --prefix "$prefix" \
+			>"$work/out" 2>"$work/err"
+		got=$?
+		set -e
+		if [ "$got" -ne 0 ]; then
+			fail "$1: exit $got"
+			sed 's/^/#   /' "$work/err"
+			return
+		fi
+		dir=$(cd "$prefix" && pwd -P)
+		if ! grep -qF "sudo $dir/ship service install" "$work/out"; then
+			pass "$1 # SKIP $dir is not a system path on this host"
+			return
+		fi
+		ok=no
+		if [ -n "$4" ]; then
+			if grep -qF -- "$4" "$work/out" && grep -qF "sudo systemctl restart ship" "$work/out"; then
+				ok=yes
+			fi
+		elif ! grep -qF "systemctl restart" "$work/out"; then
+			ok=yes
+		fi
+		if [ "$ok" = yes ]; then
+			pass "$1"
+		else
+			fail "$1"
+			sed 's/^/#   /' "$work/out"
+		fi
+	}
+	hint "running daemon on another version is told to restart" 1 0.0.0-old \
+		"the running daemon is ship 0.0.0-old, not ship 0.0.0-selftest"
+	hint "running daemon on the installed version needs nothing" 1 0.0.0-selftest ""
+	hint "running daemon with no version is told to restart" 1 "" "did not report its version"
+	hint "no running daemon: no restart hint" 0 0.0.0-old ""
 fi
 
 echo "1..$n"

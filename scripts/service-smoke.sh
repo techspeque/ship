@@ -131,6 +131,11 @@ mtime=$(stat -c %Y.%y "$unit")
 out=$(sudo "$ship" service install)
 echo "$out"
 echo "$out" | grep -qx "Nothing changed." || fail "second install reported changes"
+version=$("$ship" --version | awk 'NR == 1 { print $2 }')
+echo "$out" | grep -qxF "The daemon is running ship $version." ||
+  fail "second install did not find the running daemon on ship $version"
+echo "$out" | grep -qF "systemctl start" && fail "second install told a running daemon to start"
+echo "$out" | grep -qF "systemctl restart" && fail "second install told a current daemon to restart"
 [ "$(sha256sum "$unit")" = "$before" ] || fail "unit content changed"
 [ "$(stat -c %Y.%y "$unit")" = "$mtime" ] || fail "unit rewritten"
 [ "$(systemctl show -p MainPID --value ship)" = "$pid" ] || fail "second install restarted the daemon"

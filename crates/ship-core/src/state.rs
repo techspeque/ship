@@ -1,7 +1,9 @@
 //! Desired state, observed service status and operation phase
 //! (ADR-0006, ADR-0011).
 //!
-//! The three are separate facts and are never derived from one another.
+//! The three are separate facts and are stored apart. Service status reads
+//! desired state only to tell a requested stop from a crash (ADR-0006
+//! rule 2); it never changes it.
 
 use std::fmt;
 
@@ -54,6 +56,16 @@ impl DesiredState {
             Err(TransitionError { from: self, to })
         }
     }
+
+    /// What is asked of one service: the environment's desired state when
+    /// it is `stopped` or `removed`, which wins, else the service's own
+    /// (`ship stop P/S` records `stopped` for one service).
+    pub fn effective(environment: DesiredState, service: DesiredState) -> DesiredState {
+        match environment {
+            DesiredState::Running => service,
+            halted => halted,
+        }
+    }
 }
 
 string_enum! {
@@ -69,6 +81,7 @@ string_enum! {
         Unhealthy => "unhealthy",
         Failed => "failed",
         Stopped => "stopped",
+        Paused => "paused",
         Unknown => "unknown",
     }
 }
@@ -109,23 +122,36 @@ pub enum Observation {
     Reachable {
         container: ContainerState,
         health: HealthCheck,
+        /// Docker's `State.OOMKilled`: the kernel killed the container's
+        /// process for exceeding its memory limit.
+        oom_killed: bool,
     },
 }
 
 impl ServiceStatus {
-    /// Derives a status from evidence alone.
+    /// Derives a status from the observation and the environment's desired
+    /// state (ADR-0006 rule 2).
     ///
-    /// - Docker unreachable → `unknown`, whatever was seen before.
+    /// - Docker unreachable → `unknown`, whatever was seen before and
+    ///   whatever was asked for.
     /// - Running with a passing check → `healthy`; this is the only route to
     ///   `healthy`. Running with no check → `running_unverified`; with a
     ///   check still pending → `starting`; with a failing check → `unhealthy`.
-    /// - Restarting, dead, or exited non-zero → `failed`.
-    /// - Absent, created, paused, or exited 0 → `stopped`.
-    pub fn from_observation(observation: Observation) -> ServiceStatus {
+    /// - Paused → `paused`.
+    /// - Exited under desired `stopped` or `removed` → `stopped`, whatever
+    ///   the exit code: stopping a container ends it with SIGTERM or SIGKILL
+    ///   (143, 137), which is not a failure.
+    /// - Exited non-zero under desired `running`, restarting, or dead →
+    ///   `failed`.
+    /// - Absent, created, or exited 0 → `stopped`.
+    pub fn from_observation(observation: Observation, desired: DesiredState) -> ServiceStatus {
         let (container, health) = match observation {
             Observation::DockerUnreachable => return ServiceStatus::Unknown,
-            Observation::Reachable { container, health } => (container, health),
+            Observation::Reachable {
+                container, health, ..
+            } => (container, health),
         };
+        let halted = matches!(desired, DesiredState::Stopped | DesiredState::Removed);
         match container {
             ContainerState::Running => match health {
                 HealthCheck::Passing => ServiceStatus::Healthy,
@@ -133,13 +159,110 @@ impl ServiceStatus {
                 HealthCheck::Starting => ServiceStatus::Starting,
                 HealthCheck::Failing => ServiceStatus::Unhealthy,
             },
+            ContainerState::Paused => ServiceStatus::Paused,
             ContainerState::Restarting | ContainerState::Dead => ServiceStatus::Failed,
-            ContainerState::Exited { exit_code } if exit_code != 0 => ServiceStatus::Failed,
-            ContainerState::Exited { .. }
-            | ContainerState::Absent
-            | ContainerState::Created
-            | ContainerState::Paused => ServiceStatus::Stopped,
+            ContainerState::Exited { exit_code } if exit_code != 0 && !halted => {
+                ServiceStatus::Failed
+            }
+            ContainerState::Exited { .. } | ContainerState::Absent | ContainerState::Created => {
+                ServiceStatus::Stopped
+            }
         }
+    }
+
+    /// How much a status needs the operator's attention; `0` is the most.
+    /// Order: `unknown`, `failed`, `unhealthy`, `starting`, `paused`,
+    /// `stopped`, `running_unverified`, `healthy`.
+    pub fn severity(self) -> u8 {
+        match self {
+            ServiceStatus::Unknown => 0,
+            ServiceStatus::Failed => 1,
+            ServiceStatus::Unhealthy => 2,
+            ServiceStatus::Starting => 3,
+            ServiceStatus::Paused => 4,
+            ServiceStatus::Stopped => 5,
+            ServiceStatus::RunningUnverified => 6,
+            ServiceStatus::Healthy => 7,
+        }
+    }
+
+    /// The overall status of several (services of an environment, or
+    /// containers of a service): the one of least [`severity`](Self::severity),
+    /// so it is `healthy` only when every one is. `None` for none.
+    pub fn overall(statuses: impl IntoIterator<Item = ServiceStatus>) -> Option<ServiceStatus> {
+        statuses.into_iter().min_by_key(|s| s.severity())
+    }
+}
+
+/// What Docker reported for a service that is `failed`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureReason {
+    /// Exited non-zero while desired `running`.
+    Exited,
+    /// Docker is restarting it after an exit.
+    Restarting,
+    /// Docker could not stop or remove it.
+    Dead,
+}
+
+/// Why a service is `failed`, as far as the observation says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FailureDetail {
+    pub reason: FailureReason,
+    /// The exit code, when the container exited.
+    pub exit_code: Option<i64>,
+    /// The kernel killed it for exceeding its memory limit.
+    pub oom_killed: bool,
+}
+
+impl FailureDetail {
+    /// The detail for an observation; present exactly when
+    /// [`ServiceStatus::from_observation`] gives `failed`.
+    pub fn from_observation(
+        observation: Observation,
+        desired: DesiredState,
+    ) -> Option<FailureDetail> {
+        if ServiceStatus::from_observation(observation, desired) != ServiceStatus::Failed {
+            return None;
+        }
+        let Observation::Reachable {
+            container,
+            oom_killed,
+            ..
+        } = observation
+        else {
+            return None;
+        };
+        let (reason, exit_code) = match container {
+            ContainerState::Exited { exit_code } => (FailureReason::Exited, Some(exit_code)),
+            ContainerState::Restarting => (FailureReason::Restarting, None),
+            ContainerState::Dead => (FailureReason::Dead, None),
+            // Never `failed`; excluded by the status check above.
+            ContainerState::Absent
+            | ContainerState::Created
+            | ContainerState::Running
+            | ContainerState::Paused => return None,
+        };
+        Some(FailureDetail {
+            reason,
+            exit_code,
+            oom_killed,
+        })
+    }
+}
+
+impl fmt::Display for FailureDetail {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match (self.reason, self.exit_code) {
+            (FailureReason::Exited, Some(code)) => write!(f, "exited with code {code}")?,
+            (FailureReason::Exited, None) => f.write_str("exited")?,
+            (FailureReason::Restarting, _) => f.write_str("restarting after an exit")?,
+            (FailureReason::Dead, _) => f.write_str("dead")?,
+        }
+        if self.oom_killed {
+            f.write_str("; killed for exceeding its memory limit (OOM)")?;
+        }
+        Ok(())
     }
 }
 
@@ -268,6 +391,16 @@ mod tests {
     }
 
     #[test]
+    fn the_environment_wins_unless_it_is_running() {
+        use DesiredState::*;
+        for &service in DesiredState::ALL {
+            assert_eq!(DesiredState::effective(Running, service), service);
+            assert_eq!(DesiredState::effective(Stopped, service), Stopped);
+            assert_eq!(DesiredState::effective(Removed, service), Removed);
+        }
+    }
+
+    #[test]
     fn operation_phase_all_pairs() {
         use OperationPhase::*;
         // Written independently of `rank` so the table checks the code.
@@ -334,52 +467,239 @@ mod tests {
         assert!(!Queued.is_terminal());
     }
 
+    const CONTAINERS: [ContainerState; 11] = [
+        ContainerState::Absent,
+        ContainerState::Created,
+        ContainerState::Running,
+        ContainerState::Restarting,
+        ContainerState::Paused,
+        ContainerState::Exited { exit_code: 0 },
+        ContainerState::Exited { exit_code: 1 },
+        ContainerState::Exited { exit_code: 137 },
+        ContainerState::Exited { exit_code: 143 },
+        ContainerState::Exited { exit_code: -1 },
+        ContainerState::Dead,
+    ];
+    const CHECKS: [HealthCheck; 4] = [
+        HealthCheck::None,
+        HealthCheck::Starting,
+        HealthCheck::Passing,
+        HealthCheck::Failing,
+    ];
+
+    fn reachable(container: ContainerState, health: HealthCheck, oom_killed: bool) -> Observation {
+        Observation::Reachable {
+            container,
+            health,
+            oom_killed,
+        }
+    }
+
+    /// Every reachable observation in the tables above, plus Docker
+    /// unreachable.
+    fn all_observations() -> Vec<Observation> {
+        let mut out = vec![Observation::DockerUnreachable];
+        for &container in &CONTAINERS {
+            for &health in &CHECKS {
+                for oom in [false, true] {
+                    out.push(reachable(container, health, oom));
+                }
+            }
+        }
+        out
+    }
+
     #[test]
     fn service_status_derivation() {
         use ContainerState as C;
+        use DesiredState as D;
         use HealthCheck as H;
         use ServiceStatus as S;
 
-        let containers = [
-            C::Absent,
-            C::Created,
-            C::Running,
-            C::Restarting,
-            C::Paused,
-            C::Exited { exit_code: 0 },
-            C::Exited { exit_code: 1 },
-            C::Exited { exit_code: -1 },
-            C::Dead,
-        ];
-        let checks = [H::None, H::Starting, H::Passing, H::Failing];
-
-        assert_eq!(
-            S::from_observation(Observation::DockerUnreachable),
-            S::Unknown
-        );
-
-        for &container in &containers {
-            for &health in &checks {
-                let got = S::from_observation(Observation::Reachable { container, health });
+        for &desired in DesiredState::ALL {
+            for obs in all_observations() {
+                let got = S::from_observation(obs, desired);
+                let Observation::Reachable {
+                    container, health, ..
+                } = obs
+                else {
+                    assert_eq!(got, S::Unknown, "{desired}");
+                    continue;
+                };
+                let halted = matches!(desired, D::Stopped | D::Removed);
+                // Written independently of the code so the table checks it.
                 let expected = match (container, health) {
                     (C::Running, H::Passing) => S::Healthy,
                     (C::Running, H::None) => S::RunningUnverified,
                     (C::Running, H::Starting) => S::Starting,
                     (C::Running, H::Failing) => S::Unhealthy,
+                    (C::Paused, _) => S::Paused,
                     (C::Restarting | C::Dead, _) => S::Failed,
                     (C::Exited { exit_code: 0 }, _) => S::Stopped,
+                    (C::Exited { .. }, _) if halted => S::Stopped,
                     (C::Exited { .. }, _) => S::Failed,
-                    (C::Absent | C::Created | C::Paused, _) => S::Stopped,
+                    (C::Absent | C::Created, _) => S::Stopped,
                 };
-                assert_eq!(got, expected, "{container:?} {health:?}");
+                assert_eq!(got, expected, "{obs:?} {desired}");
                 // `healthy` needs a running container and a passing check.
                 if got == S::Healthy {
                     assert_eq!((container, health), (C::Running, H::Passing));
                 }
                 // Reachable Docker never yields `unknown`.
-                assert_ne!(got, S::Unknown);
+                assert_ne!(got, S::Unknown, "{obs:?} {desired}");
             }
         }
+    }
+
+    #[test]
+    fn severity_orders_every_status_once() {
+        use ServiceStatus as S;
+        let order = [
+            S::Unknown,
+            S::Failed,
+            S::Unhealthy,
+            S::Starting,
+            S::Paused,
+            S::Stopped,
+            S::RunningUnverified,
+            S::Healthy,
+        ];
+        assert_eq!(order.len(), S::ALL.len());
+        for (i, s) in order.iter().enumerate() {
+            assert_eq!(usize::from(s.severity()), i, "{s}");
+        }
+    }
+
+    #[test]
+    fn overall_is_the_worst() {
+        use ServiceStatus as S;
+        assert_eq!(S::overall([]), None);
+        assert_eq!(S::overall([S::Healthy, S::Healthy]), Some(S::Healthy));
+        assert_eq!(
+            S::overall([S::Healthy, S::RunningUnverified]),
+            Some(S::RunningUnverified)
+        );
+        assert_eq!(
+            S::overall([S::Healthy, S::Stopped, S::Failed]),
+            Some(S::Failed)
+        );
+        for &s in S::ALL {
+            assert_eq!(S::overall([s, S::Unknown]), Some(S::Unknown), "{s}");
+            assert_eq!(S::overall([S::Healthy, s]), Some(s), "{s}");
+        }
+    }
+
+    #[test]
+    fn docker_unreachable_is_unknown_under_every_desired_state() {
+        for &desired in DesiredState::ALL {
+            assert_eq!(
+                ServiceStatus::from_observation(Observation::DockerUnreachable, desired),
+                ServiceStatus::Unknown,
+                "{desired}"
+            );
+        }
+    }
+
+    #[test]
+    fn stop_signals_are_stopped_only_when_stop_was_asked() {
+        use ServiceStatus as S;
+        for code in [137, 143] {
+            for oom in [false, true] {
+                let obs = reachable(
+                    ContainerState::Exited { exit_code: code },
+                    HealthCheck::None,
+                    oom,
+                );
+                assert_eq!(
+                    S::from_observation(obs, DesiredState::Stopped),
+                    S::Stopped,
+                    "{code}"
+                );
+                assert_eq!(
+                    S::from_observation(obs, DesiredState::Removed),
+                    S::Stopped,
+                    "{code}"
+                );
+                assert_eq!(
+                    S::from_observation(obs, DesiredState::Running),
+                    S::Failed,
+                    "{code}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn paused_is_never_stopped() {
+        for &desired in DesiredState::ALL {
+            for &health in &CHECKS {
+                for oom in [false, true] {
+                    let obs = reachable(ContainerState::Paused, health, oom);
+                    assert_eq!(
+                        ServiceStatus::from_observation(obs, desired),
+                        ServiceStatus::Paused,
+                        "{obs:?} {desired}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn failure_detail_exactly_when_failed() {
+        for &desired in DesiredState::ALL {
+            for obs in all_observations() {
+                let failed = ServiceStatus::from_observation(obs, desired) == ServiceStatus::Failed;
+                let detail = FailureDetail::from_observation(obs, desired);
+                assert_eq!(detail.is_some(), failed, "{obs:?} {desired}");
+                if let (Some(d), Observation::Reachable { oom_killed, .. }) = (detail, obs) {
+                    assert_eq!(d.oom_killed, oom_killed, "{obs:?} {desired}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn failure_detail_text() {
+        let detail = |container, oom| {
+            FailureDetail::from_observation(
+                reachable(container, HealthCheck::None, oom),
+                DesiredState::Running,
+            )
+            .unwrap()
+        };
+        let d = detail(ContainerState::Exited { exit_code: 137 }, true);
+        assert_eq!(
+            d,
+            FailureDetail {
+                reason: FailureReason::Exited,
+                exit_code: Some(137),
+                oom_killed: true,
+            }
+        );
+        assert_eq!(
+            d.to_string(),
+            "exited with code 137; killed for exceeding its memory limit (OOM)"
+        );
+        assert_eq!(
+            detail(ContainerState::Exited { exit_code: 1 }, false).to_string(),
+            "exited with code 1"
+        );
+        assert_eq!(
+            detail(ContainerState::Restarting, true).to_string(),
+            "restarting after an exit; killed for exceeding its memory limit (OOM)"
+        );
+        assert_eq!(detail(ContainerState::Dead, false).to_string(), "dead");
+        // OOM-killed after the operator stopped it: stopped, so no failure.
+        let obs = reachable(
+            ContainerState::Exited { exit_code: 137 },
+            HealthCheck::None,
+            true,
+        );
+        assert_eq!(
+            FailureDetail::from_observation(obs, DesiredState::Stopped),
+            None
+        );
     }
 
     #[test]
@@ -407,6 +727,7 @@ mod tests {
                 "unhealthy",
                 "failed",
                 "stopped",
+                "paused",
                 "unknown",
             ],
         );

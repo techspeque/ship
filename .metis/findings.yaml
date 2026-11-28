@@ -203,3 +203,464 @@ findings:
       file: scripts/service-smoke.sh
       commit: f1e43f739c6fa827e49262e3e28149441ad6a0d7
       evidence: scripts/service-smoke.sh:88
+    - id: f-018
+      date: "2026-11-27"
+      slice: phase-0-gate
+      severity: P2
+      category: behavior
+      finding: 'crates/ship/src/service.rs:607 and scripts/install.sh:251-252: an in-place upgrade that follows what install.sh prints (sudo install to /usr/local/bin, then sudo ship service install) leaves the old daemon running: the unit is unchanged, so install prints only ''Start the daemon: sudo systemctl start ship'', a no-op for a running service. Gate run 2, gate host A: binary 0.0.2 on disk, daemon still 0.0.1 (ship host version 0.0.1). docs/service.md:48-50 says to restart; neither printed hint does. Required: install.sh and service install name ''sudo systemctl restart ship'' when a daemon is already running.'
+      status: resolved
+      resolved_by: 'commit 412ecf14adb3; test daemon_on_another_version_is_told_to_restart; install.sh restart_hint and ship host Client: line in the same commit; selftest cases in scripts/install-selftest.sh'
+      file: crates/ship/src/service.rs
+      commit: 412ecf14adb311f129fd07b0dbe35c248bd0be61
+      evidence: test daemon_on_another_version_is_told_to_restart
+    - id: f-019
+      date: "2026-11-27"
+      slice: phase-0-gate
+      severity: P2
+      category: testing
+      finding: .metis/briefs/phase-0-gate.md:170-177 — Scenario 3 requires the live UI to change to unreachable when Docker stops, but the report explicitly records no live UI observation and substitutes a locally served bundle with a stub response; this demonstrates rendering, not the composed daemon/transport/polling transition — Provide an observation of the release UI reached through ship open transitioning from ready to unreachable during a real Docker stop, with contemporaneous ship host output and evidence the daemon remains running.
+      status: resolved
+      resolved_by: commit 309024925958; .metis/briefs/phase-0-gate.md:162; live observer samples 13:29:56-13:37:36Z, 77 lines, gitignored .local/gate-f019/samples.log
+      cycle: 1
+      file: metis/briefs/phase-0-gate.md
+      commit: 3090249259585ef57c0262e166f017b49ae065e4
+      evidence: .metis/briefs/phase-0-gate.md:162
+    - id: f-020
+      date: "2026-11-27"
+      slice: phase-1-ws-1.2
+      severity: P2
+      category: behavior
+      finding: 'crates/ship-store/migrations/0002_phase1.sql:181 — Deployment guards reject only changed values: repeating set_deployment_release with the same release succeeds even after completion, and repeating finish_deployment with the same result in the same millisecond succeeds. Reproduced using the exact UPDATE statements against migrations 0001+0002. This violates brief lines 113-115 requiring second attempts to be rejected. Reject repeated setter/finalizer attempts with IllegalTransition regardless of value equality, and add regression tests for identical release assignments before/after completion and identical-result finalization.'
+      status: resolved
+      resolved_by: commit e7635ed0e200; test deployment_lifecycle
+      cycle: 1
+      file: crates/ship-store/migrations/0002_phase1.sql
+      commit: e7635ed0e200e3d9e8df0fb435f55ba2d68bda0e
+      evidence: test deployment_lifecycle
+    - id: f-021
+      date: "2026-11-27"
+      slice: phase-1-ws-1.2
+      severity: P3
+      category: tests
+      finding: crates/ship-store/tests/phase1.rs:785 — The raw-SQL operation test ends immediately after establishing a failure; no test attempts to change the stored code, message or failure phase of an already failed/interrupted operation, despite brief lines 120-122 explicitly requiring changed-failure rejection. Add raw-SQL assertions that these edits are refused and the original failure remains unchanged.
+      status: resolved
+      resolved_by: commit 60bc9febd940; test schema_rejects_illegal_operation_changes
+      cycle: 1
+      file: crates/ship-store/tests/phase1.rs
+      commit: 60bc9febd940c93747c9c8e9b944753e5baecbb2
+      evidence: test schema_rejects_illegal_operation_changes
+    - id: f-022
+      date: "2026-11-27"
+      slice: phase-1-ws-1.3
+      severity: P1
+      category: security
+      finding: crates/ship-daemon/src/queue.rs:244 — A registered multiline secret (private-first-line\nprivate-second-line) passed through Context::log and JobFailure is persisted verbatim in failure_message and the finished event; its component lines are also persisted in log records and log events. Inner::redact passes raw multiline text to the line-oriented Redactor, and Context::log splits before redaction (line 646). A targeted real-SQLite probe reproduced this. — Redact whole message values before splitting using the existing Redactor in a representation that preserves multiline matching; ensure failure/view/SSE and log paths remove the registered value and add multiline regression coverage.
+      status: resolved
+      resolved_by: commit 6f71a11e8bb2; test a_multiline_secret_never_reaches_the_log_events_or_failure; 6f71a11; independently verified with forced metis verify --post; SSE forwards the redacted stored event message.
+      cycle: 1
+      file: crates/ship-daemon/src/queue.rs
+      commit: 6f71a11e8bb2e6ae9854c2fb40e0d1609aa154e6
+      evidence: test a_multiline_secret_never_reaches_the_log_events_or_failure
+    - id: f-023
+      date: "2026-11-27"
+      slice: phase-1-ws-1.3
+      severity: P2
+      category: behavior
+      finding: crates/ship-daemon/src/queue.rs:365 — A concurrent replay returns the newly persisted queued row before the original submission finishes admission refusal at lines 395-403, so submitted_response answers 202 instead of the required refusal status on every replay (brief lines 73-75). A real-SQLite probe with max_queue=0 and two joined submissions of the same key reproduced created=false/status=Queued/HTTP 202 while the original returned queue_full/429. — Coordinate admission completion with same-key replays so all responses observe the refusal decision, and add concurrent replay regression coverage for queue_full and insufficient_storage.
+      status: resolved
+      resolved_by: commit afcc9845825c; test a_concurrent_replay_of_a_queue_full_refusal_is_refused; afcc984; a_concurrent_replay_of_an_insufficient_storage_refusal_is_refused also passed in independent forced metis verify --post.
+      cycle: 1
+      file: crates/ship-daemon/src/queue.rs
+      commit: afcc9845825c1334030547276cfe1917f7caee2d
+      evidence: test a_concurrent_replay_of_a_queue_full_refusal_is_refused
+    - id: f-024
+      date: "2026-11-27"
+      slice: phase-1-ws-1.4
+      severity: P1
+      category: security
+      finding: 'crates/ship-source/src/pack.rs:166 — O_NOFOLLOW protects only the final path component: after scanning sub/data containing public, replacing sub with a symlink to an outside directory containing same-length data SECRET makes pack succeed and archive SECRET (reproduced). This violates the no-symlink-following contract. Resolve/open the root and every directory component without following symlinks, using race-safe directory-relative handles, and add a regression for a parent directory swapped between scan and pack.'
+      status: resolved
+      resolved_by: commit acfcabe23c35; test a_parent_directory_swapped_for_a_symlink_after_the_scan_is_not_followed
+      cycle: 1
+      file: crates/ship-source/src/pack.rs
+      commit: acfcabe23c3514a147862f64e6d11f3bdf744e01
+      evidence: test a_parent_directory_swapped_for_a_symlink_after_the_scan_is_not_followed
+    - id: f-025
+      date: "2026-11-27"
+      slice: phase-1-ws-1.4
+      severity: P2
+      category: tests
+      finding: crates/ship-source/tests/pack.rs:293 — The include tests cover exact file names and reaching a file through an excluded ancestor, but omit the under-directory and not-a-prefix-of-a-sibling cases expressly required by the brief test plan at lines 100-102. Add tests for naming a directory and its descendants, and for a similarly prefixed sibling remaining excluded, including default-excluded and ignored descendant cases so directory-include semantics are explicit.
+      status: resolved
+      resolved_by: commit 4073a6a4d9dd; test a_named_path_does_not_include_a_sibling_it_prefixes
+      cycle: 1
+      file: crates/ship-source/tests/pack.rs
+      commit: 4073a6a4d9ddc8603a351eb3913066be5f288aae
+      evidence: test a_named_path_does_not_include_a_sibling_it_prefixes
+    - id: f-026
+      date: "2026-11-27"
+      slice: phase-1-ws-1.5
+      severity: P1
+      category: security
+      finding: 'crates/ship-daemon/src/http.rs:224 — The first upload failure returns the raw JobFailure.message instead of the redacted stored failure. Reproduced with a refused symlink named with a registered secret: HTTP 422 contains the secret while the persisted operation redacts it. Return the persisted redacted failure or apply the same redactor before responding; add an HTTP regression covering initial response and replay.'
+      status: resolved
+      resolved_by: commit 6d8465207b4f; test a_failure_answers_redacted
+      cycle: 1
+      file: crates/ship-daemon/src/http.rs
+      commit: 6d8465207b4f3061cafee932017e55fb7e1684f2
+      evidence: test a_failure_answers_redacted
+    - id: f-027
+      date: "2026-11-27"
+      slice: phase-1-ws-1.5
+      severity: P2
+      category: behavior
+      finding: 'crates/ship-daemon/src/upload.rs:392 — stream_unpack awaits the next body chunk without observing unpacker completion. Reproduced by sending a complete compressed symlink archive in a chunked body and keeping the sender open: the unpacker rejects it but the operation stays uploading and no 422 arrives until EOF. Select on unpacker completion while feeding the body, stop reading on rejection, and test rejection with the body held open; no idle timeout is needed.'
+      status: resolved
+      resolved_by: commit b515092e93ba; test a_refused_entry_answers_with_the_body_held_open
+      cycle: 1
+      file: crates/ship-daemon/src/upload.rs
+      commit: b515092e93bac504e311a9e53ca836c241ee14fd
+      evidence: test a_refused_entry_answers_with_the_body_held_open
+    - id: f-028
+      date: "2026-11-27"
+      slice: phase-1-ws-1.5
+      severity: P2
+      category: data
+      finding: 'crates/ship-daemon/src/upload.rs:308 — Promotion disarms cleanup before fallible revision persistence and final logging. Reproduced by making the operation log path a directory before completing a valid upload: HTTP 500 and a failed operation retain both the new snapshot and revision. Ensure post-promotion failures do not leave newly published artifacts (and never remove pre-existing shared snapshots/revisions), covering revision-store and final-log failures with regression tests.'
+      status: resolved
+      resolved_by: commit ccae0585cd9c; test a_revision_store_failure_publishes_nothing,a_late_log_failure_publishes_nothing
+      cycle: 1
+      file: crates/ship-daemon/src/upload.rs
+      commit: ccae0585cd9ca93f22b9902d46a842dc76fb9080
+      evidence: test a_revision_store_failure_publishes_nothing,a_late_log_failure_publishes_nothing
+    - id: f-029
+      date: "2026-11-27"
+      slice: phase-1-ws-1.6
+      severity: P2
+      category: behavior
+      finding: crates/ship-docker/src/compose.rs:275 — compose logs merges container stdout and stderr into its stdout; the real-Docker lifecycle test fails at tests/real_compose.rs:330 with err-line marked Stdout — preserve the original container stream distinction and make the required real-Docker lifecycle test pass.
+      status: resolved
+      resolved_by: 'commit 2fc00482ca82; test compose_project_lifecycle_is_labelled_and_keeps_volumes; 2fc0048: independently passed real-Docker lifecycle and forced post verification'
+      cycle: 1
+      file: crates/ship-docker/src/compose.rs
+      commit: 2fc00482ca823a71215a66219a823953763bfff3
+      evidence: test compose_project_lifecycle_is_labelled_and_keeps_volumes
+    - id: f-030
+      date: "2026-11-27"
+      slice: phase-1-ws-1.6
+      severity: P2
+      category: security
+      finding: crates/ship-docker/src/compose.rs:192 — build executes immediately without ensure_only_ours, contrary to the brief requirement that every mutating command reject foreign containers and networks in the project — perform the ownership check before building and add coverage proving foreign objects prevent the build invocation.
+      status: resolved
+      resolved_by: 'commit 899f3be9e910; test a_foreign_container_prevents_the_build; 899f3be: ownership guard precedes build; forced post verification passed'
+      cycle: 1
+      file: crates/ship-docker/src/compose.rs
+      commit: 899f3be9e91076e9271eda03be515bff18a0999d
+      evidence: test a_foreign_container_prevents_the_build
+    - id: f-031
+      date: "2026-11-27"
+      slice: phase-1-ws-1.6
+      severity: P2
+      category: security
+      finding: crates/ship-docker/src/compose.rs:275 — logs streams project containers without checking Ship labels, and ps at line 281 explicitly returns ids with or without those labels; this violates the brief requirement to select only labelled objects and never return foreign objects — filter or refuse foreign containers in both public read operations and cover a mixed owned/foreign project.
+      status: resolved
+      resolved_by: 'commit ce60c58b3ce2; test reads_of_a_mixed_project_return_only_ships_containers; ce60c58: mixed-project coverage and real-Docker foreign-container test passed independently'
+      cycle: 1
+      file: crates/ship-docker/src/compose.rs
+      commit: ce60c58b3ce27433150e572935df51d6df3a0f2e
+      evidence: test reads_of_a_mixed_project_return_only_ships_containers
+    - id: f-032
+      date: "2026-11-27"
+      slice: phase-1-ws-1.7
+      severity: P1
+      category: data
+      finding: 'crates/ship-daemon/src/deploy.rs:618-641 — Volume names depend on the other paths in the current image: reproduced /data -> data, then adding /DATA yields /DATA -> data and /data -> data-2. A redeploy mounts existing data at a different path and gives the original path a new volume, violating data preservation. Use a stable collision-resistant identity per exact volume path (or persist the mapping) and test adding/removing colliding paths across releases.'
+      status: resolved
+      resolved_by: commit daa1f9a59b4a; test a_volume_keeps_its_name_as_colliding_paths_come_and_go
+      cycle: 1
+      file: crates/ship-daemon/src/deploy.rs
+      commit: daa1f9a59b4a7155ed82151e275751a0a5547b04
+      evidence: test a_volume_keeps_its_name_as_colliding_paths_come_and_go
+    - id: f-033
+      date: "2026-11-27"
+      slice: phase-1-ws-1.7
+      severity: P2
+      category: behavior
+      finding: crates/ship-daemon/src/deploy.rs:499-508 — Routes commit before the fallible endpoint log and deployment-success update. If either fails (e.g. a SQLite trigger rejects the succeeded update), run calls undo and restores the previous release but never restores its routes; changing port A to B leaves confirmed B while A serves, and a no-port attempt can erase the serving route. Make route replacement and deployment completion failure-consistent, including logging failures, and add a fault-injection regression proving the previous routes survive rollback.
+      status: resolved
+      resolved_by: commit 335730f879c0; test a_failure_after_the_routes_are_replaced_puts_them_back
+      cycle: 1
+      file: crates/ship-daemon/src/deploy.rs
+      commit: 335730f879c0128a15c929156baab7c2ef4170f2
+      evidence: test a_failure_after_the_routes_are_replaced_puts_them_back
+    - id: f-034
+      date: "2026-11-27"
+      slice: phase-1-ws-1.7
+      severity: P2
+      category: behavior
+      finding: 'crates/ship-daemon/src/deploy.rs:549 — Generated Compose values are JSON-escaped but not escaped for Compose interpolation (also volume targets at line 569). Reproduced with docker compose config: literal Dockerfile.${SHIP_REVIEW_UNSET_VAR:-wrong} becomes Dockerfile.wrong, and /data/$SHIP_REVIEW_UNSET_VAR becomes /data. These are accepted literal paths, so deployment can build the wrong file or mount a volume at the wrong path. Escape literal dollar signs in generated path values and test the canonical Compose output preserves Dockerfile, context, and volume paths exactly.'
+      status: resolved
+      resolved_by: commit e7be61ce6db3; test real_compose_config_keeps_literal_paths
+      cycle: 1
+      file: crates/ship-daemon/src/deploy.rs
+      commit: e7be61ce6db38085eb6da64bb3efb16611322f82
+      evidence: test real_compose_config_keeps_literal_paths
+    - id: f-035
+      date: "2026-11-27"
+      slice: phase-1-ws-1.7
+      severity: P2
+      category: tests
+      finding: crates/ship-store/tests/deploy.rs:1 — The brief explicitly requires migration from schema version 2 to 3 (.metis/briefs/phase-1-ws-1.7.md:154-156), but this file only tests fresh stores; the updated phase1.rs migration starts at version 1. Add the specified populated version-2 upgrade test, checking backup, preserved data, schema version 3, and usable settings storage.
+      status: resolved
+      resolved_by: commit c930458f2ade; test a_version_2_database_migrates_to_version_3_with_a_backup
+      cycle: 1
+      file: crates/ship-store/tests/deploy.rs
+      commit: c930458f2ade103fca04ab54c8316e8eef2a1cce
+      evidence: test a_version_2_database_migrates_to_version_3_with_a_backup
+    - id: f-036
+      date: "2026-11-27"
+      slice: phase-1-ws-1.7
+      severity: P2
+      category: tests
+      finding: crates/ship-daemon/tests/real_deploy.rs:267-275 — The real-Docker suite tests explicit mapping only with the single-EXPOSE SERVER image; it never builds a two-EXPOSE image, checks refusal naming both ports, or deploys that image with HOST:CONTAINER. These acceptance cases are required by brief lines 129-130 and 167-169 and currently covered only by the fake. Add the real-Engine ambiguous-port rejection and explicit-port reachable-success cases.
+      status: resolved
+      resolved_by: commit 04d1d239b1f6; test real_two_expose_ports_need_the_explicit_form
+      cycle: 1
+      file: crates/ship-daemon/tests/real_deploy.rs
+      commit: 04d1d239b1f6f7203071200d070cce006317233a
+      evidence: test real_two_expose_ports_need_the_explicit_form
+    - id: f-037
+      date: "2026-11-27"
+      slice: phase-1-ws-1.8
+      severity: P2
+      category: behavior
+      finding: 'crates/ship-daemon/src/deploy.rs:1013 — Verification permanently skips a service after its first passing observation. Reproduced through the deployment API with poll 1 A=healthy/B=starting and poll 2 A=unhealthy/B=healthy: the operation succeeds and reports A healthy instead of failing and undoing. Recheck every service until the whole deployment is ready, require current passing observations, and add this staggered-readiness regression test.'
+      status: resolved
+      resolved_by: commit 90123919086f; test a_service_that_fails_after_passing_fails_the_deployment
+      cycle: 1
+      file: crates/ship-daemon/src/deploy.rs
+      commit: 90123919086fb8a91b216da90f80dd78c7d7215a
+      evidence: test a_service_that_fails_after_passing_fails_the_deployment
+    - id: f-038
+      date: "2026-11-27"
+      slice: phase-1-ws-1.8
+      severity: P2
+      category: behavior
+      finding: 'crates/ship-daemon/src/deploy.rs:1019 — Verification selects only the first container for each service. Reproduced with an allowed Compose service declaring deploy.replicas=2 and two same-release containers, first healthy and second unhealthy: the deployment succeeds and reports the service healthy. Evaluate all replicas of each deployed service and fail on an unhealthy or exited replica; add a mixed-health replica regression test.'
+      status: resolved
+      resolved_by: commit 90e4e7ff7cf4; test an_unhealthy_replica_fails_the_deployment
+      cycle: 1
+      file: crates/ship-daemon/src/deploy.rs
+      commit: 90e4e7ff7cf4ef742d7052ba10f1a9b4e78e218a
+      evidence: test an_unhealthy_replica_fails_the_deployment
+    - id: f-039
+      date: "2026-11-27"
+      slice: phase-1-ws-1.9
+      severity: P2
+      category: behavior
+      finding: 'crates/ship/src/follow.rs:108-110 — Every successful response header resets lost_at, so repeatedly truncated/empty 200 event streams retry forever: a fake daemon returning empty SSE responses opened 10 streams and still ran after 5 seconds with --reconnect 1. Requests also retain a fixed 30-second timeout beyond the remaining reconnect budget. Preserve the loss deadline until a usable stream is restored, bound retries by its remaining time, and test empty/truncated reconnects and stalled reconnect attempts.'
+      status: resolved
+      resolved_by: commit 1265edcd3f10; test empty_truncated_or_stalled_reconnects_still_exit_94_in_time; 1265edc; independent forced verification passed
+      cycle: 1
+      file: crates/ship/src/follow.rs
+      commit: 1265edcd3f10d0e39aae4a494fe1a072b3d66dc5
+      evidence: test empty_truncated_or_stalled_reconnects_still_exit_94_in_time
+    - id: f-040
+      date: "2026-11-27"
+      slice: phase-1-ws-1.9
+      severity: P2
+      category: protocol
+      finding: 'crates/ship/src/push.rs:133-147 — Local scan/packing failures return through failed() before the JSON printer exists, violating the required final result line for --wait -o json. Reproduced with a valid Dockerfile tree and TMPDIR pointing to a nonexistent directory: exit 1, empty stdout, only text stderr. Emit exactly one structured result for these local failures with unknown ids null, preserving exit 1, and add a regression test.'
+      status: resolved
+      resolved_by: commit c9eb8c14ed82; test a_tree_that_cannot_be_packed_exits_1_with_one_result_line; c9eb8c1; independent forced verification passed
+      cycle: 1
+      file: crates/ship/src/push.rs
+      commit: c9eb8c14ed826b710e59f345fd13df4dbd4c329c
+      evidence: test a_tree_that_cannot_be_packed_exits_1_with_one_result_line
+    - id: f-041
+      date: "2026-11-27"
+      slice: phase-1-ws-1.9
+      severity: P2
+      category: behavior
+      finding: 'crates/ship/src/push.rs:191-194 — Resolving the current target delegates to commands::endpoint(), whose configuration failures exit 1, while the --to branch maps the same failures to 99. Reproduced with SHIP_CONFIG containing invalid JSON: ship push exits 1 even though no upload/build/deployment failed. Apply the push exit-code contract consistently to current-target config read/parse/location failures (99; usage remains 2), and test both target-resolution paths.'
+      status: resolved
+      resolved_by: commit 9d6c9e3e8db0; test an_unreadable_config_exits_99_on_both_target_paths; 9d6c9e3; independent forced verification passed
+      cycle: 1
+      file: crates/ship/src/push.rs
+      commit: 9d6c9e3e8db0603a80a5677fc7d016264ed14740
+      evidence: test an_unreadable_config_exits_99_on_both_target_paths
+    - id: f-042
+      date: "2026-11-27"
+      slice: phase-1-ws-1.9
+      severity: P2
+      category: tests
+      finding: crates/ship/tests/ssh_real.rs:212-215 — The brief Definition of Done at lines 147-150 requires Dockerfile and Compose pushes over local and SSH transports, but both push_over_real_ssh_deploys and cli_push.rs:a_push_over_ssh_deploys exercise only Dockerfile; the Compose test uses only the local target. Add successful Compose push coverage through fake SSH and the CI real-sshd path, asserting the operation result and service outcomes.
+      status: resolved
+      resolved_by: commit 00b7242110b4; test a_compose_push_over_ssh_deploys; crates/ship/tests/ssh_real.rs:230; 00b7242; fake SSH regression passed independently; real-sshd Compose coverage inspected, executed by CI ssh job
+      cycle: 1
+      file: crates/ship/tests/ssh_real.rs
+      commit: 00b7242110b4818b85da1e3af61e86b763f6539f
+      evidence: test a_compose_push_over_ssh_deploys; crates/ship/tests/ssh_real.rs:230
+    - id: f-043
+      date: "2026-11-27"
+      slice: phase-1-ws-1.10
+      severity: P1
+      category: security
+      finding: 'crates/ship-daemon/src/secrets.rs:129 — Startup registers only current secret rows, while config.rs:356-366 deletes rotated/unset values even though running and retained releases still use them. Reproduced rotation followed by register_all with a fresh Redactor: old-review-canary is emitted unchanged, new-review-canary is redacted. After daemon restart, output containing the still-running old credential can enter logs/events/API responses. Restore redaction for secrets used by retained/running releases as well as current config; add rotation and unset-before-redeploy restart regressions.'
+      status: resolved
+      resolved_by: commit bece0b19adbd; test values_a_retained_release_runs_with_are_redacted_after_a_restart; bece0b1; independently verified in re-review
+      cycle: 1
+      file: crates/ship-daemon/src/secrets.rs
+      commit: bece0b19adbdb4ebd3372d339f7e4636e899c000
+      evidence: test values_a_retained_release_runs_with_are_redacted_after_a_restart
+    - id: f-044
+      date: "2026-11-27"
+      slice: phase-1-ws-1.10
+      severity: P2
+      category: security
+      finding: 'crates/ship/src/vars.rs:118 — The secret-argument refusal runs only after Clap succeeds. Reproduced ship secrets set TOKEN --review-canary --project app: exit 2 prints the entire extra value twice in the unexpected-argument error and suggestion, violating the brief requirement to refuse any extra value without echoing it. Sanitize secret-set parse failures or reject value arguments before Clap formats diagnostics; cover leading-hyphen secret values in CLI tests.'
+      status: resolved
+      resolved_by: commit 4e885c45a22a; test a_secret_given_as_an_argument_is_refused_before_anything_is_sent; 4e885c4; independently verified in re-review
+      cycle: 1
+      file: crates/ship/src/vars.rs
+      commit: 4e885c45a22abe60cec642da3855877dd79d22aa
+      evidence: test a_secret_given_as_an_argument_is_refused_before_anything_is_sent
+    - id: f-045
+      date: "2026-11-27"
+      slice: phase-1-ws-1.10
+      severity: P2
+      category: behavior
+      finding: 'crates/ship-daemon/src/config.rs:668 — Prune enumerates only deployment.release_id, but prepare writes env files before the release is created/attached (deploy.rs:582-601; compose_import.rs:609-642). If a later service has an unreadable secret, or a subsequent preparation step fails, already-written secret env files have no deployment reference and are never pruned. Reproduced prepare with two services and a missing secret for the second: env/aaa.env remains after prune with an empty keep set. Track and clean the attempted release directory on pre-recording failures; add a partial-prepare failure regression.'
+      status: resolved
+      resolved_by: commit 53c0d6a748c4; test a_partly_prepared_release_keeps_no_values; 53c0d6a; independently verified in re-review
+      cycle: 1
+      file: crates/ship-daemon/src/config.rs
+      commit: 53c0d6a748c481097c6f9a36dfa52264fb9b7fd5
+      evidence: test a_partly_prepared_release_keeps_no_values
+    - id: f-046
+      date: "2026-11-28"
+      slice: phase-1-ws-1.11
+      severity: P2
+      category: correctness
+      finding: 'crates/ship-daemon/src/logs.rs:145 — Docker log-reader failures are only logged and the response ends successfully: a probe with successful ps/inspect and container logs exiting 1 returned HTTP 200 with a clean empty body; crates/ship/src/status.rs:305 consequently reports success. Propagate reader failures to the response stream so the CLI exits nonzero rather than accepting missing or truncated logs, and add regression coverage for failed log reads.'
+      status: resolved
+      resolved_by: 'commit 04df82e7ef12; test a_failed_log_read_cuts_the_answer_short; 04df82e: daemon stream failure and CLI a_failed_log_read_exits_nonzero verified; independent post-verification ALL GREEN'
+      cycle: 1
+      file: crates/ship-daemon/src/logs.rs
+      commit: 04df82e7ef126599f49e8a30fa9bc8356e2a5b0c
+      evidence: test a_failed_log_read_cuts_the_answer_short
+    - id: f-047
+      date: "2026-11-28"
+      slice: phase-1-ws-1.12
+      severity: P2
+      category: data
+      finding: crates/ship-daemon/src/lifecycle.rs:448 — After revision A succeeds and revision B fails, remove records B as revision_id while previous_release_id belongs to A; a focused API test reproduced this, contradicting the removal contract naming the serving revision. Derive both revision and previous release from the serving deployment when present, retain an explicit fallback when nothing ever served, and add regression coverage.
+      status: resolved
+      resolved_by: commit e4d9e4412d72; test a_removal_names_the_revision_and_release_serving; e4d9e44
+      cycle: 1
+      file: crates/ship-daemon/src/lifecycle.rs
+      commit: e4d9e4412d724c02df2d94e107ceb4a0b5ad8271
+      evidence: test a_removal_names_the_revision_and_release_serving
+    - id: f-048
+      date: "2026-11-28"
+      slice: phase-1-ws-1.12
+      severity: P2
+      category: behavior
+      finding: crates/ship-daemon/src/lifecycle.rs:172 — The audit call is skipped by every action error, including stop after desired_state has already been persisted. A focused test with a Docker label-check failure leaves the environment stopped with zero stop audit events, violating the brief requirement of one audit event per action. Record the stop intent/mutation even when its Docker step fails, without duplicating successful-action audits, and test project and service failures.
+      status: resolved
+      resolved_by: commit b0c77a1b156b; test a_stop_docker_refuses_is_still_recorded_and_audited_once; b0c77a1
+      cycle: 1
+      file: crates/ship-daemon/src/lifecycle.rs
+      commit: b0c77a1b156bcd5978432e85c75b3337059a9a46
+      evidence: test a_stop_docker_refuses_is_still_recorded_and_audited_once
+    - id: f-049
+      date: "2026-11-28"
+      slice: phase-1-ws-1.12
+      severity: P2
+      category: data
+      finding: crates/ship-store/migrations/0005_lifecycle.sql:89 — Comparing deploy.started_at >= removal.ended_at allows a deploy created before removal in the same millisecond to authorize removed-to-running; a real SQLite reproduction resurrected the environment without any post-removal deploy. The same predicate exists in history.rs recreate_environment. Use unambiguous deployment ordering in both guards and add equal-timestamp regression tests that reject the earlier deploy while accepting a genuinely later one.
+      status: resolved
+      resolved_by: commit 6fd5c31606c1; test a_deploy_in_the_removals_millisecond_counts_only_when_inserted_after_it; 6fd5c31
+      cycle: 1
+      file: crates/ship-store/migrations/0005_lifecycle.sql
+      commit: 6fd5c31606c166aa699504aa6e99cb4b4c459044
+      evidence: test a_deploy_in_the_removals_millisecond_counts_only_when_inserted_after_it
+    - id: f-050
+      date: "2026-11-28"
+      slice: phase-1-ws-1.13
+      severity: P2
+      category: behavior
+      finding: 'web/src/lib/OperationPage.svelte:32-44 — Live events update phase but never refresh operation status until a single GET after finished: an initially queued operation remains labelled queued while building. That final GET can also race terminal persistence (queue.rs:573-584 appends/announces finished before advancing the operation), leaving status running and failure details absent permanently. Reproduced by executing the component script with queued initial GET, building/finished events, and a still-running final GET. Refresh authoritative operation state during progress and retry terminal reads until terminal state is observed, with abort/error handling; add regressions for queued-to-running and finished-before-terminal-persistence.'
+      status: resolved
+      resolved_by: commit 30ed30d960e5; test web/src/lib/operation.test.ts; 30ed30d; independently verified queued-to-running refresh and finished-before-terminal-persistence retries; forced post verification ALL GREEN
+      cycle: 1
+      file: web/src/lib/OperationPage.svelte
+      commit: 30ed30d960e5b77761a9b9b73d8b083b083cd11c
+      evidence: test web/src/lib/operation.test.ts
+    - id: f-051
+      date: "2026-11-28"
+      slice: phase-1-ws-1.14
+      severity: P2
+      category: behavior
+      finding: 'crates/ship-daemon/src/recovery.rs:57 — Cleanup selects only deployments with no result, then persists Interrupted before removing staging (lines 65–77). If recovery dies or deletion fails after that write, later starts never retry the leftover release directory or env files. Reproduced with a marked unrecorded release: deny directory writes for the first recover, restore permissions, run recover again; the second reports zero work and staging remains. Retain durable cleanup eligibility until deletion succeeds, including across interrupted recovery, and add a regression test for retry after a temporary cleanup failure.'
+      status: resolved
+      resolved_by: commit a82fb631d897; test staging_whose_removal_failed_in_the_trash_is_removed_by_the_next_start
+      cycle: 1
+      file: crates/ship-daemon/src/recovery.rs
+      commit: a82fb631d897c65e5085daf75b6ee9195b5ade28
+      evidence: test staging_whose_removal_failed_in_the_trash_is_removed_by_the_next_start
+    - id: f-052
+      date: "2026-11-28"
+      slice: phase-1-ws-1.14
+      severity: P3
+      category: tests
+      finding: crates/ship-daemon/src/push.rs:484 — Independent forced post-verification failed in the unchanged only_an_answering_address_answers test after dropping its listener; the brief report already notes this port-reuse flake. The 15 targeted recovery, kill, invariants, listeners and web-contract tests pass. Track the existing verification flake separately from this slice’s implementation.
+      status: resolved
+      resolved_by: commit 412ecf14adb3; test only_an_answering_address_answers; port held by one bound socket (no SO_REUSEADDR), then listen() on it; freed port no longer probed
+      cycle: 1
+      file: crates/ship-daemon/src/push.rs
+      commit: 412ecf14adb311f129fd07b0dbe35c248bd0be61
+      evidence: test only_an_answering_address_answers
+    - id: f-053
+      date: "2026-11-28"
+      slice: phase-1-ws-1.14
+      severity: P2
+      category: behavior
+      finding: 're-raise f-051: crates/ship-daemon/src/recovery.rs:125 removes the operation marker before remove_dir at line 126. A recovery interrupted between those calls leaves an empty unrecorded release directory without its marker; staged_by at lines 164-168 skips it on every later start. Cleanup eligibility therefore still disappears before deletion succeeds. Keep durable ownership/cleanup eligibility outside the directory being deleted (or an equivalent crash-safe scheme) until deletion completes, and cover interruption after marker removal with a regression test.'
+      status: resolved
+      resolved_by: commit a0c24699825c; test staging_renamed_into_the_trash_by_a_dead_start_is_removed_by_the_next
+      cycle: 2
+      file: crates/ship-daemon/src/recovery.rs
+      commit: a0c24699825c06d06921528f5d43be68e821d7d8
+      evidence: test staging_renamed_into_the_trash_by_a_dead_start_is_removed_by_the_next
+    - id: f-054
+      date: "2026-11-28"
+      slice: phase-1-ws-1.14
+      severity: P3
+      category: testing
+      finding: 'Independent metis verify --post --slice phase-1-ws-1.14 --force failed (metis exit 1): push::tests::only_an_answering_address_answers at crates/ship-daemon/src/push.rs:484, assertion !answers failed. This pre-existing failure is also noted in the brief lines 184-186; recorded as advisory under the narrowed re-review rule. The run stopped before the kill integration tests.'
+      status: resolved
+      resolved_by: duplicate of f-052
+      cycle: 2
+      file: crates/ship-daemon/src/push.rs
+      disposition: duplicate
+      of: f-052
+    - id: f-055
+      date: "2026-11-28"
+      slice: phase-1-ws-1.14
+      severity: P3
+      category: behavior
+      finding: 'crates/ship-daemon/src/recovery.rs:141-144: empty_trash silently ignores read_dir failures and drops per-entry enumeration errors through flatten(), so unreadable trash can remain without the diagnostic requested by the brief. Log enumeration errors other than a missing trash directory; cleanup eligibility is retained, so this is advisory in the narrowed review.'
+      status: advisory
+      cycle: 3
+      file: crates/ship-daemon/src/recovery.rs
+    - id: f-056
+      date: "2026-11-28"
+      slice: phase-1-ws-1.14
+      severity: P3
+      category: testing
+      finding: Independent verification failed in killed_while_building_the_previous_release_serves at crates/ship-daemon/tests/kill.rs:369 with Socket(InUse) on restart after shutdown_background at line 363. All three cleanup retry regressions passed. Investigate synchronization of runtime teardown before reopening the socket; recorded as advisory under the narrowed-review rule for new non-P1 findings.
+      status: advisory
+      cycle: 3
+      file: crates/ship-daemon/tests/kill.rs

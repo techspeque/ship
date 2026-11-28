@@ -2,7 +2,9 @@
 //! the local socket, and both equal the recorded fixture (ADR-0003,
 //! ADR-0004 rule 4). `ship open --no-browser` over the same sshd serves the
 //! UI on a 127.0.0.1 port, each connection carried by `ssh … ship
-//! dial-stdio`, and SIGINT closes it.
+//! dial-stdio`, and SIGINT closes it. A snapshot uploaded over the same
+//! sshd becomes the same revision as over the local socket, and `ship
+//! push` over it deploys.
 //!
 //! Ignored by default: it needs an sshd that accepts this user with a key
 //! (BatchMode, host key already known) and `ship` from this build on the
@@ -78,6 +80,208 @@ fn projects_over_real_ssh_match_local_and_fixture() {
 
     assert_eq!(over_ssh.stdout, local.stdout);
     assert_eq!(String::from_utf8(over_ssh.stdout).unwrap(), FIXTURE);
+
+    rt.block_on(running.shutdown()).unwrap();
+}
+
+/// A snapshot uploaded over the real sshd (`ssh … ship dial-stdio`) is
+/// received like one over the local socket: the same tree is the same
+/// revision whichever transport carried it (ADR-0005, ADR-0003).
+#[test]
+#[ignore = "needs a real sshd; run by CI's ssh job with SHIP_TEST_SSH=user@host"]
+fn upload_over_real_ssh_matches_local() {
+    use ship_net::client::{self, RequestBody};
+
+    let remote = std::env::var("SHIP_TEST_SSH").expect("SHIP_TEST_SSH=user@host");
+    let dir = tempfile::tempdir().unwrap();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let config = ship_daemon::Config {
+        state_dir: dir.path().join("state"),
+        socket_path: dir.path().join("ship.sock"),
+        port: 0,
+        ..ship_daemon::Config::new(ship_daemon::Redactor::new())
+    };
+    let running = rt.block_on(ship_daemon::start(&config)).unwrap();
+    let socket = running.socket_path().display().to_string();
+
+    let tree = dir.path().join("tree");
+    std::fs::create_dir_all(tree.join("src")).unwrap();
+    std::fs::write(tree.join("Dockerfile"), b"FROM scratch\n").unwrap();
+    // Large enough to take many chunks through the ssh pipes.
+    let mut x = 0x9e37_79b9_7f4a_7c15u64;
+    let noise: Vec<u8> = (0..300_000)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x >> 32) as u8
+        })
+        .collect();
+    std::fs::write(tree.join("src/data.bin"), noise).unwrap();
+    let options = ship_source::Options {
+        home: Some(dir.path().join("no-home")),
+        ..ship_source::Options::default()
+    };
+    let selection = ship_source::scan(&tree, &options).unwrap();
+    let mut stream = Vec::new();
+    let packed = ship_source::pack(&selection, &mut stream).unwrap();
+
+    let upload = |target: &ship_net::Target, key: &str| {
+        let headers = [
+            ("idempotency-key", key),
+            ("ship-snapshot-sha256", packed.sha256.as_str()),
+        ];
+        let r = rt
+            .block_on(client::post(
+                target,
+                "/api/v1/projects/ssh-app/uploads",
+                &headers,
+                RequestBody::bytes(stream.clone()),
+                Duration::from_secs(30),
+            ))
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+        (r.status, json)
+    };
+
+    let local = ship_net::Target::parse("local", Some(&socket)).unwrap();
+    let (status, first) = upload(&local, "over-local");
+    assert_eq!(status, 201, "{first}");
+
+    let url = format!("ssh://{remote}");
+    let over_ssh = ship_net::Target::parse(&url, Some(&socket)).unwrap();
+    let (status, second) = upload(&over_ssh, "over-ssh");
+    assert_eq!(status, 200, "{second}");
+    assert_eq!(second["revision_id"], first["revision_id"]);
+    assert_eq!(second["sha256"], packed.sha256.as_str());
+    assert_ne!(second["operation_id"], first["operation_id"]);
+
+    rt.block_on(running.shutdown()).unwrap();
+}
+
+/// `ship push` over the real sshd deploys a Dockerfile project and a
+/// Compose project, against the fake `docker` of `cli_push.rs`, and
+/// prints the fixture's lines.
+#[test]
+#[ignore = "needs a real sshd; run by CI's ssh job with SHIP_TEST_SSH=user@host"]
+fn push_over_real_ssh_deploys() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let remote = std::env::var("SHIP_TEST_SSH").expect("SHIP_TEST_SSH=user@host");
+    let dir = tempfile::tempdir().unwrap();
+    let fake = dir.path().join("fake");
+    std::fs::create_dir(&fake).unwrap();
+    let docker = dir.path().join("docker");
+    std::fs::write(&docker, include_str!("support/fake-docker.sh")).unwrap();
+    std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let config = ship_daemon::Config {
+        state_dir: dir.path().join("state"),
+        socket_path: dir.path().join("ship.sock"),
+        port: 0,
+        docker: ship_docker::Runner::new(&docker).env("FAKE_DIR", &fake),
+        limits: ship_daemon::Limits {
+            disk_watermark_bytes: 0,
+            ..ship_daemon::Limits::default()
+        },
+        deploy: ship_daemon::DeploySettings {
+            settle: Duration::from_millis(200),
+            verify_timeout: Duration::from_secs(5),
+            step_timeout: Duration::from_secs(30),
+            poll: Duration::from_millis(50),
+        },
+        tailnet: std::sync::Arc::new(ship_net::StaticTailnet(None)),
+        ..ship_daemon::Config::new(ship_daemon::Redactor::new())
+    };
+    let running = rt.block_on(ship_daemon::start(&config)).unwrap();
+    let socket = running.socket_path().display().to_string();
+    let cfg = dir.path().join("config.json");
+    let url = format!("ssh://{remote}");
+    check(&ship(
+        &cfg,
+        &["target", "add", "lab", &url, "--socket", &socket],
+    ));
+
+    let tree = dir.path().join("ssh-push");
+    std::fs::create_dir_all(&tree).unwrap();
+    std::fs::write(tree.join("Dockerfile"), b"FROM scratch\n").unwrap();
+    let out = ship(&cfg, &["push", tree.to_str().unwrap(), "-o", "json"]);
+    check(&out);
+    let lines: Vec<serde_json::Value> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let result = lines.last().unwrap();
+    assert_eq!(result["type"], "result", "{lines:#?}");
+    assert_eq!(result["status"], "succeeded", "{result}");
+    assert_eq!(result["project"]["slug"], "ssh-push");
+    for (i, e) in lines[..lines.len() - 1].iter().enumerate() {
+        assert_eq!(e["sequence"], serde_json::json!(i + 1), "{e}");
+    }
+
+    // A Compose project over the same sshd: the fake's `compose config`
+    // answers the canonical model of one service publishing a port.
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let model = serde_json::json!({
+        "name": "x",
+        "services": {
+            "web": {
+                "image": "nginx",
+                "ports": [{
+                    "mode": "ingress",
+                    "host_ip": "127.0.0.1",
+                    "target": 80,
+                    "published": port.to_string(),
+                    "protocol": "tcp",
+                }],
+            },
+        },
+    });
+    std::fs::write(fake.join("config"), model.to_string()).unwrap();
+    let stack = dir.path().join("ssh-stack");
+    std::fs::create_dir_all(&stack).unwrap();
+    std::fs::write(
+        stack.join("compose.yaml"),
+        b"services:\n  web:\n    image: nginx\n    ports:\n      - \"127.0.0.1:8080:80\"\n",
+    )
+    .unwrap();
+    let out = ship(
+        &cfg,
+        &["push", stack.to_str().unwrap(), "--confirm", "-o", "json"],
+    );
+    check(&out);
+    let lines: Vec<serde_json::Value> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let result = lines.last().unwrap();
+    assert_eq!(result["type"], "result", "{lines:#?}");
+    assert_eq!(result["status"], "succeeded", "{result}");
+    assert_eq!(result["project"]["slug"], "ssh-stack");
+    assert!(
+        result["release_id"].as_str().unwrap().starts_with("rel_"),
+        "{result}"
+    );
+    assert_eq!(
+        result["services"],
+        serde_json::json!([{ "name": "web", "status": "running_unverified", "endpoints": [] }]),
+        "{result}"
+    );
+    for (i, e) in lines[..lines.len() - 1].iter().enumerate() {
+        assert_eq!(e["sequence"], serde_json::json!(i + 1), "{e}");
+    }
 
     rt.block_on(running.shutdown()).unwrap();
 }

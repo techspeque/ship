@@ -96,7 +96,32 @@ pub trait Host {
     fn sudo_user(&self) -> Option<String> {
         std::env::var("SUDO_USER").ok().filter(|u| !u.is_empty())
     }
+    /// The Ship version the daemon on the default socket reports in its
+    /// `ship-version` header; `None` when it does not answer or omits it.
+    /// A read: it changes nothing.
+    fn daemon_version(&mut self) -> Option<String> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .ok()?;
+        let target = ship_net::Target::Local {
+            socket: PathBuf::from(DEFAULT_SOCKET_PATH),
+        };
+        rt.block_on(ship_net::client::get(
+            &target,
+            ship_core::api::HOST_PATH,
+            DAEMON_QUERY_TIMEOUT,
+        ))
+        .ok()?
+        .daemon_version
+    }
 }
+
+/// How long install waits for the running daemon to report its version.
+const DAEMON_QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// This binary's Ship version: the one a restarted daemon runs.
+pub const THIS_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The real host: `std::process::Command`, stdin closed.
 pub struct SystemHost;
@@ -172,16 +197,50 @@ impl Change {
     }
 }
 
+/// The daemon systemd runs, as install found it after its changes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Running {
+    /// `ship.service` is not active.
+    No,
+    /// Active, and the daemon reported this Ship version.
+    Version(String),
+    /// Active, but the daemon did not report a version.
+    Unknown,
+}
+
 /// Summary of an install, in step order.
 #[derive(Debug, Clone)]
 pub struct InstallReport {
     pub steps: Vec<(String, Change)>,
     pub unit_changed: bool,
+    pub running: Running,
 }
 
 impl InstallReport {
     pub fn changed_anything(&self) -> bool {
         self.steps.iter().any(|(_, c)| *c != Change::Unchanged)
+    }
+
+    /// What the operator does next about the daemon, for a binary of
+    /// version `this`. A running daemon keeps the binary it started with,
+    /// so any doubt that it runs `this` names a restart (f-018).
+    pub fn daemon_hint(&self, this: &str) -> String {
+        const RESTART: &str = "sudo systemctl restart ship";
+        match &self.running {
+            Running::No => "Start the daemon:  sudo systemctl start ship".to_owned(),
+            Running::Version(v) if v != this => format!(
+                "The running daemon is ship {v}; this binary is ship {this}. \
+                 Restart it to run ship {this}:  {RESTART}"
+            ),
+            Running::Version(_) if self.unit_changed => {
+                format!("The unit changed; restart the daemon to apply it:  {RESTART}")
+            }
+            Running::Version(v) => format!("The daemon is running ship {v}."),
+            Running::Unknown => format!(
+                "The daemon is running but did not report its version. \
+                 To be sure it runs ship {this}:  {RESTART}"
+            ),
+        }
     }
 }
 
@@ -557,9 +616,20 @@ pub fn install(
         steps.push((format!("{UNIT_NAME} enabled at boot"), Change::Created));
     }
 
+    // 8. The running daemon, read only: an in-place upgrade leaves it on
+    // the old binary until restarted.
+    let active = query(host, &["systemctl", "is-active", "--quiet", UNIT_NAME])?.is_some();
+    let running = if active {
+        host.daemon_version()
+            .map_or(Running::Unknown, Running::Version)
+    } else {
+        Running::No
+    };
+
     Ok(InstallReport {
         steps,
         unit_changed: unit_change == Change::Updated,
+        running,
     })
 }
 
@@ -604,10 +674,7 @@ pub fn print_install(report: &InstallReport) {
     if !report.changed_anything() {
         println!("Nothing changed.");
     }
-    println!("Start the daemon:  sudo systemctl start ship");
-    if report.unit_changed {
-        println!("The unit changed; if the daemon is running:  sudo systemctl restart ship");
-    }
+    println!("{}", report.daemon_hint(THIS_VERSION));
     println!(
         "Let a login user use it (local and ssh targets):  sudo usermod -aG ship USER, \
          then log in again. See docs/service.md."
@@ -648,6 +715,10 @@ mod tests {
         closed: Vec<PathBuf>,
         /// `SUDO_USER` and that user's home as `getent passwd` reports it.
         sudo: Option<(String, PathBuf)>,
+        /// Whether `systemctl is-active ship.service` succeeds.
+        active: bool,
+        /// The version the running daemon reports.
+        daemon: Option<String>,
     }
 
     impl FakeHost {
@@ -662,6 +733,8 @@ mod tests {
                 fail: None,
                 closed: Vec::new(),
                 sudo: None,
+                active: false,
+                daemon: None,
             }
         }
 
@@ -669,7 +742,9 @@ mod tests {
             self.calls
                 .iter()
                 .filter(|c| !matches!(c[0].as_str(), "getent" | "id"))
-                .filter(|c| !(c[0] == "systemctl" && c[1] == "is-enabled"))
+                .filter(|c| {
+                    !(c[0] == "systemctl" && matches!(c[1].as_str(), "is-enabled" | "is-active"))
+                })
                 .map(|c| c.join(" "))
                 .collect()
         }
@@ -747,6 +822,10 @@ mod tests {
                         })
                     }
                 }
+                ["systemctl", "is-active", "--quiet", _] => Ok(CmdOutput {
+                    success: self.active,
+                    ..CmdOutput::default()
+                }),
                 ["systemctl", "enable", _] => {
                     self.enabled = true;
                     ok(String::new())
@@ -773,6 +852,11 @@ mod tests {
 
         fn sudo_user(&self) -> Option<String> {
             self.sudo.as_ref().map(|(u, _)| u.clone())
+        }
+
+        fn daemon_version(&mut self) -> Option<String> {
+            assert!(self.active, "daemon queried while ship.service is inactive");
+            self.daemon.clone()
         }
     }
 
@@ -873,6 +957,74 @@ mod tests {
         assert_eq!(host.mutating_calls(), vec!["systemctl daemon-reload"]);
         let unit = fs::read_to_string(&e.layout.unit_path).unwrap();
         assert!(unit.contains(&format!("ExecStart={} daemon", moved.display())));
+    }
+
+    const RESTART: &str = "sudo systemctl restart ship";
+
+    /// A second install (unit unchanged) with the daemon in `active` /
+    /// `daemon` state: the hint printed for this binary's version.
+    fn reinstall_hint(active: bool, daemon: Option<&str>) -> (InstallReport, String) {
+        let e = env();
+        let mut host = FakeHost::clean();
+        install(&mut host, &e.layout, &e.exe).unwrap();
+        host.active = active;
+        host.daemon = daemon.map(str::to_owned);
+        host.calls.clear();
+        let report = install(&mut host, &e.layout, &e.exe).unwrap();
+        // Finding the daemon changes nothing.
+        assert_eq!(host.mutating_calls(), Vec::<String>::new());
+        let hint = report.daemon_hint(THIS_VERSION);
+        (report, hint)
+    }
+
+    #[test]
+    fn inactive_daemon_is_told_to_start() {
+        let (report, hint) = reinstall_hint(false, None);
+        assert_eq!(report.running, Running::No);
+        assert_eq!(hint, "Start the daemon:  sudo systemctl start ship");
+    }
+
+    /// f-018: the binary was upgraded in place; the unit is unchanged and
+    /// the old daemon is still running.
+    #[test]
+    fn daemon_on_another_version_is_told_to_restart() {
+        let (report, hint) = reinstall_hint(true, Some("0.0.0-old"));
+        assert_eq!(report.running, Running::Version("0.0.0-old".to_owned()));
+        assert!(!report.unit_changed);
+        assert!(hint.contains("ship 0.0.0-old"), "{hint}");
+        assert!(hint.contains(&format!("ship {THIS_VERSION}")), "{hint}");
+        assert!(hint.ends_with(RESTART), "{hint}");
+        assert!(!hint.contains("systemctl start"), "{hint}");
+    }
+
+    #[test]
+    fn daemon_that_reports_no_version_is_told_to_restart() {
+        let (report, hint) = reinstall_hint(true, None);
+        assert_eq!(report.running, Running::Unknown);
+        assert!(hint.ends_with(RESTART), "{hint}");
+    }
+
+    #[test]
+    fn daemon_on_this_version_needs_nothing() {
+        let (report, hint) = reinstall_hint(true, Some(THIS_VERSION));
+        assert_eq!(report.running, Running::Version(THIS_VERSION.to_owned()));
+        assert_eq!(hint, format!("The daemon is running ship {THIS_VERSION}."));
+    }
+
+    #[test]
+    fn daemon_on_this_version_with_a_changed_unit_is_told_to_restart() {
+        let e = env();
+        let mut host = FakeHost::clean();
+        install(&mut host, &e.layout, &e.exe).unwrap();
+        host.active = true;
+        host.daemon = Some(THIS_VERSION.to_owned());
+        let moved = e.exe.with_file_name("ship-new");
+        fs::write(&moved, b"").unwrap();
+        let report = install(&mut host, &e.layout, &moved).unwrap();
+        assert!(report.unit_changed);
+        let hint = report.daemon_hint(THIS_VERSION);
+        assert!(hint.starts_with("The unit changed"), "{hint}");
+        assert!(hint.ends_with(RESTART), "{hint}");
     }
 
     #[test]

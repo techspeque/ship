@@ -199,6 +199,11 @@ define_id!(
     OperationId,
     "op"
 );
+define_id!(
+    /// Identifies a route: a service's address through a provider (ADR-0010).
+    RouteId,
+    "rte"
+);
 
 #[cfg(test)]
 mod tests {
@@ -228,6 +233,7 @@ mod tests {
         round_trip(ReleaseId::from_parts(TS, ENTROPY).unwrap());
         round_trip(DeploymentId::from_parts(TS, ENTROPY).unwrap());
         round_trip(OperationId::from_parts(TS, ENTROPY).unwrap());
+        round_trip(RouteId::from_parts(TS, ENTROPY).unwrap());
         round_trip(ProjectId::from_parts(0, 0).unwrap());
         round_trip(ProjectId::from_parts(MAX_TIMESTAMP_MS, u128::MAX).unwrap());
     }
@@ -242,6 +248,7 @@ mod tests {
             ReleaseId::PREFIX,
             DeploymentId::PREFIX,
             OperationId::PREFIX,
+            RouteId::PREFIX,
         ];
         prefixes.sort_unstable();
         let before = prefixes.len();

@@ -5,7 +5,8 @@
 
 ## Phase being validated
 
-Phase 0: Foundation, as released in v0.0.1 (tag v0.0.1, commit 30104f4b5e20).
+Phase 0: Foundation. Run 1: v0.0.1 (tag v0.0.1, commit 30104f4b5e20).
+Run 2: v0.0.2 (tag v0.0.2, commit 16d5d72b5846), carrying fix-0006.
 
 ## Composition scenarios
 
@@ -24,10 +25,10 @@ Performance: idle RSS and CPU recorded in the README; `ship projects` over ssh u
 
 ## Evidence criteria
 
-- [x] All phase slices coded and reviewed (ws-0.1..0.9, fix-0001..0005, feat-0001 archived)
-- [ ] Cross-module integration tests pass — scenario 1 fails on the release build
-- [ ] No interface mismatches at seam points — not evidenced
-- [ ] Performance/resource usage acceptable — not evidenced
+- [x] All phase slices coded and reviewed (ws-0.1..0.9, fix-0001..0006, feat-0001 archived)
+- [x] Cross-module integration tests pass — run 2: all eight scenarios evidenced on v0.0.2 (6 partly through a stand-in, stated below)
+- [x] No interface mismatches at seam points — run 2: release client 0.0.2 against daemons 0.0.2 and 0.0.1 over ssh; JSON matches fixtures; version refusal both ways
+- [x] Performance/resource usage acceptable — run 2: figures below, README updated
 
 ## Report
 
@@ -102,3 +103,206 @@ the hosts with sudo.
 **FAIL.** Scenario 1 fails on v0.0.1 through the path the installer
 recommends. fix-0006 is inserted before this gate; the gate is re-run after
 it is reviewed and the hosts are repaired.
+
+### Run 2 — 2026-11-27, v0.0.2 — Coder's evidence complete; verdict is the Reviewer's
+
+Same hosts. Gate host B is the clean host: its first Ship unit appears in
+the journal at 11:56 GMT, after the sentinel objects (11:52). Gate host A
+has run pre-release builds since 2026-11-25 and is a secondary, upgraded
+host. Branch `feature/phase-1-push`; `metis verify --pre`: ALL GREEN.
+Laptop client: the v0.0.2 release (darwin arm64, installed with
+install.sh). Release archive `ship-v0.0.2-linux-amd64.tar.gz` checked
+against `SHA256SUMS`; its `ship` is sha256 `110bf099…f26065d`, equal to
+`/usr/local/bin/ship` (and the leftover `~/.local/bin/ship`) on both hosts.
+Everything below was observed by the agent over ssh as the login user
+(groups `docker`, `ship`), without sudo, 12:59–13:06 and 13:25–13:30 GMT, unless marked
+"the Human's report". The ssh alias resolves to the hosts' tailnet
+addresses; tailscale reports a direct path over the LAN, ping 5 ms.
+
+#### Scenario 1: release install, service install, reboot — PASS (host B)
+
+- **The Human's report:** on both hosts ran install.sh as the login user,
+  then the two commands it printed
+  (`sudo install -m 0755 ~/.local/bin/ship /usr/local/bin/ship`,
+  `sudo /usr/local/bin/ship service install`). After the sudo script below
+  (which uninstalled and reinstalled the service), rebooted host B.
+- **Observed before the reboot (12:59 GMT):** the first reboot, at 12:35:17,
+  came *before* the v0.0.2 install (`~/.local/bin/ship` 12:45:31,
+  `/usr/local/bin/ship` 12:45:55; daemon restarted by hand 12:46:21). It
+  did not count.
+- **Observed after the final reboot, host B:** boot 13:23:44 GMT
+  (`uptime -s`, `journalctl --list-boots`), later than the binary
+  (12:45:55, sha256 `110bf099…f26065d`, equal to the release archive's)
+  and the unit (rewritten by the reinstall at 13:17:29). Unit enabled;
+  `ExecStart=/usr/local/bin/ship daemon --state /var/lib/ship --socket /run/ship/ship.sock`,
+  `User=ship`. The daemon started in this boot at 13:23:52 (PID 3048,
+  `NRestarts=0`, journal `daemon listening` 13:23:52). `/run/ship/ship.sock` is
+  `srw-rw---- ship:ship`. `ship host -o json` from the laptop: version
+  0.0.2, Docker `ready`. `command -v ship` in a non-interactive ssh session:
+  `/usr/local/bin/ship`.
+- **Host A** (upgrade, not the clean-host scenario): it ran 0.0.1 after
+  the binary was replaced, because nothing restarted it (advisory f-018).
+  After the Human's `sudo systemctl restart ship` at 13:23:39 GMT it
+  reports version 0.0.2, Docker `ready`, `NRestarts=0`. Not rebooted.
+
+#### Scenario 2: target add, projects — PASS (both hosts)
+
+With a fresh config (`SHIP_CONFIG` in a temp dir):
+`ship target add lab ssh://USER@HOST` exit 0, then `ship projects -o json`
+exit 0. The output is `{"projects": []}`, identical after `jq -S` to
+`crates/ship/tests/fixtures/projects-empty.json`. Text: `No projects.`
+Host A answered from its 0.0.1 daemon. API v1 on both sides.
+
+#### Scenario 3: UI ready, Docker stopped shows unreachable — PASS (live, after f-019)
+
+- **Ready:** `ship open --no-browser` against host B printed
+  `http://127.0.0.1:N/` after `/healthz`. `GET /` 200 text/html. A headless
+  Chrome render on the laptop shows
+  `✓ Docker ready Ship 0.0.2 (API v1) … Docker Engine 29.10.1 Docker Compose 5.8.0`.
+- **Live transition (f-019), 13:29:56–13:37:36Z.** A laptop observer
+  (`.local/gate-f019/`, gitignored) kept one `ship open --no-browser`
+  forward to host B's real v0.0.2 daemon open over ssh. About every 5 s it
+  wrote one line with:
+  (a) the Docker state text of the release UI, rendered by headless Chrome
+  from that forward;
+  (b) `docker.status` from `ship host -o json` over the ssh target;
+  (c) `systemctl show ship` and `systemctl is-active docker` on the host.
+  The Human stopped `docker.socket` and `docker.service` with sudo and
+  started them again. The host journal (read without sudo) shows
+  `Stopping docker.service` 13:30:59, `Stopped`/`Closed docker.socket`
+  13:31:10, `Started docker.service` 13:32:10. Excerpt (77 samples; the
+  field layout is the observer's):
+
+  ```
+  13:30:56Z ui=[Docker ready]       host=ready       ActiveState=active MainPID=3048 NRestarts=0 docker=active
+  13:31:02Z ui=[Docker unreachable] host=unreachable ActiveState=active MainPID=3048 NRestarts=0 docker=inactive
+  …         (11 samples unreachable, 13:31:02–13:32:09Z)
+  13:32:09Z ui=[Docker unreachable] host=unreachable ActiveState=active MainPID=3048 NRestarts=0 docker=inactive
+  13:32:15Z ui=[Docker ready]       host=ready       ActiveState=active MainPID=3048 NRestarts=0 docker=active
+  ```
+
+  All 77 samples agree three ways: the UI, `ship host` and the host's
+  Docker state (66 ready, 11 unreachable, no mismatch). `MainPID=3048` and
+  `NRestarts=0` hold in every sample and afterwards. The daemon's journal
+  logs `docker preflight … unreachable` warnings in the same window.
+- **Limits:** each UI sample is a fresh page load through the same
+  `ship open` tunnel, not one page left open. The UI's own polling
+  (`web/src/lib/poller.svelte.ts:32`) changing a page that is already open
+  was not observed live. The UI half of the sample is the first
+  `Docker …` text in the rendered DOM. Sampling is about 5 s (one gap of
+  13 s, 13:31:02–13:31:15Z). The stop and start are the Human's actions;
+  their times come from the host journal.
+- **Earlier evidence:** the run 2 sudo script, 13:15:46–13:16:57Z: 12
+  samples of `ship host` (login user) `unreachable` with `engine_version`
+  null and a message naming `systemctl start docker`; PID 5162 and
+  `NRestarts=0` throughout. Also a stand-in render of the release bundle
+  against the recorded answer (`✕ Docker unreachable …`). Both are
+  superseded by the live run for the UI half.
+- **Observation:** while the Engine is down, `compose_version` stays
+  `"5.8.0"`, because the Compose CLI plugin still answers. The UI's example
+  `web/src/lib/contract/host-unreachable.json` has it null. Both satisfy
+  the contract's types. The message contains `running?. Start` (cosmetic).
+- **After the extra Docker restart:** the scenario 5 comparison was
+  re-run at 13:38Z. The volume inspect and the seed hash are identical,
+  and the container differs only in the fields listed under scenario 5.
+
+#### Scenario 4: listeners — PASS (both hosts)
+
+`ss -ltnH` on host B against `~/ship-gate/listeners-before.txt`: one new
+TCP listener, `127.0.0.1:7180`. Sockets owned by the `ship` uid in
+`/proc/net/{tcp,tcp6,udp,udp6}`: only `0100007F:1C0C` (127.0.0.1:7180)
+on both hosts. Unix listener `/run/ship/ship.sock`, mode 0660 `ship:ship`
+in `/run/ship` 0750. The daemon does not run with `--tailnet`, so no
+tailnet listener. Host A shows the same. Rechecked on host B after the
+13:23 reboot: unchanged.
+
+#### Scenario 5: pre-existing Docker objects — PASS (host B)
+
+Compared with `~/ship-gate/*-before.json` after everything: the 12:35
+reboot, the Docker stop and start, uninstall, reinstall and the 13:23
+reboot. Checked 13:26 GMT.
+- Volume `ship-gate-sentinel`: `docker volume inspect` identical;
+  `sha256sum /data/seed` (busybox:1.37, read-only mount) identical,
+  `484211ae…838c24`.
+- Container: differs only in `State.Pid`, `StartedAt`, `FinishedAt`,
+  `NetworkSettings.SandboxID`/`SandboxKey`, the default bridge's
+  `EndpointID`/`MacAddress`/`NetworkID`, and `HostConfig.Dns` `null` → `[]`.
+  `Dns` is not in the plan's list of excluded fields. It changed at the
+  first reboot after creation (12:35) and has not changed since, across a
+  Docker restart and a second reboot. No `docker events` came from Ship.
+  Read as Docker normalising the field when it reloads the container from
+  disk. The Reviewer should confirm that reading.
+- Networks `bridge`/`host`/`none`: only the default bridge's `Id`,
+  `Created` and the sentinel's endpoint changed (excluded by the plan).
+- No other containers, volumes or networks exist: Ship created none.
+
+#### Scenario 6: client one API version behind — PASS (with a stand-in)
+
+No Ship release speaks any API version but v1, so no real older-API
+client exists.
+- Real daemon, host B: `GET /api/v1/projects` on the socket with
+  `Ship-Api-Version: v0` → `426`, `{"code":"unsupported_api_version",
+  "message":"this daemon speaks API v1, the client speaks v0",
+  "details":{"client_api_version":"v0","daemon_api_version":"v1","daemon_version":"0.0.2"}}`.
+- Real release client 0.0.2, over ssh, against a stand-in socket on host B
+  that answers as an API v2 daemon (426, `ship-api-version: v2`,
+  `ship-version: 0.1.0`; `~/ship-gate/stub-api-v2.py`, target
+  `--socket /tmp/…`): `ship projects -o json` and `ship host` both exit 1
+  with `this client (ship 0.0.2) speaks API v1, but the daemon speaks v2.
+  Upgrade this client to ship 0.1.0 or later; `ship --version` on the
+  daemon's host shows its release.`
+
+#### Scenario 7: service uninstall leaves state and Docker objects — PASS (host B)
+
+From the sudo script's evidence:
+- `ship service uninstall` exit 0: `Stopped and removed /etc/systemd/system/ship.service.`,
+  `Left in place: the ship user and group, /var/lib/ship, and every container and volume.`
+  Afterwards `is-active` inactive, `is-enabled` not-found, no unit file;
+  `ship` user and group still present. `ship host` exit 1 with
+  `no Ship daemon is listening on /run/ship/ship.sock; start it with sudo systemctl start ship`.
+- State directory: `/var/lib/ship` `drwx------ ship:ship` with `ship.db`,
+  sha256 `89a9ea26…c92371`. The listing and hash after uninstall are
+  identical to those after reinstall.
+- Docker: `docker inspect` of the sentinel container and volume,
+  identical before and after uninstall.
+- Reinstall: `ship service install` exit 0 (`runtime directory: created`,
+  `unit: created`, `enabled at boot: created`, the rest `ok`).
+  `systemctl start ship` → active, PID 19377, `ship host` `ready`, 0.0.2.
+
+#### Scenario 8: JSON matches fixtures — PASS (Phase 0 commands)
+
+- `ship projects -o json`: identical to `projects-empty.json` (scenario 2).
+- `ship host -o json` on both hosts (`ready`) and on host B with Docker
+  stopped (`unreachable`): the same key paths as `host.json` (jq `paths`,
+  no diff). Types match except where the contract allows null:
+  `engine_version` null and `message` a string when unreachable.
+- These are the two Phase 0 commands in `docs/contracts/cli-json.md`.
+
+#### Performance — PASS
+
+- Idle, host B, v0.0.2 under systemd, 16 min after start, no projects:
+  VmRSS 6448 kB (VmHWM 6508 kB), 18 threads, 0 CPU ticks over 60 s,
+  0.02 s CPU since start (`/proc/PID/stat`). The unit's cgroup reports
+  `CPUUsageNSec` 0.47 s and `MemoryCurrent` 59 MB. Both cover the whole
+  cgroup, including Docker CLI probe children and page cache. Recorded in
+  README "Footprint". It replaces the 2026-11-25 pre-release figure.
+- `ship projects -o json` over ssh, 5 runs to host B: 0.11–0.14 s, each
+  run a new ssh connection (no ControlMaster). The handshake is reported
+  separately: `ssh HOST true` 0.12 s every run. Ship's own share is
+  ≤ 0.02 s, well under 2 s. Host A: 0.11–0.12 s.
+
+#### Sudo steps (done by the Human)
+
+Gate host B: `sudo sh ~/ship-gate/run2-sudo.sh` (sha256 `aef193c7…bcf20f`;
+steps.log 13:15:46–13:17:33Z), then `sudo reboot` (boot 13:23:44 GMT).
+Gate host A: `sudo systemctl restart ship` (13:23:39 GMT).
+
+#### Run 2 status
+
+Every scenario and both performance checks have evidence on v0.0.2.
+Scenario 3's UI half is live since review cycle 1 (f-019). One part still
+rests on a stand-in, because the real thing cannot be run: the older
+client in scenario 6 (no release speaks another API).
+`HostConfig.Dns` in scenario 5 needs the Reviewer's reading. Open
+advisory: f-018 (upgrade hint does not say restart). Flipped coded for
+review; flipped coded again after f-019 (cycle 1).

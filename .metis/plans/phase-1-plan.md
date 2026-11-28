@@ -32,6 +32,24 @@ Decisions made in this plan:
   with this plan.
 - **Routes are published ports only.** The route table is created with the
   `port` provider; tailnet and Caddy providers are Phase 2.
+- **A published port binds the host's publish address** (Human, 2026-11-27).
+  `publish.address` is a daemon setting, like `compose.confirm`, and
+  defaults to `auto`: the host's tailnet IPv4 address when Tailscale is
+  running there, asked from the local `tailscale` CLI or `tailscaled`
+  socket at deploy time, and `127.0.0.1` otherwise. A tailnet is private by
+  identity, so this exposes nothing publicly and needs no setup on a host
+  that is already on one. `ship settings set publish.address ADDR` fixes an
+  address instead (`127.0.0.1`, a host address, or `0.0.0.0`). Ship embeds
+  no tailnet client and manages no tailnet key for this (ADR-0003 rule 4).
+  The address resolved at deploy is recorded on the route, so a later
+  change of setting or of tailnet address moves nothing by itself. It applies to the Compose
+  file Ship generates for a Dockerfile; an imported Compose file keeps the
+  addresses it declares (ADR-0008 rule 5). The address `192.0.2.10` in the
+  fixtures is a documentation example standing for the configured address.
+- **`--port N` follows `EXPOSE`** (Human, 2026-11-27). One `EXPOSE` port:
+  host N maps to it. None: host N to container N. Several: `--port
+  HOST:CONTAINER` is required and the error names the candidates. The
+  explicit form is always accepted.
 - **Confirmation without a terminal fails.** A Compose file that needs
   confirmation exits 3 unless the operator confirmed that same file before
   or passes `--confirm`. An agent session cannot confirm on its own.
@@ -243,18 +261,24 @@ Acceptance criteria:
 
 Tasks:
 - Detect a Dockerfile or a Compose file in a revision; `--file` overrides; with both present and no `--file`, Compose wins and the choice is stated
-- For a Dockerfile, generate a single-service Compose project outside the snapshot, named from the environment id, publishing `--port` when given
+- For a Dockerfile, generate a single-service Compose project outside the snapshot, named from the environment id, publishing `--port` when given, on the daemon's `publish.address` (default `auto`: the tailnet address when the host has one, else `127.0.0.1`), mapped by the `EXPOSE` rule in the decisions above; store and serve the `publish.address` setting (`ship settings get|set publish.address ADDR`), validated as `auto`, an address of the host or `0.0.0.0`; resolve `auto` behind a small trait so tests fake a host with and without a tailnet; a `tailscale` that is installed but logged out, stopped or slow counts as no tailnet, with a bounded wait
+- Add the route read and write functions the store lacks, and reading built image ids to the Docker adapter; both crates are in this slice's scope
 - Run the deployment as an operation through its phases: build, prepare, deploy, verify (ADR-0011 rule 2)
 - Verify: a passing health check gives `healthy`; with none, a container still running after a settle period gives `running_unverified`
 - Record the release (image ids, config fingerprint) and the deployment with its previous release (ADR-0007)
-- On any failure leave the previous release's containers and data as they were, and keep the evidence
+- On any failure the previous release serves again and its data is untouched, and the evidence is kept. Accepted (Human, 2026-11-27): each release has its own image tag and generated Compose file, and a failed deployment runs `up` with the previous release's file, so the previous containers are recreated, with a short gap, and volumes are kept
 
 Suggested packages:
 - `crates/ship-daemon`
 - `crates/ship-core`
+- `crates/ship-store`
+- `crates/ship-docker`
+- `crates/ship`
 
 Acceptance criteria:
 - [ ] A Dockerfile project is built, started and reachable on its published port against real Docker
+- [ ] With the default `publish.address` on a host without a tailnet, the port answers on 127.0.0.1 and on no other address of the host; with a (faked) tailnet address it binds that address and no other; after setting a fixed address it answers there; the endpoint printed is the address bound and recorded on the route
+- [ ] `--port 8080` on a Dockerfile exposing 3000 serves the app on host port 8080; with two `EXPOSE` ports it fails naming both, and `--port 8080:3000` works
 - [ ] A failing build, a port conflict and a failing health check each end as `failed` with a typed code and the phase, and the previous release still serves
 - [ ] The generated Compose file is outside the snapshot and contains no secret value
 - [ ] A named volume survives a redeploy
@@ -395,7 +419,9 @@ Acceptance criteria:
 - **Blocked by:** 1.11
 
 Tasks:
-- Implement `ship start`, `stop`, `restart`, `redeploy` and `remove` for a project or one service, each as an operation
+- Implement `ship start`, `stop` and `restart` for a project or one service, and `redeploy` and `remove` for a project only, each as an operation (Human, 2026-11-28). A release and a Compose project cover the whole environment, so `redeploy P/S` and `remove P/S` are refused with that reason
+- Add a desired state per service (a new migration), beside the environment's: `ship stop P/S` records the service as `stopped` and status derives from it, so a service stopped on purpose is never `failed`. The environment's desired state wins when it is `stopped` or `removed`
+- A removed environment keeps its history and its named volumes, and is brought back only by `ship push --recreate` (Human, 2026-11-28): same project and environment, one continuous deployment history showing the removal and the new deployment. On a terminal, a push without the flag asks, naming the volumes that will be reattached; with no terminal it exits 3 (`confirmation_required`). `start`, `stop` and `restart` on a removed environment refuse and say to push with `--recreate`. The store allows the transition out of `removed` only through that deployment
 - `stop` sets desired state `stopped`; nothing in Ship starts that environment again until `start` (OVERVIEW §3.3)
 - `restart` restarts containers on the current release; `redeploy` deploys the current revision again with current config; neither is the other (ADR-0006 rule 10)
 - `remove` stops and removes containers and networks, keeps every named volume and the history, and sets desired state `removed`
@@ -405,6 +431,8 @@ Tasks:
 Suggested packages:
 - `crates/ship`
 - `crates/ship-daemon`
+- `crates/ship-store`
+- `crates/ship-core`
 
 Acceptance criteria:
 - [ ] A stopped environment stays stopped across a daemon restart and a host reboot
@@ -412,6 +440,9 @@ Acceptance criteria:
 - [ ] Named volumes exist, with their data, after `remove`
 - [ ] `redeploy` after a config change clears `stale_config`; `restart` does not change the release
 - [ ] Each command on an environment with an operation in flight waits its turn
+- [ ] `ship stop P/S` stops one service of several; `ship status` shows it `stopped` and the others unchanged, across a daemon restart; `ship start P/S` brings it back
+- [ ] `redeploy P/S` and `remove P/S` are refused with the reason, and change nothing
+- [ ] After `remove`, a push without `--recreate` and without a terminal exits 3 and deploys nothing; with `--recreate` it deploys, the named volume's data is there, and `ship deployments` lists the old deployments, the removal and the new one
 
 ---
 
@@ -458,8 +489,9 @@ Tasks:
 - Clean staging directories and partial uploads left by an interrupted operation, and nothing else
 - Add invariant tests over a full scenario: no known test secret in logs, events, API responses, generated Compose files or image history
 - Add an invariant test that every listener is on the unix socket or 127.0.0.1
-- Add a test that kills the daemon at each phase of a deployment and checks the previous release still serves
-- Update the README, the operator notes and `docs/contracts/cli-json.md` to what was built
+- Add a test that kills the daemon at each phase of a deployment. In `building` and `preparing` the previous release still serves. In `deploying` and `verifying` the new containers have already replaced the old in place, and the daemon takes no Docker action when it starts (Human, 2026-11-28): the operation is `interrupted`, the last good release stays the recorded one, and status reports what Docker runs
+- Make `ship status` say that a deployment was interrupted part-way and name the command that puts it right (`ship redeploy`), in text and as a field in the JSON, added to the fixtures on purpose
+- Update the README, the operator notes and `docs/contracts/cli-json.md` to what was built, including that exit 3 also covers a push to a removed environment without `--recreate`, and that the address `192.0.2.10` in the fixtures stands for the configured publish address
 
 Suggested packages:
 - `crates/ship-daemon`
@@ -467,7 +499,7 @@ Suggested packages:
 - `docs/`
 
 Acceptance criteria:
-- [ ] Killing the daemon in any phase leaves the previous release serving and the operation `interrupted`
+- [ ] Killing the daemon in `building` or `preparing` leaves the previous release serving and the operation `interrupted`; killing it in `deploying` or `verifying` leaves the operation `interrupted`, runs no Docker command at the next start, and `ship status` shows the interruption, what Docker runs and the command to recover; `ship redeploy` then brings the environment to a good release
 - [ ] After a restart, status matches what Docker reports with no operator action
 - [ ] The invariant tests fail when a secret is deliberately leaked or a listener is deliberately bound elsewhere
 - [ ] No object without Ship's labels changed during the whole test scenario
@@ -484,6 +516,7 @@ Composition scenarios to validate:
 - [ ] Ship is installed from a release with `install.sh` on two of the maintainer's own machines, as two independent targets
 - [ ] A real Dockerfile project and a real multi-service Compose project are pushed from a laptop over ssh and serve on their published ports
 - [ ] A database with its data on a host path runs under Ship, and its data is intact after redeploy, stop, start, remove and a host reboot
+- [ ] After a host reboot, a service published on the tailnet address is serving again without a person; if Docker starts before the tailnet address exists and the bind fails, `ship status` says so, and what the host needs (unit ordering) is found here and written into `docs/service.md`
 - [ ] A GPU workload runs under Ship on the machine that has the GPU, after confirmation of its reservation
 - [ ] The workloads above run under Ship in place of the orchestrator that ran them before, for at least two days
 - [ ] A failed build and a failed health check each leave the previous release serving

@@ -214,6 +214,15 @@ impl Config {
         Ok(())
     }
 
+    /// The target named `name` (`--to`).
+    pub fn named(&self, name: &str) -> Result<Target, ConfigError> {
+        self.targets
+            .get(name)
+            .ok_or_else(|| ConfigError::Unknown(name.to_owned()))?
+            .target()
+            .map_err(ConfigError::Target)
+    }
+
     /// The target commands use: the current one, or `None` for the local
     /// default socket when no target is current.
     pub fn current(&self) -> Result<Option<(&str, Target)>, ConfigError> {

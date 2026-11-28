@@ -3,18 +3,43 @@
 //! Top-level crate: may depend on `ship-core` and the leaf crates
 //! (OVERVIEW §2.3).
 //!
-//! Phase 0: [`start`] binds the unix socket and the 127.0.0.1 listener
-//! (ADR-0003), opens the store and serves the router in [`http`], with the
-//! embedded UI ([`ui`]) as its fallback;
-//! [`Running::shutdown`] stops it; [`run`] does both around SIGTERM/SIGINT.
+//! [`start`] binds the unix socket and the 127.0.0.1 listener (ADR-0003),
+//! opens the store, marks operations a previous daemon left unfinished as
+//! `interrupted` ([`queue::recover`]), registers every stored secret with
+//! the redactor ([`secrets::register_all`]), ends the deployments those
+//! operations left open as `interrupted` and removes the release staging
+//! they left ([`recovery::recover`]), removes the staging directories of
+//! uploads it left half-written ([`upload::clean_staging`]),
+//! starts the operation [`queue`] and
+//! serves the router in [`http`] (uploads, [`deploy`]ments, [`push`]es,
+//! [`settings`] and [`config`] values and secrets among its routes), with
+//! the embedded UI ([`ui`]) as its
+//! fallback; it also starts the [`observe`]r, whose first round, at once,
+//! rebuilds observed state from Ship's labelled containers. [`status`] and
+//! [`logs`] serve `ship status`, `ship deployments`, `ship projects` and
+//! `ship logs`. [`Running::shutdown`] stops it; [`run`] does both around
+//! SIGTERM/SIGINT.
 //! `ship daemon` is supported on Linux only (ADR-0002 rule 2); that check
 //! belongs to the `ship` binary, so this library builds and tests on any
 //! unix.
 
+pub mod compose_import;
+pub mod config;
+pub mod deploy;
 pub mod host;
 pub mod http;
+pub mod lifecycle;
 pub mod log;
+pub mod logs;
+pub mod observe;
+pub mod push;
+pub mod queue;
+pub mod recovery;
+pub mod secrets;
+pub mod settings;
+pub mod status;
 pub mod ui;
+pub mod upload;
 
 use std::fmt;
 use std::io;
@@ -22,18 +47,22 @@ use std::net::SocketAddr;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
 use ship_docker::Runner;
-use ship_net::{BindError, SocketFile};
+use ship_net::{BindError, SocketFile, TailnetAddress, TailscaleCli};
 use ship_store::{Store, StoreError};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
+pub use deploy::{DeploySettings, Deployer};
 pub use log::Redactor;
+pub use queue::{Limits, Queue};
+pub use ship_source::UnpackLimits;
 
 /// Default state directory.
 pub const DEFAULT_STATE_DIR: &str = "/var/lib/ship";
@@ -58,10 +87,24 @@ pub struct Config {
     pub redactor: Redactor,
     /// How the daemon runs `docker`; the CLI on `PATH` by default.
     pub docker: Runner,
+    /// Queue length, build slots, build timeout, disk watermark and log
+    /// size (ADR-0011 rule 10).
+    pub limits: Limits,
+    /// Size, entry-count and expansion limits of an uploaded snapshot
+    /// (ADR-0005 rule 5).
+    pub upload_limits: UnpackLimits,
+    /// Settle period and timeouts of a deployment's steps.
+    pub deploy: DeploySettings,
+    /// Where `publish.address auto` finds the host's tailnet address; the
+    /// host's `tailscale` CLI by default.
+    pub tailnet: Arc<dyn TailnetAddress>,
+    /// Time between two observations of every environment by the interval
+    /// observer ([`observe::spawn_observer`]).
+    pub observe_interval: Duration,
 }
 
 impl Config {
-    /// The default paths and port.
+    /// The default paths, port and limits.
     pub fn new(redactor: Redactor) -> Self {
         Config {
             state_dir: PathBuf::from(DEFAULT_STATE_DIR),
@@ -69,6 +112,11 @@ impl Config {
             port: DEFAULT_PORT,
             redactor,
             docker: Runner::docker(),
+            limits: Limits::default(),
+            upload_limits: UnpackLimits::default(),
+            deploy: DeploySettings::default(),
+            tailnet: Arc::new(TailscaleCli::default()),
+            observe_interval: observe::DEFAULT_INTERVAL,
         }
     }
 }
@@ -108,10 +156,12 @@ pub struct Running {
     socket: SocketFile,
     tcp_addr: SocketAddr,
     store: Store,
+    queue: Queue,
     stop: watch::Sender<bool>,
     /// Fails every open connection's I/O once the drain deadline passes.
     kill: watch::Sender<bool>,
     servers: Vec<JoinHandle<io::Result<()>>>,
+    observer: JoinHandle<()>,
 }
 
 impl fmt::Debug for Running {
@@ -146,12 +196,97 @@ pub async fn start(config: &Config) -> Result<Running, DaemonError> {
         .await
         .map_err(DaemonError::Store)?;
 
-    let router = http::router(
+    // Before anything is served: what a previous daemon left in flight is
+    // ended, never resumed (ADR-0011 rule 8).
+    let interrupted = match queue::recover(&store).await {
+        Ok(n) => n,
+        Err(e) => {
+            store.close().await;
+            return Err(DaemonError::Store(e));
+        }
+    };
+    if interrupted > 0 {
+        tracing::warn!(interrupted, "operations left unfinished were interrupted");
+    }
+    // Before anything runs or is served: every stored secret's value is
+    // redacted from the first log line on (ADR-0009 rule 7).
+    if let Err(e) = secrets::register_all(
+        &store,
+        &config.state_dir,
+        &secrets::SecretStore::new(&config.state_dir),
+        &config.redactor,
+    )
+    .await
+    {
+        store.close().await;
+        return Err(DaemonError::Store(e));
+    }
+    // Deployments those operations left open end `interrupted`, and what
+    // they staged goes; no Docker command (ADR-0006 rule 11). After the
+    // secrets are registered, so a value read from a staged env file is
+    // redacted even though the file is about to go.
+    match recovery::recover(&store, &config.state_dir).await {
+        Ok(done) if done.deployments > 0 => {
+            tracing::warn!(
+                deployments = done.deployments,
+                staged_releases = done.staged_releases,
+                pruned_releases = done.pruned_releases,
+                "deployments left unfinished were interrupted; Docker is left as it is"
+            );
+        }
+        Ok(_) => {}
+        Err(e) => {
+            store.close().await;
+            return Err(DaemonError::Store(e));
+        }
+    }
+    // Uploads a dead daemon left half-written: their operations were just
+    // interrupted, and nothing of them may remain (ADR-0005 rule 7).
+    let uploads = match upload::clean_staging(&config.state_dir)
+        .and_then(|_| upload::Uploads::new(&config.state_dir, config.upload_limits))
+    {
+        Ok(uploads) => uploads,
+        Err(e) => {
+            store.close().await;
+            return Err(DaemonError::StateDir(config.state_dir.clone(), e));
+        }
+    };
+    let queue = match Queue::new(
+        store.clone(),
+        config.redactor.clone(),
+        config.limits,
+        &config.state_dir,
+    ) {
+        Ok(queue) => queue,
+        Err(e) => {
+            store.close().await;
+            return Err(DaemonError::StateDir(config.state_dir.clone(), e));
+        }
+    };
+
+    let deployer = Deployer::new(
+        store.clone(),
+        config.docker.clone(),
+        &config.state_dir,
+        config.deploy,
+        config.limits.build_timeout,
+        Arc::clone(&config.tailnet),
+    );
+    let router = http::router_with(
         store.clone(),
         http::HostProbe {
             docker: config.docker.clone(),
             state_dir: config.state_dir.clone(),
         },
+        queue.clone(),
+        uploads,
+        Arc::new(deployer),
+    );
+    let observer = observe::spawn_observer(
+        store.clone(),
+        config.docker.clone(),
+        config.observe_interval,
+        queue.subscribe_closing(),
     );
     let (stop, stopped) = watch::channel(false);
     let (kill, killed) = watch::channel(false);
@@ -174,9 +309,11 @@ pub async fn start(config: &Config) -> Result<Running, DaemonError> {
         socket,
         tcp_addr,
         store,
+        queue,
         stop,
         kill,
         servers,
+        observer,
     })
 }
 
@@ -196,18 +333,32 @@ impl Running {
         &self.store
     }
 
-    /// Stops accepting, drains open connections on both listeners for up
-    /// to 10 s in total, closes whatever is still open and waits for those
+    /// The daemon's operation queue.
+    pub fn queue(&self) -> &Queue {
+        &self.queue
+    }
+
+    /// Stops the operation queue (running jobs are aborted and left for
+    /// the next start to mark `interrupted`; event streams end) and the
+    /// interval observer, stops
+    /// accepting, drains open connections on both listeners for up to
+    /// 10 s in total, closes whatever is still open and waits for those
     /// connections to end, closes the database and removes the socket file.
     pub async fn shutdown(self) -> Result<(), DaemonError> {
         let Running {
             socket,
             store,
+            queue,
             stop,
             kill,
             servers,
+            observer,
             ..
         } = self;
+        queue.shutdown().await;
+        // Before the store closes: a round in progress is abandoned.
+        observer.abort();
+        let _ = observer.await;
         let _ = stop.send(true);
         // One deadline for every listener, not one per listener.
         let deadline = tokio::time::Instant::now() + DRAIN_TIMEOUT;

@@ -1,0 +1,50 @@
+{
+  "project": {
+    "id": "prj_01aryz6s41tsv4rrffq69g5fav",
+    "slug": "my-app"
+  },
+  "environment": {
+    "id": "env_01aryz6s41tsv4rrffq69g5fav",
+    "name": "development",
+    "desired_state": "running"
+  },
+  "last_deployment": {
+    "id": "dep_01aryz6s41tsv4rrffq69g5fav",
+    "action": "deploy",
+    "release_id": "rel_01aryz6s41tsv4rrffq69g5fav",
+    "operation_id": "op_01aryz6s41tsv4rrffq69g5fav",
+    "result": "succeeded",
+    "started_at": "2026-01-02T03:04:05.000Z",
+    "ended_at": "2026-01-02T03:04:45.000Z"
+  },
+  "interruption": null,
+  "services": [
+    {
+      "id": "svc_01aryz6s41tsv4rrffq69g5fav",
+      "name": "web",
+      "kind": "web",
+      "desired_state": "running",
+      "status": "healthy",
+      "restarts": 0,
+      "observed_at": "2026-01-02T03:05:00.000Z",
+      "stale_config": false,
+      "endpoints": [
+        {
+          "provider": "port",
+          "address": "192.0.2.10:8080"
+        }
+      ]
+    },
+    {
+      "id": "svc_01aryz6s41tsv4rrffq69g5faw",
+      "name": "worker",
+      "kind": "worker",
+      "desired_state": "stopped",
+      "status": "stopped",
+      "restarts": 2,
+      "observed_at": "2026-01-02T03:05:00.000Z",
+      "stale_config": true,
+      "endpoints": []
+    }
+  ]
+}

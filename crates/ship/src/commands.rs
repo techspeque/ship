@@ -17,7 +17,7 @@ use crate::config::{self, Config, ConfigError};
 /// Exit code for a failed command.
 pub(crate) const FAILURE: u8 = 1;
 /// Exit code for a usage error.
-const USAGE: u8 = 2;
+pub(crate) const USAGE: u8 = 2;
 
 /// Output format of list and status commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
@@ -212,7 +212,10 @@ pub(crate) fn runtime() -> Result<tokio::runtime::Runtime, ExitCode> {
 
 /// `GET path` from the current target as `T`; on failure the message is
 /// already printed and the exit code returned.
-fn fetch<T: serde::de::DeserializeOwned>(path: &str, timeout_secs: u64) -> Result<T, ExitCode> {
+pub(crate) fn fetch<T: serde::de::DeserializeOwned>(
+    path: &str,
+    timeout_secs: u64,
+) -> Result<T, ExitCode> {
     let endpoint = endpoint()?;
     let rt = runtime()?;
     let timeout = Duration::from_secs(timeout_secs);
@@ -237,7 +240,7 @@ pub fn projects(args: ProjectsArgs) -> ExitCode {
 pub fn host(args: HostArgs) -> ExitCode {
     match fetch::<HostInfo>(HOST_PATH, args.timeout) {
         Ok(info) => {
-            print!("{}", render_host(&info, args.output));
+            print!("{}", render_host(&info, args.output, CLIENT_VERSION));
             ExitCode::SUCCESS
         }
         Err(code) => code,
@@ -247,7 +250,10 @@ pub fn host(args: HostArgs) -> ExitCode {
 /// `-o json` is the contract shape (ADR-0004 rule 2): the daemon's
 /// [`HostInfo`] pretty-printed and a newline. Text is one block with
 /// Docker's status first and, unless `ready`, the daemon's message verbatim.
-fn render_host(info: &HostInfo, output: Output) -> String {
+/// When `client` (this binary's version) is not the daemon's, a `Client:`
+/// line says so: after an in-place upgrade the daemon keeps running the old
+/// binary until restarted (f-018).
+fn render_host(info: &HostInfo, output: Output, client: &str) -> String {
     if output == Output::Json {
         let mut s = serde_json::to_string_pretty(info).expect("host info serialises");
         s.push('\n');
@@ -291,12 +297,24 @@ fn render_host(info: &HostInfo, output: Output) -> String {
         "Daemon",
         format!("ship {}, API {}", info.version, info.api_version),
     ));
+    if info.version != client {
+        lines.push((
+            "Client",
+            format!(
+                "ship {client}, not the daemon's version; if the host was upgraded, \
+                 restart the daemon there: sudo systemctl restart ship"
+            ),
+        ));
+    }
     let mut s = String::new();
     for (label, value) in lines {
         s.push_str(&format!("{:10}{value}\n", format!("{label}:")));
     }
     s
 }
+
+/// This client's Ship version.
+const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Bytes as GiB with one decimal; `unknown` when absent.
 fn gib(bytes: Option<u64>) -> String {
@@ -318,40 +336,55 @@ fn render_projects(list: &ProjectList, output: Output) -> String {
         }
         Output::Text if list.projects.is_empty() => "No projects.\n".to_owned(),
         Output::Text => {
-            let rows: Vec<[String; 3]> = list
-                .projects
-                .iter()
-                .map(|p| {
-                    [
+            let mut rows: Vec<Vec<String>> = Vec::new();
+            for p in &list.projects {
+                if p.environments.is_empty() {
+                    rows.push(vec![
                         p.slug.to_string(),
+                        "-".to_owned(),
+                        "-".to_owned(),
+                        "-".to_owned(),
                         p.id.to_string(),
-                        p.created_at.to_string(),
-                    ]
-                })
-                .collect();
-            let header = ["SLUG", "ID", "CREATED"].map(str::to_owned);
-            let mut widths = [0usize; 3];
-            for row in std::iter::once(&header).chain(&rows) {
-                for (w, cell) in widths.iter_mut().zip(row) {
-                    *w = (*w).max(cell.len());
+                    ]);
+                }
+                for e in &p.environments {
+                    rows.push(vec![
+                        p.slug.to_string(),
+                        e.name.clone(),
+                        e.desired_state.clone(),
+                        e.status.clone().unwrap_or_else(|| "no services".to_owned()),
+                        p.id.to_string(),
+                    ]);
                 }
             }
-            let mut s = String::new();
-            for row in std::iter::once(&header).chain(&rows) {
-                let line = format!(
-                    "{:w0$}  {:w1$}  {}",
-                    row[0],
-                    row[1],
-                    row[2],
-                    w0 = widths[0],
-                    w1 = widths[1]
-                );
-                s.push_str(line.trim_end());
-                s.push('\n');
-            }
-            s
+            table(&["SLUG", "ENVIRONMENT", "DESIRED", "STATUS", "ID"], &rows)
         }
     }
+}
+
+/// `header` and `rows` as left-aligned columns two spaces apart, each line
+/// trimmed at the end.
+pub(crate) fn table(header: &[&str], rows: &[Vec<String>]) -> String {
+    let mut widths: Vec<usize> = header.iter().map(|h| h.len()).collect();
+    for row in rows {
+        for (w, cell) in widths.iter_mut().zip(row) {
+            *w = (*w).max(cell.chars().count());
+        }
+    }
+    let header: Vec<String> = header.iter().map(|h| (*h).to_owned()).collect();
+    let mut s = String::new();
+    for row in std::iter::once(&header).chain(rows) {
+        let mut line = String::new();
+        for (cell, w) in row.iter().zip(&widths) {
+            line.push_str(cell);
+            for _ in cell.chars().count()..*w + 2 {
+                line.push(' ');
+            }
+        }
+        s.push_str(line.trim_end());
+        s.push('\n');
+    }
+    s
 }
 
 pub fn dial_stdio(args: DialStdioArgs) -> ExitCode {
@@ -381,18 +414,34 @@ mod tests {
             render_projects(&ProjectList::default(), Output::Text),
             "No projects.\n"
         );
-        let list = ProjectList {
+        let list: ProjectList =
+            serde_json::from_str(include_str!("../tests/fixtures/projects.json")).unwrap();
+        assert_eq!(
+            render_projects(&list, Output::Text),
+            "SLUG     ENVIRONMENT  DESIRED  STATUS              ID\n\
+             my-app   development  running  running_unverified  prj_01aryz6s41tsv4rrffq69g5fav\n\
+             new-app  development  running  no services         prj_01aryz6s41tsv4rrffq69g5faw\n"
+        );
+        let bare = ProjectList {
             projects: vec![ProjectSummary {
                 id: "prj_01aryz6s41tsv4rrffq69g5fav".parse().unwrap(),
                 slug: Slug::parse("my-app").unwrap(),
                 created_at: Timestamp::from_unix_millis(1_469_918_176_385).unwrap(),
+                environments: Vec::new(),
             }],
         };
         assert_eq!(
-            render_projects(&list, Output::Text),
-            "SLUG    ID                              CREATED\n\
-             my-app  prj_01aryz6s41tsv4rrffq69g5fav  2016-07-30T22:36:16.385Z\n"
+            render_projects(&bare, Output::Text),
+            "SLUG    ENVIRONMENT  DESIRED  STATUS  ID\n\
+             my-app  -            -        -       prj_01aryz6s41tsv4rrffq69g5fav\n"
         );
+    }
+
+    #[test]
+    fn projects_json_is_the_fixture_with_entries() {
+        let text = include_str!("../tests/fixtures/projects.json");
+        let list: ProjectList = serde_json::from_str(text).unwrap();
+        assert_eq!(render_projects(&list, Output::Json), text);
     }
 
     const HOST_FIXTURE: &str = include_str!("../tests/fixtures/host.json");
@@ -403,13 +452,33 @@ mod tests {
 
     #[test]
     fn host_json_is_the_fixture() {
-        assert_eq!(render_host(&fixture_host(), Output::Json), HOST_FIXTURE);
+        assert_eq!(
+            render_host(&fixture_host(), Output::Json, "0.0.0"),
+            HOST_FIXTURE
+        );
+        // The contract shape does not change when the versions differ.
+        assert_eq!(
+            render_host(&fixture_host(), Output::Json, "9.9.9"),
+            HOST_FIXTURE
+        );
+    }
+
+    #[test]
+    fn host_text_shows_a_client_daemon_version_difference() {
+        let text = render_host(&fixture_host(), Output::Text, "0.0.1");
+        let last = text.lines().last().unwrap();
+        assert!(
+            last.starts_with("Client:   ship 0.0.1, not the daemon's version"),
+            "{text}"
+        );
+        assert!(last.ends_with("sudo systemctl restart ship"), "{text}");
+        assert!(text.contains("Daemon:   ship 0.0.0, API v1\n"), "{text}");
     }
 
     #[test]
     fn host_text_ready() {
         assert_eq!(
-            render_host(&fixture_host(), Output::Text),
+            render_host(&fixture_host(), Output::Text, "0.0.0"),
             "Docker:   ready\n\
              Engine:   28.3.2 (supported >= 24.0.0, < 30.0.0)\n\
              Compose:  2.39.1 (supported >= 2.20.0, < 6.0.0)\n\
@@ -431,7 +500,7 @@ mod tests {
             memory_bytes: None,
             disk_free_bytes: None,
         };
-        let text = render_host(&info, Output::Text);
+        let text = render_host(&info, Output::Text, "0.0.0");
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[0], "Docker:   unreachable");
         assert_eq!(lines[1], format!("Message:  {message}"));
@@ -452,7 +521,7 @@ mod tests {
         info.docker.status = DockerStatus::UnsupportedVersion;
         info.docker.engine_version = Some("20.10.24".to_owned());
         info.docker.message = Some("Docker Engine 20.10.24 is outside >= 24.0.0".to_owned());
-        let text = render_host(&info, Output::Text);
+        let text = render_host(&info, Output::Text, "0.0.0");
         assert!(text.starts_with(
             "Docker:   unsupported_version\n\
              Message:  Docker Engine 20.10.24 is outside >= 24.0.0\n\

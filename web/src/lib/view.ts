@@ -95,10 +95,20 @@ export function hostView(load: Load<HostInfo>): HostView {
   }
 }
 
+export interface EnvironmentRow {
+  id: string;
+  name: string;
+  /** What the operator asked for, as the API says it. */
+  desired: string;
+  /** The observed overall status, as the API says it; `null` with no service. */
+  status: string | null;
+}
+
 export interface ProjectRow {
   id: string;
   slug: string;
   created: string;
+  environments: EnvironmentRow[];
 }
 
 export type ProjectsView =
@@ -117,7 +127,17 @@ export function projectsView(load: Load<ProjectList>): ProjectsView {
       if (load.value.projects.length === 0) return { kind: 'empty', text: 'No projects yet.' };
       return {
         kind: 'list',
-        rows: load.value.projects.map((p) => ({ id: p.id, slug: p.slug, created: p.created_at })),
+        rows: load.value.projects.map((p) => ({
+          id: p.id,
+          slug: p.slug,
+          created: p.created_at,
+          environments: p.environments.map((e) => ({
+            id: e.id,
+            name: e.name,
+            desired: e.desired_state,
+            status: e.status,
+          })),
+        })),
       };
   }
 }

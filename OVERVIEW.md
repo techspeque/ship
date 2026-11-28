@@ -261,17 +261,19 @@ Consequences stated plainly:
 ship daemon [--state DIR] [--tailnet]
 ship target add NAME (ssh://USER@HOST | tailnet://HOST | local)
 ship target use NAME
-ship push [PATH] [--project P] [--env E] [--file F] [--port N]
-          (--wait | --detach) [--dry-run] [--confirm] [--to TARGET]
+ship push [PATH] [--project P] [--env E] [--file F] [--port [HOST:]N]
+          (--wait | --detach) [--dry-run] [--confirm] [--recreate] [--to TARGET]
 ship host                             # host and Docker status, as /api/v1/host
 ship projects
 ship status PROJECT [--env E]
 ship deployments PROJECT [--env E]
 ship logs PROJECT[/SERVICE] [--env E] [--follow]
-ship start|stop|restart|redeploy|remove PROJECT[/SERVICE] [--env E]
+ship start|stop|restart PROJECT[/SERVICE] [--env E]
+ship redeploy|remove PROJECT [--env E]
 ship vars set|unset|list KEY[=VALUE] --project P [--env E]
 ship secrets set|unset|list NAME (--prompt | --stdin) --project P [--env E]
 ship settings get|set compose.confirm (ask | accept) [--project P]
+ship settings get|set publish.address (auto | ADDR)   # where --port binds; auto = tailnet address, else 127.0.0.1
 ship open PROJECT
 ship dial-stdio                       # internal: ssh transport endpoint
 ```

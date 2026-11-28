@@ -1,0 +1,27 @@
+# The unpacker's fuzz target (cargo-fuzz, nightly). Its own workspace, so
+# the main workspace never builds it; CI's `fuzz` job runs it:
+#
+#   cd crates/ship-source && cargo +nightly fuzz run unpack -- -max_total_time=300
+[package]
+name = "ship-source-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+ship-source = { path = ".." }
+
+[[bin]]
+name = "unpack"
+path = "fuzz_targets/unpack.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

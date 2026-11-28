@@ -1,14 +1,26 @@
 //! The `ship` binary: client commands and `ship daemon` dispatch.
 //!
 //! Phase 0: `--version` / `-V`, `ship daemon`, `ship target`, `ship host`,
-//! `ship projects`, `ship open`, `ship dial-stdio` and `ship service`. Exit
-//! codes: 0 success, 1 failure, 2 usage error.
+//! `ship projects`, `ship open`, `ship dial-stdio` and `ship service`.
+//! Phase 1: `ship push`, `ship settings`, `ship vars`, `ship secrets`,
+//! `ship status`, `ship deployments`, `ship logs`, and `ship start`,
+//! `stop`, `restart`, `redeploy` and `remove`.
+//! Exit codes: 0 success, 1
+//! failure, 2 usage error; `ship push` has the contract's codes
+//! ([`exit`]).
 
 mod client;
 mod commands;
 mod config;
+mod exit;
+mod follow;
+mod lifecycle;
 mod open;
+mod push;
 mod service;
+mod settings;
+mod status;
+mod vars;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -49,8 +61,42 @@ enum Command {
     Target(commands::TargetCommand),
     /// Show the current target's host and Docker status.
     Host(commands::HostArgs),
-    /// List the projects on the current target.
+    /// List the projects on the current target, each environment with
+    /// what was asked of it and its services' overall status.
     Projects(commands::ProjectsArgs),
+    /// Show a project's environment: what was asked, what the last
+    /// deployment did, and what Docker reports for each service now.
+    Status(status::StatusArgs),
+    /// List a project's deployments, newest first, with each failure.
+    Deployments(status::DeploymentsArgs),
+    /// Print the logs of a project's services, stdout and stderr apart.
+    Logs(status::LogsArgs),
+    /// Send a directory, uncommitted changes included, to the target's
+    /// daemon, build it, start it and print its address.
+    Push(push::PushArgs),
+    /// Start a project's stopped services, or one service.
+    Start(lifecycle::TargetArgs),
+    /// Stop a project's services, or one service; nothing in Ship starts
+    /// them again until `ship start`.
+    Stop(lifecycle::TargetArgs),
+    /// Restart a project's running services, or one service, on the
+    /// release serving now.
+    Restart(lifecycle::TargetArgs),
+    /// Deploy the serving revision of a project again, with the config
+    /// stored now.
+    Redeploy(lifecycle::ProjectArgs),
+    /// Remove a project's containers and networks, keeping every named
+    /// volume and the history; `ship push --recreate` brings it back.
+    Remove(lifecycle::RemoveArgs),
+    /// Show or change the current target's daemon settings.
+    #[command(subcommand)]
+    Settings(settings::SettingsCommand),
+    /// Set, unset or list a project's config values (not secret).
+    #[command(subcommand)]
+    Vars(vars::VarsCommand),
+    /// Set, unset or list a project's secrets (write-only).
+    #[command(subcommand)]
+    Secrets(vars::SecretsCommand),
     /// Open the current target's UI in a browser; over ssh, forward it
     /// until Ctrl-C.
     Open(open::OpenArgs),
@@ -171,6 +217,13 @@ fn main() -> ExitCode {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(e) => {
+            // Clap's diagnostics quote the arguments they refuse; a
+            // `ship secrets` argument may be a value (f-044).
+            let args: Vec<_> = std::env::args_os().skip(1).collect();
+            if vars::refuses_parse(&e, &args) {
+                eprintln!("ship: {}", vars::parse_refusal(e.kind()));
+                return ExitCode::from(2);
+            }
             let _ = e.print();
             return if e.use_stderr() {
                 ExitCode::from(2)
@@ -188,6 +241,18 @@ fn main() -> ExitCode {
         Some(Command::Target(command)) => commands::target(command),
         Some(Command::Host(args)) => commands::host(args),
         Some(Command::Projects(args)) => commands::projects(args),
+        Some(Command::Status(args)) => status::status(args),
+        Some(Command::Deployments(args)) => status::deployments(args),
+        Some(Command::Logs(args)) => status::logs(args),
+        Some(Command::Push(args)) => push::push(args),
+        Some(Command::Start(args)) => lifecycle::start(args),
+        Some(Command::Stop(args)) => lifecycle::stop(args),
+        Some(Command::Restart(args)) => lifecycle::restart(args),
+        Some(Command::Redeploy(args)) => lifecycle::redeploy(args),
+        Some(Command::Remove(args)) => lifecycle::remove(args),
+        Some(Command::Settings(command)) => settings::settings(command),
+        Some(Command::Vars(command)) => vars::vars(command),
+        Some(Command::Secrets(command)) => vars::secrets(command),
         Some(Command::Open(args)) => open::open(args),
         Some(Command::DialStdio(args)) => commands::dial_stdio(args),
         Some(Command::Service(command)) => service(command),

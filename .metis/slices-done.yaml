@@ -240,3 +240,226 @@ slices:
       review_cycles: 1
       notes: 'Found at the Phase 0 gate (scenario 1) on v0.0.1, on gate host A and gate host B (Ubuntu 26.04, x86_64, systemd 259). Path followed exactly as documented: ''curl -fsSL .../v0.0.1/install.sh | sh -s -- --version v0.0.1'' as the login user. /usr/local/bin is not writable, so install.sh (scripts/install.sh:202-208) chose $HOME/.local/bin and then printed ''to run the daemon under systemd: sudo $prefix/ship service install'' (scripts/install.sh:227). The Human ran ''sudo ~/.local/bin/ship service install'', ''sudo systemctl start ship'', ''sudo usermod -aG ship USER'', rebooted. Result on both hosts: /etc/systemd/system/ship.service has ''ExecStart=/home/USER/.local/bin/ship daemon --state /var/lib/ship --socket /run/ship/ship.sock''; the home directory is mode 0750 (drwxr-x---), so the ship user cannot traverse it; journal: ''ship.service: Failed to execute /home/USER/.local/bin/ship: Permission denied'' / ''status=203/EXEC''; Restart=always loops forever (NRestarts 131 and 147 when checked); /run/ship does not exist. install already detects this (crates/ship/src/service.rs:310 exe_reachability_warning) but only prints a warning, after every change has been made, followed by ''Start the daemon: sudo systemctl start ship''. On host B ship is also not on the PATH of a non-interactive ssh session (~/.local/bin is added only by the login profile), so the laptop''s ssh target fails with ''ship was not found''; on host A a stale pre-release /usr/local/bin/ship is found instead of v0.0.1. Required: (1) ship service install refuses, in preflight before any change, a binary the ship user could not execute: any ancestor directory without o+x, or a path under a home directory (/home, /root, or the invoking SUDO_USER''s home); the refusal names the path and gives the exact command ''sudo install -m 0755 <current path> /usr/local/bin/ship'' followed by ''sudo /usr/local/bin/ship service install''; exit 1, host untouched (no group, user, dirs or unit). The existing warning becomes this refusal. (2) scripts/install.sh on Linux, when the final prefix is a per-user one (under $HOME, or not executable by others), does not print the service install hint; it says the daemon needs a system path and prints the exact ''sudo install -m 0755 $prefix/ship /usr/local/bin/ship'' and ''sudo /usr/local/bin/ship service install'' lines; also say the binary must be on the PATH of non-interactive ssh sessions for ssh targets. The /usr/local/bin case keeps today''s hint. (3) A regression test of the non-root path end to end in CI: in the service job (scripts/service-smoke.sh or a new step beside it), install with install.sh as the unprivileged runner user into a prefix under a 0750 home, run ''sudo <that path> service install'', assert exit 1, the refusal text with the install command, and that no ship user, group, unit, /var/lib/ship or /run/ship was created; then follow the printed command and assert the service starts. Unit tests in service.rs for the refusal (o-x ancestor, home path) with no mutating calls. Update docs/service.md and README.md install text to match. Out of scope: changing install.sh''s default prefix choice, PATH management, Phase 1 work. After the fix the Human repairs both hosts with sudo (move the binary to /usr/local/bin, remove the stale one on host A, re-run service install, reboot) and the gate is re-run from scenario 1.'
       created: "2026-11-27"
+    - id: phase-0-gate
+      title: 'Phase 0 gate: composed-system validation'
+      type: gate
+      priority: p2
+      risk: high
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-0-plan.md
+      plan_section: Phase Gate
+      coded: true
+      reviewed: true
+      review_cycles: 1
+      created: ""
+    - id: phase-1-ws-1.1
+      title: Status model and error decoding fixes
+      type: feat
+      priority: p2
+      risk: medium
+      stage: push
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-1-plan.md
+      plan_section: §1.1
+      coded: true
+      reviewed: true
+      review_cycles: 0
+      created: ""
+    - id: phase-1-ws-1.2
+      title: Store for Phase 1
+      type: feat
+      priority: p2
+      risk: medium
+      stage: push
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-1-plan.md
+      plan_section: §1.2
+      coded: true
+      reviewed: true
+      review_cycles: 1
+      created: ""
+    - id: phase-1-ws-1.3
+      title: Operation queue, events and logs
+      type: feat
+      priority: p2
+      risk: high
+      stage: push
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-1-plan.md
+      plan_section: §1.3
+      coded: true
+      reviewed: true
+      review_cycles: 1
+      created: ""
+    - id: phase-1-ws-1.4
+      title: Snapshot pack
+      type: feat
+      priority: p2
+      risk: high
+      stage: push
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-1-plan.md
+      plan_section: §1.4
+      coded: true
+      reviewed: true
+      review_cycles: 1
+      created: ""
+    - id: phase-1-ws-1.5
+      title: Upload and safe unpack
+      type: feat
+      priority: p2
+      risk: high
+      stage: push
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-1-plan.md
+      plan_section: §1.5
+      coded: true
+      reviewed: true
+      review_cycles: 1
+      created: ""
+    - id: phase-1-ws-1.6
+      title: Docker and Compose adapter
+      type: feat
+      priority: p2
+      risk: high
+      stage: push
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-1-plan.md
+      plan_section: §1.6
+      coded: true
+      reviewed: true
+      review_cycles: 1
+      created: ""
+    - id: phase-1-ws-1.7
+      title: Dockerfile deployment
+      type: feat
+      priority: p2
+      risk: high
+      stage: push
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-1-plan.md
+      plan_section: §1.7
+      coded: true
+      reviewed: true
+      review_cycles: 1
+      created: ""
+    - id: phase-1-ws-1.8
+      title: Compose import under the trust profile
+      type: feat
+      priority: p2
+      risk: high
+      stage: push
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-1-plan.md
+      plan_section: §1.8
+      coded: true
+      reviewed: true
+      review_cycles: 1
+      created: ""
+    - id: phase-1-ws-1.9
+      title: '`ship push`'
+      type: feat
+      priority: p2
+      risk: high
+      stage: push
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-1-plan.md
+      plan_section: §1.9
+      coded: true
+      reviewed: true
+      review_cycles: 1
+      created: ""
+    - id: phase-1-ws-1.10
+      title: Config values and write-only secrets
+      type: feat
+      priority: p2
+      risk: high
+      stage: push
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-1-plan.md
+      plan_section: §1.10
+      coded: true
+      reviewed: true
+      review_cycles: 1
+      created: ""
+    - id: phase-1-ws-1.11
+      title: Status, deployments and logs
+      type: feat
+      priority: p2
+      risk: medium
+      stage: push
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-1-plan.md
+      plan_section: §1.11
+      coded: true
+      reviewed: true
+      review_cycles: 1
+      created: ""
+    - id: phase-1-ws-1.12
+      title: Lifecycle commands
+      type: feat
+      priority: p2
+      risk: high
+      stage: push
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-1-plan.md
+      plan_section: §1.12
+      coded: true
+      reviewed: true
+      review_cycles: 1
+      created: ""
+    - id: phase-1-ws-1.13
+      title: UI for projects, services and logs
+      type: feat
+      priority: p2
+      risk: medium
+      stage: push
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-1-plan.md
+      plan_section: §1.13
+      coded: true
+      reviewed: true
+      review_cycles: 1
+      created: ""
+    - id: phase-1-ws-1.14
+      title: Recovery and invariants
+      type: feat
+      priority: p2
+      risk: high
+      stage: push
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-1-plan.md
+      plan_section: §1.14
+      coded: true
+      reviewed: true
+      review_cycles: 2
+      created: ""
+    - id: fix-0007
+      title: A flaky verification test, and no restart hint after an in-place upgrade
+      type: fix
+      priority: p0
+      risk: low
+      coder: claude-code/opus-5-5
+      reviewer: codex/gpt-6-astra
+      plan: .metis/plans/phase-1-plan.md
+      plan_section: 'Workstream 1.14: Recovery and invariants'
+      coded: true
+      reviewed: true
+      review_cycles: 0
+      notes: 'Two advisories to settle before the adoption gate. (1) f-052 and f-054: push::tests::only_an_answering_address_answers (crates/ship-daemon/src/push.rs:484) fails intermittently with ''assertion !answers failed'' after dropping its listener: another process or test reuses the freed port, so the address answers again. It has failed the Reviewer''s independent metis verify --post twice. Make the test deterministic without weakening what it proves (an address that does not answer is not printed); do not just retry or ignore it. The earlier flaky test failing_engine_is_unreachable (crates/ship-docker/tests/fake_docker.rs:130, seen once in CI on 2026-11-27) is the same family; look at it and fix it too if it has the same cause, and say so if it does not. (2) f-018, from the Phase 0 gate: after an in-place upgrade, nothing tells the operator to restart the daemon. service install prints ''sudo systemctl start ship'' unless the unit changed, which does nothing to a running daemon, so a host kept running the old version while ship --version printed the new one. When service install or install.sh finds a running daemon whose version differs from the installed binary, say so and print ''sudo systemctl restart ship''; ship host should make a client/daemon version difference visible. Resolve each finding with its evidence.'
+      created: "2026-11-28"

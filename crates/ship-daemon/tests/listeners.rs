@@ -129,8 +129,36 @@ fn listeners() -> BTreeSet<Listener> {
     found
 }
 
+/// macOS may report a socket under its resolved /private path.
+fn normalise(set: &BTreeSet<Listener>) -> BTreeSet<Listener> {
+    set.iter()
+        .map(|l| match l {
+            Listener::Unix(p) => Listener::Unix(std::fs::canonicalize(p).unwrap_or(p.clone())),
+            other => other.clone(),
+        })
+        .collect()
+}
+
+/// The listeners in `found` that break ADR-0003 rule 1: anything but the
+/// daemon's own unix `socket` and a TCP listener on IPv4 loopback.
+fn violations(found: &BTreeSet<Listener>, socket: &std::path::Path) -> Vec<Listener> {
+    let socket = std::fs::canonicalize(socket).unwrap_or(socket.to_path_buf());
+    normalise(found)
+        .into_iter()
+        .filter(|l| match l {
+            Listener::Unix(p) => *p != socket,
+            Listener::Tcp(addr) => !(addr.is_ipv4() && addr.ip().is_loopback()),
+            Listener::Other(_) => true,
+        })
+        .collect()
+}
+
+/// The two tests enumerate the same process's sockets; one at a time.
+static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[tokio::test(flavor = "multi_thread")]
 async fn only_unix_socket_and_loopback_listen() {
+    let _serial = SERIAL.lock().await;
     let dir = tempfile::tempdir().unwrap();
     let config = common::config(dir.path());
     let running = ship_daemon::start(&config).await.unwrap();
@@ -145,22 +173,44 @@ async fn only_unix_socket_and_loopback_listen() {
         Listener::Tcp(running.tcp_addr()),
     ]
     .into();
-    // macOS may report the socket under its resolved /private path.
-    let normalise = |set: &BTreeSet<Listener>| -> BTreeSet<Listener> {
-        set.iter()
-            .map(|l| match l {
-                Listener::Unix(p) => Listener::Unix(std::fs::canonicalize(p).unwrap_or(p.clone())),
-                other => other.clone(),
-            })
-            .collect()
-    };
     assert_eq!(normalise(&found), normalise(&expected));
-    for l in &found {
-        if let Listener::Tcp(addr) = l {
-            assert!(addr.ip().is_loopback() && addr.is_ipv4(), "{addr}");
-        }
-    }
+    assert_eq!(violations(&found, &socket), []);
 
     running.shutdown().await.unwrap();
     assert!(listeners().is_empty(), "{:?}", listeners());
+}
+
+/// The check has teeth: a listener deliberately bound on every address,
+/// and one on a unix socket that is not the daemon's, are both found.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_listener_bound_elsewhere_is_found() {
+    let _serial = SERIAL.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let config = common::config(dir.path());
+    let running = ship_daemon::start(&config).await.unwrap();
+    let socket = running.socket_path().to_path_buf();
+
+    let wide = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+    let wide_addr = wide.local_addr().unwrap();
+    let stray_path = dir.path().join("stray.sock");
+    let stray = std::os::unix::net::UnixListener::bind(&stray_path).unwrap();
+
+    let found = violations(&listeners(), &socket);
+    // lsof reports the unspecified address as `*:PORT`.
+    let port = format!(":{}", wide_addr.port());
+    assert!(
+        found.iter().any(|l| match l {
+            Listener::Tcp(a) => *a == wide_addr,
+            Listener::Other(s) => s.starts_with("tcp") && s.ends_with(&port),
+            Listener::Unix(_) => false,
+        }),
+        "{found:?}"
+    );
+    let stray_path = std::fs::canonicalize(&stray_path).unwrap();
+    assert!(found.contains(&Listener::Unix(stray_path)), "{found:?}");
+    assert_eq!(found.len(), 2, "{found:?}");
+
+    drop((wide, stray));
+    assert_eq!(violations(&listeners(), &socket), []);
+    running.shutdown().await.unwrap();
 }

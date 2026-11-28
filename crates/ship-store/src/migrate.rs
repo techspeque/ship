@@ -28,10 +28,28 @@ pub(crate) struct Migration {
 
 /// Every migration this binary knows, in order. Versions start at 1 and
 /// increase by one.
-pub(crate) const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    sql: include_str!("../migrations/0001_initial.sql"),
-}];
+pub(crate) const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        sql: include_str!("../migrations/0001_initial.sql"),
+    },
+    Migration {
+        version: 2,
+        sql: include_str!("../migrations/0002_phase1.sql"),
+    },
+    Migration {
+        version: 3,
+        sql: include_str!("../migrations/0003_settings.sql"),
+    },
+    Migration {
+        version: 4,
+        sql: include_str!("../migrations/0004_compose_confirm.sql"),
+    },
+    Migration {
+        version: 5,
+        sql: include_str!("../migrations/0005_lifecycle.sql"),
+    },
+];
 
 /// The schema version this binary migrates to.
 pub const LATEST_VERSION: u32 = MIGRATIONS[MIGRATIONS.len() - 1].version;

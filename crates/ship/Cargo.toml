@@ -16,6 +16,8 @@ path = "src/main.rs"
 ship-core = { path = "../ship-core" }
 ship-daemon = { path = "../ship-daemon" }
 ship-net = { path = "../ship-net" }
+# Scans and packs the snapshot `ship push` sends (ADR-0005).
+ship-source = { path = "../ship-source" }
 bytes = "1"
 clap = { version = "4", default-features = false, features = ["derive", "error-context", "help", "std", "suggestions", "usage"] }
 libc = "0.2"
@@ -25,5 +27,7 @@ tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt"
 
 [dev-dependencies]
 ship-docker = { path = "../ship-docker" }
+# `tests/cli_status.rs` seeds the daemon's store directly.
+ship-store = { path = "../ship-store" }
 tempfile = "3"
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "time"] }

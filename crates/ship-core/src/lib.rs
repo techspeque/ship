@@ -70,6 +70,8 @@ macro_rules! string_enum {
 
 pub mod api;
 pub mod compose;
+pub mod config;
+pub mod deploy;
 pub mod error;
 pub mod id;
 pub mod model;
@@ -77,21 +79,28 @@ pub mod secret;
 pub mod slug;
 pub mod state;
 pub mod time;
+pub mod trust;
 
 pub use api::{
-    API_PREFIX, API_VERSION, API_VERSION_HEADER, DockerInfo, DockerStatus, HostCapacity, HostInfo,
-    ProjectList, ProjectSummary, SHIP_VERSION_HEADER, SupportedVersions, api_version_number,
+    API_PREFIX, API_VERSION, API_VERSION_HEADER, DockerInfo, DockerStatus, EnvironmentSummary,
+    HostCapacity, HostInfo, ProjectList, ProjectSummary, SHIP_VERSION_HEADER, SupportedVersions,
+    api_version_number,
 };
 pub use compose::compose_project_name;
-pub use error::{ApiError, ErrorCode};
+pub use config::ConfigScope;
+pub use error::{ApiError, ErrorCode, ReceivedCode, ReceivedError};
 pub use id::{
-    DeploymentId, EnvironmentId, IdError, OperationId, ProjectId, ReleaseId, RevisionId, ServiceId,
+    DeploymentId, EnvironmentId, IdError, OperationId, ProjectId, ReleaseId, RevisionId, RouteId,
+    ServiceId,
 };
-pub use model::{RecoveryPolicy, ServiceKind};
+pub use model::{
+    DeploymentAction, DeploymentResult, RecoveryPolicy, RevisionKind, RouteProvider, RouteStatus,
+    ServiceKind,
+};
 pub use secret::SecretValue;
 pub use slug::{Slug, SlugError};
 pub use state::{
-    ContainerState, DesiredState, HealthCheck, Observation, OperationPhase, OperationStatus,
-    ServiceStatus, TransitionError,
+    ContainerState, DesiredState, FailureDetail, FailureReason, HealthCheck, Observation,
+    OperationPhase, OperationStatus, ServiceStatus, TransitionError,
 };
 pub use time::{Timestamp, TimestampError};

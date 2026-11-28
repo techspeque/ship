@@ -4,10 +4,16 @@
 //! file, `ship.db`, in the state directory, in WAL mode (ADR-0002). Schema
 //! changes only through the migrations in `migrations/`.
 
+mod audit;
 mod clock;
+mod config;
 mod error;
+mod history;
 mod migrate;
+mod observation;
 mod repo;
+mod route;
+mod settings;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -17,12 +23,18 @@ use sqlx::sqlite::{
 };
 use sqlx::{ConnectOptions, Connection};
 
+pub use audit::{AuditEvent, NewAuditEvent};
+pub use config::{ConfigTarget, ConfigValue, SecretRecord};
 pub use error::StoreError;
+pub use history::{Deployment, NewDeployment, NewRelease, NewRevision, Release, Revision};
 pub use migrate::{LATEST_VERSION, OpenReport};
+pub use observation::{NewObservation, StoredObservation};
 pub use repo::{
-    CreatedOperation, Environment, NewEnvironment, NewEvent, NewOperation, NewService, Operation,
-    OperationEvent, Project, Service,
+    CreatedOperation, DEVELOPMENT, EnsuredProject, Environment, NewEnvironment, NewEvent,
+    NewOperation, NewService, Operation, OperationEvent, OperationFailure, Project, Service,
 };
+pub use route::{NewRoute, Route};
+pub use settings::{Setting, SettingScope};
 
 /// The database file name inside the state directory.
 pub const DATABASE_FILE: &str = "ship.db";

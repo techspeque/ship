@@ -1,7 +1,8 @@
 //! The Rust half of the UI's type drift guard.
 //!
 //! Struct-literal samples of every type the UI reads, covering every field
-//! and every [`DockerStatus`], are serialised and compared byte for byte
+//! and every [`DockerStatus`], and the list of [`ServiceStatus`] values, are
+//! serialised and compared byte for byte
 //! with the fixtures in `web/src/lib/contract/`. `web/src/lib/contract.test.ts`
 //! runs the UI's runtime guards over the same files. So a changed Rust type
 //! fails here until the fixtures are regenerated, and the regenerated
@@ -15,9 +16,17 @@
 
 use std::path::{Path, PathBuf};
 
+use ship_core::api::{
+    DeploymentFailureView, DeploymentList, DeploymentView, EndpointView, EnvironmentView,
+    InterruptionView, LastDeploymentView, LogLineView, OperationEventView, OperationFailureView,
+    OperationView, ProjectRef, SecretList, SecretView, ServiceStatusView, StatusView, VarList,
+    VarView,
+};
 use ship_core::{
-    ApiError, DockerInfo, DockerStatus, ErrorCode, HostCapacity, HostInfo, ProjectList,
-    ProjectSummary, Slug, SupportedVersions, Timestamp,
+    ApiError, ConfigScope, DeploymentAction, DeploymentResult, DesiredState, DockerInfo,
+    DockerStatus, EnvironmentSummary, ErrorCode, HostCapacity, HostInfo, OperationPhase,
+    OperationStatus, ProjectList, ProjectSummary, ReceivedCode, ServiceStatus, Slug,
+    SupportedVersions, Timestamp,
 };
 
 fn contract_dir() -> PathBuf {
@@ -104,6 +113,304 @@ fn host_sample(status: DockerStatus) -> (&'static str, HostInfo) {
     }
 }
 
+fn ts(millis: i64) -> Timestamp {
+    Timestamp::from_unix_millis(millis).unwrap()
+}
+
+fn slug() -> Slug {
+    Slug::parse("my-app").unwrap()
+}
+
+const OP: &str = "op_01aryz6s41tsv4rrffq69g5fav";
+const OP_FAILED: &str = "op_01aryz6s41tsv4rrffq69g5faw";
+const ENV: &str = "env_01aryz6s41tsv4rrffq69g5fav";
+const REL: &str = "rel_01aryz6s41tsv4rrffq69g5fav";
+const REL_OLD: &str = "rel_01aryz6s41tsv4rrffq69g5faw";
+const REV: &str = "rev_01aryz6s41tsv4rrffq69g5fav";
+
+/// `ship status`: a deployed environment with a healthy service and one
+/// stopped on purpose with stale config, one whose deployment a daemon
+/// restart interrupted while verifying, and one never deployed.
+fn status_samples() -> Vec<(&'static str, StatusView)> {
+    let project = ProjectRef {
+        id: "prj_01aryz6s41tsv4rrffq69g5fav".parse().unwrap(),
+        slug: slug(),
+    };
+    let environment = EnvironmentView {
+        id: ENV.parse().unwrap(),
+        name: "development".to_owned(),
+        desired_state: "running".to_owned(),
+    };
+    vec![
+        (
+            "status-deployed",
+            StatusView {
+                project: project.clone(),
+                environment: environment.clone(),
+                last_deployment: Some(LastDeploymentView {
+                    id: "dep_01aryz6s41tsv4rrffq69g5fav".parse().unwrap(),
+                    action: "deploy".to_owned(),
+                    release_id: Some(REL.parse().unwrap()),
+                    operation_id: OP.parse().unwrap(),
+                    result: Some("succeeded".to_owned()),
+                    started_at: ts(1_767_323_045_000),
+                    ended_at: Some(ts(1_767_323_085_000)),
+                }),
+                interruption: None,
+                services: vec![
+                    ServiceStatusView {
+                        id: "svc_01aryz6s41tsv4rrffq69g5fav".parse().unwrap(),
+                        name: "web".to_owned(),
+                        kind: "web".to_owned(),
+                        desired_state: "running".to_owned(),
+                        status: "healthy".to_owned(),
+                        restarts: 0,
+                        observed_at: ts(1_767_323_100_000),
+                        stale_config: false,
+                        endpoints: vec![EndpointView {
+                            provider: "port".to_owned(),
+                            address: "192.0.2.10:8080".to_owned(),
+                        }],
+                    },
+                    ServiceStatusView {
+                        id: "svc_01aryz6s41tsv4rrffq69g5faw".parse().unwrap(),
+                        name: "worker".to_owned(),
+                        kind: "worker".to_owned(),
+                        desired_state: "stopped".to_owned(),
+                        status: "stopped".to_owned(),
+                        restarts: 2,
+                        observed_at: ts(1_767_323_100_000),
+                        stale_config: true,
+                        endpoints: vec![],
+                    },
+                ],
+            },
+        ),
+        (
+            "status-interrupted",
+            StatusView {
+                project: project.clone(),
+                environment: environment.clone(),
+                last_deployment: Some(LastDeploymentView {
+                    id: "dep_01aryz6s41tsv4rrffq69g5fav".parse().unwrap(),
+                    action: "deploy".to_owned(),
+                    release_id: Some(REL_OLD.parse().unwrap()),
+                    operation_id: OP.parse().unwrap(),
+                    result: Some("succeeded".to_owned()),
+                    started_at: ts(1_767_323_045_000),
+                    ended_at: Some(ts(1_767_323_085_000)),
+                }),
+                interruption: Some(InterruptionView {
+                    deployment_id: "dep_01aryz6s41tsv4rrffq69g5faw".parse().unwrap(),
+                    operation_id: OP_FAILED.parse().unwrap(),
+                    release_id: Some(REL.parse().unwrap()),
+                    phase: "verifying".to_owned(),
+                    command: "ship redeploy my-app".to_owned(),
+                }),
+                services: vec![ServiceStatusView {
+                    id: "svc_01aryz6s41tsv4rrffq69g5fav".parse().unwrap(),
+                    name: "web".to_owned(),
+                    kind: "web".to_owned(),
+                    desired_state: "running".to_owned(),
+                    status: "running_unverified".to_owned(),
+                    restarts: 0,
+                    observed_at: ts(1_767_323_100_000),
+                    stale_config: false,
+                    endpoints: vec![],
+                }],
+            },
+        ),
+        (
+            "status-never-deployed",
+            StatusView {
+                project,
+                environment,
+                last_deployment: None,
+                interruption: None,
+                services: vec![],
+            },
+        ),
+    ]
+}
+
+/// One deployment of the history; its id and its operation's end in the
+/// letter `suffix`.
+fn deployment(
+    suffix: char,
+    action: &str,
+    release: Option<&str>,
+    result: Option<&str>,
+    failure: Option<DeploymentFailureView>,
+    started: i64,
+    ended: Option<i64>,
+) -> DeploymentView {
+    let id = |prefix: &str| format!("{prefix}_01aryz6s41tsv4rrffq69g5fa{suffix}");
+    DeploymentView {
+        id: id("dep").parse().unwrap(),
+        environment: "development".to_owned(),
+        action: action.to_owned(),
+        revision_id: REV.parse().unwrap(),
+        release_id: release.map(|r| r.parse().unwrap()),
+        previous_release_id: Some(REL_OLD.parse().unwrap()),
+        operation_id: id("op").parse().unwrap(),
+        result: result.map(str::to_owned),
+        failure,
+        started_at: ts(started),
+        ended_at: ended.map(ts),
+    }
+}
+
+/// `ship deployments`, newest first: one in progress, a removal, a failed
+/// deployment with its phase, and the one that served.
+fn deployments_sample() -> DeploymentList {
+    DeploymentList {
+        deployments: vec![
+            deployment('y', "deploy", None, None, None, 1_767_323_400_000, None),
+            deployment(
+                'x',
+                "remove",
+                None,
+                Some("succeeded"),
+                None,
+                1_767_323_300_000,
+                Some(1_767_323_302_000),
+            ),
+            deployment(
+                'w',
+                "deploy",
+                None,
+                Some("failed"),
+                Some(DeploymentFailureView {
+                    code: ReceivedCode::Known(ErrorCode::BuildFailed),
+                    phase: "building".to_owned(),
+                    message: "the build exited 1".to_owned(),
+                }),
+                1_767_323_200_000,
+                Some(1_767_323_230_000),
+            ),
+            deployment(
+                'v',
+                "deploy",
+                Some(REL),
+                Some("succeeded"),
+                None,
+                1_767_323_045_000,
+                Some(1_767_323_085_000),
+            ),
+        ],
+    }
+}
+
+/// An operation running, and one failed.
+fn operation_samples() -> Vec<(&'static str, OperationView)> {
+    vec![
+        (
+            "operation-running",
+            OperationView {
+                id: OP.parse().unwrap(),
+                kind: "restart".to_owned(),
+                environment_id: Some(ENV.parse().unwrap()),
+                phase: OperationPhase::Deploying,
+                status: OperationStatus::Running,
+                failure: None,
+                log_bytes: 120,
+                created_at: ts(1_767_323_045_000),
+                updated_at: ts(1_767_323_046_000),
+            },
+        ),
+        (
+            "operation-failed",
+            OperationView {
+                id: OP_FAILED.parse().unwrap(),
+                kind: "deploy".to_owned(),
+                environment_id: None,
+                phase: OperationPhase::Failed,
+                status: OperationStatus::Failed,
+                failure: Some(OperationFailureView {
+                    code: ReceivedCode::Known(ErrorCode::BuildFailed),
+                    phase: OperationPhase::Building,
+                    message: "the build exited 1".to_owned(),
+                }),
+                log_bytes: 0,
+                created_at: ts(1_767_323_200_000),
+                updated_at: ts(1_767_323_230_000),
+            },
+        ),
+    ]
+}
+
+fn event_sample() -> OperationEventView {
+    OperationEventView {
+        operation_id: OP.parse().unwrap(),
+        sequence: 3,
+        phase: OperationPhase::Building,
+        event: "log".to_owned(),
+        message: "Step 1/4 : FROM alpine".to_owned(),
+        ts: ts(1_767_323_046_000),
+    }
+}
+
+fn log_line_sample() -> LogLineView {
+    LogLineView {
+        service: "web".to_owned(),
+        stream: "stderr".to_owned(),
+        ts: ts(1_767_323_087_003),
+        line: "warning: no cache directory".to_owned(),
+    }
+}
+
+/// Config values of the project's scope and of a service's, and secrets
+/// of the environment's.
+fn config_samples() -> Vec<(String, String)> {
+    vec![
+        (
+            "vars-project".to_owned(),
+            pretty(&VarList {
+                scope: ConfigScope::Project,
+                project: slug(),
+                environment: None,
+                service: None,
+                vars: vec![VarView {
+                    name: "LOG_LEVEL".to_owned(),
+                    value: "debug".to_owned(),
+                    updated_at: ts(1_767_323_000_000),
+                }],
+                stale_services: vec!["web".to_owned()],
+            }),
+        ),
+        (
+            "vars-service".to_owned(),
+            pretty(&VarList {
+                scope: ConfigScope::Service,
+                project: slug(),
+                environment: Some("development".to_owned()),
+                service: Some("web".to_owned()),
+                vars: vec![],
+                stale_services: vec![],
+            }),
+        ),
+        (
+            "secrets-environment".to_owned(),
+            pretty(&SecretList {
+                scope: ConfigScope::Environment,
+                project: slug(),
+                environment: Some("development".to_owned()),
+                service: None,
+                secrets: vec![SecretView {
+                    name: "DATABASE_URL".to_owned(),
+                    updated_at: ts(1_767_323_010_000),
+                }],
+                stale_services: vec![],
+            }),
+        ),
+    ]
+}
+
+/// The strings of an enum's values, in declaration order.
+fn names<T>(all: &[T], as_str: fn(&T) -> &'static str) -> String {
+    pretty(&all.iter().map(as_str).collect::<Vec<_>>())
+}
+
 /// Pretty JSON with a trailing newline, keys in declaration order.
 fn pretty(v: &impl serde::Serialize) -> String {
     let mut s = serde_json::to_string_pretty(v).expect("sample serialises");
@@ -128,6 +435,15 @@ fn samples() -> Vec<(String, String)> {
                 .collect::<Vec<_>>(),
         ),
     ));
+    out.push((
+        "service-statuses".to_owned(),
+        pretty(
+            &ServiceStatus::ALL
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>(),
+        ),
+    ));
     out.push(("projects-empty".to_owned(), pretty(&ProjectList::default())));
     out.push((
         "projects-one".to_owned(),
@@ -136,8 +452,48 @@ fn samples() -> Vec<(String, String)> {
                 id: "prj_01aryz6s41tsv4rrffq69g5fav".parse().unwrap(),
                 slug: Slug::parse("my-app").unwrap(),
                 created_at: Timestamp::from_unix_millis(1_469_918_176_385).unwrap(),
+                environments: vec![EnvironmentSummary {
+                    id: "env_01aryz6s41tsv4rrffq69g5fav".parse().unwrap(),
+                    name: "development".to_owned(),
+                    desired_state: "running".to_owned(),
+                    status: Some("running_unverified".to_owned()),
+                }],
             }],
         }),
+    ));
+    for (name, status) in status_samples() {
+        out.push((name.to_owned(), pretty(&status)));
+    }
+    out.push(("deployments".to_owned(), pretty(&deployments_sample())));
+    for (name, op) in operation_samples() {
+        out.push((name.to_owned(), pretty(&op)));
+    }
+    out.push(("operation-event".to_owned(), pretty(&event_sample())));
+    out.push(("log-line".to_owned(), pretty(&log_line_sample())));
+    out.extend(config_samples());
+    out.push((
+        "operation-phases".to_owned(),
+        names(OperationPhase::ALL, |p| p.as_str()),
+    ));
+    out.push((
+        "operation-statuses".to_owned(),
+        names(OperationStatus::ALL, |s| s.as_str()),
+    ));
+    out.push((
+        "desired-states".to_owned(),
+        names(DesiredState::ALL, |s| s.as_str()),
+    ));
+    out.push((
+        "deployment-results".to_owned(),
+        names(DeploymentResult::ALL, |r| r.as_str()),
+    ));
+    out.push((
+        "deployment-actions".to_owned(),
+        names(DeploymentAction::ALL, |a| a.as_str()),
+    ));
+    out.push((
+        "event-kinds".to_owned(),
+        names(ship_core::api::EventKind::ALL, |k| k.as_str()),
     ));
     out.push((
         "error-not-found".to_owned(),
