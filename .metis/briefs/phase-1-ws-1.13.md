@@ -143,4 +143,31 @@ None.
 
 ## Report
 
-Filled at implementation.
+- Changed: `web/src/App.svelte` (hash router, focus to the page heading on
+  route change); `web/src/lib/`: `api.ts` (wire types and exact guards
+  for status, deployments, log line, vars, secrets, operation, event;
+  enum lists; path builders; `postAction`), `sse.ts` (parser,
+  `followOperation`), `ndjson.ts` (`readNdjson`, `streamLogs`),
+  `actions.ts`, `route.ts`, `project.ts`, `load.ts` (`load`,
+  `loadConfig`), `view.ts` (environments on project rows); components
+  `Home`, `ProjectPage`, `OperationPage`, `LogsPage`, `Config`,
+  `ConfirmDialog`, `Badge`, `RefreshButton`, `Projects` (links,
+  environments); 16 new fixtures in `web/src/lib/contract/`;
+  `crates/ship-daemon/tests/web_contract.rs` (samples for every new shape
+  and six enum lists).
+- Tests added: `project.test.ts` (8), `sse.test.ts` (9), `ndjson.test.ts`
+  (7), `actions.test.ts` (12), `secrets.test.ts` (2), `route.test.ts` (3),
+  `contract.test.ts` (+8), `view.test.ts` (+1). Web: 77 tests pass.
+- `metis verify --post --slice phase-1-ws-1.13`: ALL GREEN
+  (`.metis/runs/phase-1-ws-1.13/verify-post.log`; `fixtures_match_the_rust_types ... ok`).
+- Decisions: confirmation for every action but `start` (each of stop,
+  restart, redeploy, remove interrupts what runs); `fetch`-based SSE, not
+  `EventSource` (which reconnects forever after the terminal event); hash
+  routes, so the daemon's SPA fallback is untouched; config shown for
+  project, environment and each service scope; the UI writes no config or
+  secret (plan asks only to show them); logs request `tail=200`, keep the
+  last 5 000 lines on the page.
+- Process note: `cargo` and `rustfmt` were not runnable from this session
+  (permission), so the 16 fixtures were written by a one-off node script
+  (since deleted) mirroring the Rust samples; `fixtures_match_the_rust_types`
+  in verify confirms them byte for byte, and `cargo fmt --check` passed.
