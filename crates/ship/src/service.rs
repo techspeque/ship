@@ -620,7 +620,8 @@ pub fn install(
     // the old binary until restarted.
     let active = query(host, &["systemctl", "is-active", "--quiet", UNIT_NAME])?.is_some();
     let running = if active {
-        host.daemon_version().map_or(Running::Unknown, Running::Version)
+        host.daemon_version()
+            .map_or(Running::Unknown, Running::Version)
     } else {
         Running::No
     };

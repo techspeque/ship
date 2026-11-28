@@ -452,16 +452,25 @@ mod tests {
 
     #[test]
     fn host_json_is_the_fixture() {
-        assert_eq!(render_host(&fixture_host(), Output::Json, "0.0.0"), HOST_FIXTURE);
+        assert_eq!(
+            render_host(&fixture_host(), Output::Json, "0.0.0"),
+            HOST_FIXTURE
+        );
         // The contract shape does not change when the versions differ.
-        assert_eq!(render_host(&fixture_host(), Output::Json, "9.9.9"), HOST_FIXTURE);
+        assert_eq!(
+            render_host(&fixture_host(), Output::Json, "9.9.9"),
+            HOST_FIXTURE
+        );
     }
 
     #[test]
     fn host_text_shows_a_client_daemon_version_difference() {
         let text = render_host(&fixture_host(), Output::Text, "0.0.1");
         let last = text.lines().last().unwrap();
-        assert!(last.starts_with("Client:   ship 0.0.1, not the daemon's version"), "{text}");
+        assert!(
+            last.starts_with("Client:   ship 0.0.1, not the daemon's version"),
+            "{text}"
+        );
         assert!(last.ends_with("sudo systemctl restart ship"), "{text}");
         assert!(text.contains("Daemon:   ship 0.0.0, API v1\n"), "{text}");
     }
