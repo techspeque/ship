@@ -583,3 +583,12 @@ findings:
       file: crates/ship-store/migrations/0005_lifecycle.sql
       commit: 6fd5c31606c166aa699504aa6e99cb4b4c459044
       evidence: test a_deploy_in_the_removals_millisecond_counts_only_when_inserted_after_it
+    - id: f-050
+      date: "2026-11-28"
+      slice: phase-1-ws-1.13
+      severity: P2
+      category: behavior
+      finding: 'web/src/lib/OperationPage.svelte:32-44 — Live events update phase but never refresh operation status until a single GET after finished: an initially queued operation remains labelled queued while building. That final GET can also race terminal persistence (queue.rs:573-584 appends/announces finished before advancing the operation), leaving status running and failure details absent permanently. Reproduced by executing the component script with queued initial GET, building/finished events, and a still-running final GET. Refresh authoritative operation state during progress and retry terminal reads until terminal state is observed, with abort/error handling; add regressions for queued-to-running and finished-before-terminal-persistence.'
+      status: open
+      cycle: 1
+      file: web/src/lib/OperationPage.svelte
