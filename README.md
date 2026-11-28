@@ -6,10 +6,30 @@ hosted account. See [OVERVIEW.md](OVERVIEW.md) for the full specification.
 
 ## Status
 
-**Pre-alpha.** Nothing deploys yet. Phase 0 is the foundation: `ship
-daemon`, `ship service install`, `ship target`, `ship host` (host and
-Docker status), `ship projects` (an empty registry), `ship open` (the UI
-shell) and `ship --version`.
+**Pre-alpha.** Phase 1 (Push) is built and awaits its adoption gate. On
+top of the Phase 0 foundation (`ship daemon`, `ship service install`,
+`ship target`, `ship host`, `ship open`, `ship --version`) it has:
+
+- `ship push [PATH]`: the working tree, uncommitted changes included, sent
+  as a snapshot, built from its Dockerfile or imported from its Compose
+  file under the trust profile, started and verified, with `--port` to
+  publish on the host's publish address (`ship settings get|set
+  publish.address`; the tailnet address under `auto` when there is one,
+  else `127.0.0.1`). `--wait -o json` is the machine contract in
+  [docs/contracts/cli-json.md](docs/contracts/cli-json.md).
+- `ship projects`, `ship status`, `ship deployments` and `ship logs`, with
+  desired state, the last deployment and what Docker reports kept apart.
+- `ship start|stop|restart PROJECT[/SERVICE]`, `ship redeploy|remove
+  PROJECT`; a removed environment keeps its volumes and history and comes
+  back with `ship push --recreate`.
+- `ship vars` and write-only `ship secrets`, injected at deploy.
+- A UI with projects, services, live operation logs and history.
+- Recovery: a daemon that dies mid-operation starts again with no Docker
+  action. What it left in flight is `interrupted`, never resumed. A
+  deployment cut short while building or preparing changed nothing; one
+  cut short while deploying or verifying may have replaced containers in
+  part, and `ship status` says so and names the command that puts it right
+  (`ship redeploy PROJECT`). See [docs/service.md](docs/service.md).
 
 - Before v1.0 the CLI, the HTTP API and the storage formats may change
   without notice. Semantic versioning applies from v1.0.

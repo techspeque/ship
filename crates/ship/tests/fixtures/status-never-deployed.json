@@ -9,5 +9,6 @@
     "desired_state": "running"
   },
   "last_deployment": null,
+  "interruption": null,
   "services": []
 }

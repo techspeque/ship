@@ -174,10 +174,24 @@ export interface ServiceStatusView {
 }
 
 /** `GET /api/v1/projects/{p}/status`: `ship_core::api::StatusView`. */
+/**
+ * `ship_core::api::InterruptionView`: a deployment a daemon restart cut
+ * short in `deploying` or `verifying`, and the command that puts it right.
+ */
+export interface InterruptionView {
+  deployment_id: string;
+  operation_id: string;
+  release_id: string | null;
+  phase: OperationPhase;
+  command: string;
+}
+
 export interface StatusView {
   project: ProjectRef;
   environment: EnvironmentView;
   last_deployment: LastDeploymentView | null;
+  /** `null` unless a deployment was interrupted part-way. */
+  interruption: InterruptionView | null;
   services: ServiceStatusView[];
 }
 
@@ -396,6 +410,15 @@ const isLastDeployment: Check = (v) =>
     ended_at: isNullableString,
   });
 
+const isInterruption: Check = (v) =>
+  exact(v, {
+    deployment_id: isString,
+    operation_id: isString,
+    release_id: isNullableString,
+    phase: isPhase,
+    command: isString,
+  });
+
 const isServiceStatusView: Check = (v) =>
   exact(v, {
     id: isString,
@@ -414,6 +437,7 @@ export function isStatusView(v: unknown): v is StatusView {
     project: (p) => exact(p, { id: isString, slug: isString }),
     environment: (e) => exact(e, { id: isString, name: isString, desired_state: isDesiredState }),
     last_deployment: nullable(isLastDeployment),
+    interruption: nullable(isInterruption),
     services: arrayOf(isServiceStatusView),
   });
 }

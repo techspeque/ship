@@ -5,14 +5,17 @@
 //!
 //! [`start`] binds the unix socket and the 127.0.0.1 listener (ADR-0003),
 //! opens the store, marks operations a previous daemon left unfinished as
-//! `interrupted` ([`queue::recover`]), removes the staging directories of
-//! uploads it left half-written ([`upload::clean_staging`]), registers
-//! every stored secret with the redactor ([`secrets::register_all`]),
+//! `interrupted` ([`queue::recover`]), registers every stored secret with
+//! the redactor ([`secrets::register_all`]), ends the deployments those
+//! operations left open as `interrupted` and removes the release staging
+//! they left ([`recovery::recover`]), removes the staging directories of
+//! uploads it left half-written ([`upload::clean_staging`]),
 //! starts the operation [`queue`] and
 //! serves the router in [`http`] (uploads, [`deploy`]ments, [`push`]es,
 //! [`settings`] and [`config`] values and secrets among its routes), with
 //! the embedded UI ([`ui`]) as its
-//! fallback; it also starts the interval [`observe`]r. [`status`] and
+//! fallback; it also starts the [`observe`]r, whose first round, at once,
+//! rebuilds observed state from Ship's labelled containers. [`status`] and
 //! [`logs`] serve `ship status`, `ship deployments`, `ship projects` and
 //! `ship logs`. [`Running::shutdown`] stops it; [`run`] does both around
 //! SIGTERM/SIGINT.
@@ -31,6 +34,7 @@ pub mod logs;
 pub mod observe;
 pub mod push;
 pub mod queue;
+pub mod recovery;
 pub mod secrets;
 pub mod settings;
 pub mod status;
@@ -216,6 +220,25 @@ pub async fn start(config: &Config) -> Result<Running, DaemonError> {
     {
         store.close().await;
         return Err(DaemonError::Store(e));
+    }
+    // Deployments those operations left open end `interrupted`, and what
+    // they staged goes; no Docker command (ADR-0006 rule 11). After the
+    // secrets are registered, so a value read from a staged env file is
+    // redacted even though the file is about to go.
+    match recovery::recover(&store, &config.state_dir).await {
+        Ok(done) if done.deployments > 0 => {
+            tracing::warn!(
+                deployments = done.deployments,
+                staged_releases = done.staged_releases,
+                pruned_releases = done.pruned_releases,
+                "deployments left unfinished were interrupted; Docker is left as it is"
+            );
+        }
+        Ok(_) => {}
+        Err(e) => {
+            store.close().await;
+            return Err(DaemonError::Store(e));
+        }
     }
     // Uploads a dead daemon left half-written: their operations were just
     // interrupted, and nothing of them may remain (ADR-0005 rule 7).

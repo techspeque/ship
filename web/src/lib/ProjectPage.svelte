@@ -167,6 +167,23 @@
       </dd>
     </dl>
 
+    {#if page.interruption !== null}
+      <p
+        class="mt-3 rounded-md px-3 py-2 text-sm ring-1 {TONE_CLASSES.warn}"
+        data-field="interruption"
+      >
+        <span aria-hidden="true" class="font-mono">!</span>
+        A deployment was interrupted while
+        <span class="font-mono">{page.interruption.phase}</span>; the services below show what
+        Docker runs.
+        <a
+          class={LINK}
+          href={href({ page: 'operation', project, id: page.interruption.operationId })}
+          >Its operation</a
+        >. Put it right with <code class="font-mono">{page.interruption.command}</code>.
+      </p>
+    {/if}
+
     <div class="mt-4 flex flex-wrap gap-2" role="group" aria-label="Actions on {project}">
       {#each actionsFor({ project, environment: page.environment, service: null, services: [] }) as a (a)}
         <button type="button" class={BUTTON} disabled={sending} onclick={() => ask(a, null)}>

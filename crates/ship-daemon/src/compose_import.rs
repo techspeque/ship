@@ -498,7 +498,7 @@ pub(crate) async fn steps(
     let release_id = store.allocate_release_id()?;
     attempt.release = Some(release_id);
     let dir = release_dir(d.state_dir(), release_id);
-    create_release_dir(d.state_dir(), &dir)?;
+    create_release_dir(d.state_dir(), &dir, ctx.operation_id())?;
     let labels = DeployLabels {
         project: job.project.id,
         environment: env.id,

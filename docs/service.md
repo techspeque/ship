@@ -74,6 +74,43 @@ ship projects
 Without the group, the client fails with a permission error that names the
 `ship` group. To revoke access: `sudo gpasswd -d USER ship`.
 
+## When the daemon stops mid-operation
+
+If the daemon is killed, crashes or the host loses power while an
+operation runs, systemd starts it again (`Restart=always`) and the daemon
+does this before it serves anything, without a Docker command that changes
+anything:
+
+- every operation left queued or running becomes `interrupted`; none is
+  resumed, and `ship push --wait` exits 93 for it;
+- the deployment it was running ends `interrupted`, and the last
+  deployment that succeeded stays the one Ship reports serving;
+- what that operation staged is removed, and nothing else: a half-written
+  upload, a release directory it never recorded, and the env files (the
+  values) of a release it prepared but never brought up;
+- what Docker runs is observed again from Ship's labelled containers.
+
+What that leaves depends on where the deployment was:
+
+| Interrupted while | Docker | What to do |
+|---|---|---|
+| uploading, validating, building or preparing | unchanged; the previous release still serves | nothing; push again when ready |
+| deploying or verifying | the new containers may already run in place of the old, in part or in full | run the command `ship status` names |
+
+In the second case `ship status` prints
+
+```
+Interrupted: deployment dep_… bringing up release rel_… was interrupted while deploying; the services show what Docker runs
+Recover:     ship redeploy PROJECT
+```
+
+and `-o json` carries the same as `interruption`. `ship redeploy` deploys
+the last good revision again and brings the environment back to a known
+release. If nothing had ever succeeded, the command is `ship push`; if the
+environment was being recreated after `ship remove`, it is `ship push
+--recreate`. Ship does not do this by itself: it never reconciles at start
+(ADR-0006 rule 11).
+
 ## Uninstall
 
 ```sh

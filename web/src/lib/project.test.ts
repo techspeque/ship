@@ -23,6 +23,7 @@ import opFailedJson from './contract/operation-failed.json';
 import opRunningJson from './contract/operation-running.json';
 import secretsEnvJson from './contract/secrets-environment.json';
 import statusDeployedJson from './contract/status-deployed.json';
+import statusInterruptedJson from './contract/status-interrupted.json';
 import statusNeverJson from './contract/status-never-deployed.json';
 import varsProjectJson from './contract/vars-project.json';
 import varsServiceJson from './contract/vars-service.json';
@@ -41,6 +42,7 @@ function guarded<T>(v: unknown, guard: (v: unknown) => v is T): T {
 
 const deployed = guarded<StatusView>(statusDeployedJson, isStatusView);
 const never = guarded<StatusView>(statusNeverJson, isStatusView);
+const interrupted = guarded<StatusView>(statusInterruptedJson, isStatusView);
 const history = guarded<DeploymentList>(deploymentsJson, isDeploymentList);
 
 describe('statusPage', () => {
@@ -88,7 +90,25 @@ describe('statusPage', () => {
   it('a never-deployed environment has no last deployment and no services', () => {
     const page = statusPage(never);
     expect(page.lastDeployment).toBeNull();
+    expect(page.interruption).toBeNull();
     expect(page.services).toEqual([]);
+  });
+
+  it('shows an interrupted deployment and its command as the API reports them', () => {
+    expect(statusPage(deployed).interruption).toBeNull();
+    const i = interrupted.interruption;
+    expect(i).not.toBeNull();
+    expect(statusPage(interrupted).interruption).toEqual({
+      deploymentId: i?.deployment_id,
+      operationId: i?.operation_id,
+      release: i?.release_id,
+      phase: i?.phase,
+      command: i?.command,
+    });
+    // The last good deployment stays the one reported.
+    expect(statusPage(interrupted).lastDeployment?.release).toBe(
+      interrupted.last_deployment?.release_id,
+    );
   });
 
   it('every service status is shown as its own string with a glyph', () => {

@@ -74,21 +74,44 @@ export interface LastDeploymentSummary {
   endedAt: string | null;
 }
 
+/** A deployment a daemon restart interrupted part-way. */
+export interface InterruptionSummary {
+  deploymentId: string;
+  operationId: string;
+  release: string | null;
+  /** The phase it was in, as the API sends it. */
+  phase: string;
+  /** The command that puts it right, as the API sends it. */
+  command: string;
+}
+
 export interface StatusPage {
   project: string;
   environment: string;
   /** The environment's desired state. */
   desired: string;
   lastDeployment: LastDeploymentSummary | null;
+  interruption: InterruptionSummary | null;
   services: ServiceRow[];
 }
 
 export function statusPage(s: StatusView): StatusPage {
   const d = s.last_deployment;
+  const i = s.interruption;
   return {
     project: s.project.slug,
     environment: s.environment.name,
     desired: s.environment.desired_state,
+    interruption:
+      i === null
+        ? null
+        : {
+            deploymentId: i.deployment_id,
+            operationId: i.operation_id,
+            release: i.release_id,
+            phase: i.phase,
+            command: i.command,
+          },
     lastDeployment:
       d === null
         ? null

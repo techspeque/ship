@@ -813,6 +813,25 @@ pub struct ServiceStatusView {
     pub endpoints: Vec<EndpointView>,
 }
 
+/// A deployment a daemon restart cut short after its new containers had
+/// started to replace the old (`deploying` or `verifying`), with nothing
+/// succeeding since. Ship took no Docker action when it started again
+/// (ADR-0006 rule 11), so Docker may run part of the new release; the
+/// services show what it runs, `command` what puts it right
+/// (phase-1-ws-1.14).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InterruptionView {
+    pub deployment_id: DeploymentId,
+    pub operation_id: OperationId,
+    /// The release it was bringing up; `None` if none was recorded.
+    pub release_id: Option<ReleaseId>,
+    /// An `OperationPhase` string: `deploying` or `verifying`.
+    pub phase: String,
+    /// The command to run: `ship redeploy PROJECT` when a release served
+    /// before, else `ship push`.
+    pub command: String,
+}
+
 /// `ship status PROJECT -o json` (`status.json`): desired state, the last
 /// deployment and what Docker reports, kept apart (ADR-0006).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -820,6 +839,9 @@ pub struct StatusView {
     pub project: ProjectRef,
     pub environment: EnvironmentView,
     pub last_deployment: Option<LastDeploymentView>,
+    /// A deployment interrupted part-way, if one is the latest word on
+    /// what Docker runs; `None` otherwise.
+    pub interruption: Option<InterruptionView>,
     pub services: Vec<ServiceStatusView>,
 }
 

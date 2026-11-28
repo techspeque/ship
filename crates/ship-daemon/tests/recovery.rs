@@ -129,6 +129,66 @@ async fn rows_left_queued_or_running_are_interrupted_on_start() {
     running.shutdown().await.unwrap();
 }
 
+/// A start records an observation of every service at once, with no
+/// request and long before the observer's interval: here Docker cannot be
+/// reached, so each is `unknown` and nothing else happens (ADR-0006 rules
+/// 4 and 11).
+#[tokio::test]
+async fn observed_state_is_rebuilt_at_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = common::config(dir.path());
+    config.observe_interval = Duration::from_secs(3600);
+    std::fs::create_dir_all(&config.state_dir).unwrap();
+    let env = {
+        let store = Store::open(&config.state_dir).await.unwrap();
+        let env = store
+            .get_or_create_project(&Slug::parse("app").unwrap())
+            .await
+            .unwrap()
+            .environment;
+        store
+            .create_service(
+                env.id,
+                &ship_store::NewService {
+                    name: "web".to_owned(),
+                    kind: ship_core::ServiceKind::Web,
+                    port: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(store.list_observations(env.id).await.unwrap().is_empty());
+        store.close().await;
+        env
+    };
+
+    let running = ship_daemon::start(&config).await.unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let observed = loop {
+        let list = running.store().list_observations(env.id).await.unwrap();
+        if !list.is_empty() {
+            break list;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "nothing observed");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert_eq!(observed.len(), 1);
+    assert_eq!(
+        observed[0].observation,
+        ship_core::Observation::DockerUnreachable
+    );
+    assert_eq!(
+        running
+            .store()
+            .get_environment(env.id)
+            .await
+            .unwrap()
+            .desired_state,
+        ship_core::DesiredState::Running
+    );
+    running.shutdown().await.unwrap();
+}
+
 static RUNS: AtomicUsize = AtomicUsize::new(0);
 
 /// The closest an in-process test gets to `kill -9`: the runtime is

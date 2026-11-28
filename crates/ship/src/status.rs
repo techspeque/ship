@@ -162,6 +162,17 @@ pub(crate) fn render_status(view: &StatusView, output: Output) -> String {
             ));
         }
     }
+    if let Some(i) = &view.interruption {
+        let release = i
+            .release_id
+            .map_or_else(String::new, |r| format!(" bringing up release {r}"));
+        s.push_str(&format!(
+            "Interrupted: deployment {}{release} was interrupted while {}; \
+             the services show what Docker runs\n\
+             Recover:     {}\n",
+            i.deployment_id, i.phase, i.command
+        ));
+    }
     if view.services.is_empty() {
         s.push_str("Services:    none\n");
         return s;
@@ -358,12 +369,13 @@ mod tests {
 
     const STATUS: &str = include_str!("../tests/fixtures/status.json");
     const NEVER: &str = include_str!("../tests/fixtures/status-never-deployed.json");
+    const INTERRUPTED: &str = include_str!("../tests/fixtures/status-interrupted.json");
     const DEPLOYMENTS: &str = include_str!("../tests/fixtures/deployments.json");
     const LOGS: &str = include_str!("../tests/fixtures/logs.jsonl");
 
     #[test]
     fn json_is_the_fixture() {
-        for text in [STATUS, NEVER] {
+        for text in [STATUS, NEVER, INTERRUPTED] {
             let view: StatusView = serde_json::from_str(text).unwrap();
             assert_eq!(render_status(&view, Output::Json), text);
         }
@@ -413,6 +425,25 @@ mod tests {
         let text = render_status(&never, Output::Text);
         assert!(text.contains("Deployment:  none yet\n"), "{text}");
         assert!(text.ends_with("Services:    none\n"), "{text}");
+    }
+
+    #[test]
+    fn status_text_names_an_interruption_and_its_command() {
+        let view: StatusView = serde_json::from_str(INTERRUPTED).unwrap();
+        let text = render_status(&view, Output::Text);
+        assert!(
+            text.contains(
+                "Deployment:  succeeded at 2026-01-02T03:04:45.000Z \
+                 (dep_01aryz6s41tsv4rrffq69g5fav, release rel_01aryz6s41tsv4rrffq69g5faw)\n\
+                 Interrupted: deployment dep_01aryz6s41tsv4rrffq69g5faw bringing up release \
+                 rel_01aryz6s41tsv4rrffq69g5fav was interrupted while verifying; \
+                 the services show what Docker runs\n\
+                 Recover:     ship redeploy my-app\n"
+            ),
+            "{text}"
+        );
+        let plain: StatusView = serde_json::from_str(STATUS).unwrap();
+        assert!(!render_status(&plain, Output::Text).contains("Interrupted:"));
     }
 
     #[test]

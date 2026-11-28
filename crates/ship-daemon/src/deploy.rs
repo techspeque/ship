@@ -48,8 +48,9 @@ use sha2::{Digest, Sha256};
 use ship_core::api::PUBLISH_ADDRESS_KEY;
 use ship_core::deploy::{self, BuildKind, DetectError, PortMapping, PortSpec, PublishAddress};
 use ship_core::{
-    DeploymentResult, DesiredState, EnvironmentId, ErrorCode, FailureDetail, OperationPhase,
-    ReleaseId, RouteProvider, RouteStatus, ServiceKind, ServiceStatus, compose_project_name,
+    DeploymentResult, DesiredState, EnvironmentId, ErrorCode, FailureDetail, OperationId,
+    OperationPhase, ReleaseId, RouteProvider, RouteStatus, ServiceKind, ServiceStatus,
+    compose_project_name,
 };
 use ship_docker::{
     ComposeFiles, ComposeProject, DeployLabels, DockerError, Line, Runner, Selector, UpOptions,
@@ -91,6 +92,10 @@ pub fn release_dir(state_dir: &Path, release: ReleaseId) -> PathBuf {
 /// only. A release from before it was written (phase-1-ws-1.7) is
 /// [`COMPOSE_FILE`] and [`LABELS_FILE`] in its own directory.
 pub const FILES_FILE: &str = "files.json";
+
+/// The id of the operation that created a release's directory, written
+/// before anything else in it.
+pub const OPERATION_FILE: &str = "operation";
 
 /// The tag a release's image is built under: `ship_<env id>-web:<release id>`.
 pub fn image_tag(environment: EnvironmentId, release: ReleaseId) -> String {
@@ -698,7 +703,7 @@ impl Steps<'_> {
         let release_id = d.store.allocate_release_id()?;
         attempt.release = Some(release_id);
         let dir = release_dir(&d.state_dir, release_id);
-        create_release_dir(&d.state_dir, &dir)?;
+        create_release_dir(&d.state_dir, &dir, ctx.operation_id())?;
         let labels = DeployLabels {
             project: self.job.project.id,
             environment: env.id,
@@ -1005,13 +1010,22 @@ pub(crate) fn path_text(path: &Path) -> Result<String, JobFailure> {
     })
 }
 
-pub(crate) fn create_release_dir(state_dir: &Path, dir: &Path) -> Result<(), JobFailure> {
+/// Creates a new release's directory, holding from the start the id of the
+/// `operation` creating it ([`OPERATION_FILE`]), so that what an
+/// interrupted operation left half-made is known after a restart
+/// ([`crate::recovery`]).
+pub(crate) fn create_release_dir(
+    state_dir: &Path,
+    dir: &Path,
+    operation: OperationId,
+) -> Result<(), JobFailure> {
     let made = fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
         .create(state_dir.join(RELEASES_DIR))
         .and_then(|()| fs::DirBuilder::new().mode(0o700).create(dir));
-    made.map_err(|e| io_failure(&e, "the daemon could not create the release directory"))
+    made.map_err(|e| io_failure(&e, "the daemon could not create the release directory"))?;
+    write_file(&dir.join(OPERATION_FILE), operation.to_string().as_bytes())
 }
 
 pub(crate) fn io_failure(e: &io::Error, message: &str) -> JobFailure {

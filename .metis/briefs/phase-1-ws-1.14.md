@@ -34,12 +34,13 @@ unlabelled object changed) that are shown to fail on a deliberate leak.
   - `ship-daemon/src/recovery.rs` (new): `recover(store, state_dir)`, run
     at start right after `queue::recover`. Every deployment with no result
     (its operation was just interrupted) is finished `interrupted`. Its
-    staging is removed: a release directory it allocated but never
-    recorded (known by the operation marker below) is removed whole; a
-    release it recorded keeps its files (immutable) and loses only its env
-    files (values on disk only for releases that may be brought up,
-    ADR-0009). Release directories of other operations are untouched. No
-    Docker command.
+    staging is removed: a release directory it created (known by the
+    operation marker below) whose release the store does not hold is
+    removed whole; one whose release is recorded keeps its files
+    (immutable) and loses only its env files (values on disk only for
+    releases that may be brought up, ADR-0009). Release directories of
+    other operations, and unmarked ones, are untouched. Runs after
+    `secrets::register_all`. No Docker command.
   - `deploy::create_release_dir(state_dir, dir, operation)`: writes the
     operation id to `OPERATION_FILE` (`operation`) in the new release
     directory, so recovery can tell which operation allocated it; both
@@ -57,9 +58,11 @@ unlabelled object changed) that are shown to fail on a deliberate leak.
     newest deployment interrupted in `deploying` or `verifying` is newer
     than every succeeded deployment of the environment. `command` is
     `ship redeploy P` (`--env E` added outside `development`) when there is
-    a serving deployment to redeploy, else `ship push` (redeploy refuses an
-    environment with nothing deployed). An interruption in an earlier
-    phase changed nothing in Docker and is not reported.
+    a serving deployment to redeploy; `ship push --project P --recreate`
+    when the environment is still `removed` (redeploy refuses it); else
+    `ship push --project P` (redeploy refuses an environment with nothing
+    deployed). An interruption in an earlier phase changed nothing in
+    Docker and is not reported.
   - `ship-daemon/src/status.rs`: computes `interruption` from the history
     and the operation's `failure_phase`.
   - `ship/src/status.rs`: the text form prints, after the last deployment,
@@ -161,4 +164,31 @@ None.
 
 ## Report
 
-Filled at implementation.
+- Changed: `ship-daemon/src/{recovery.rs (new), lib.rs, observe.rs,
+  deploy.rs, compose_import.rs, status.rs}`, `ship-core/src/api.rs`
+  (`InterruptionView`, `StatusView.interruption`), `ship/src/status.rs`
+  (text `Interrupted:` / `Recover:` lines), CLI fixtures
+  (`status.json`, `status-never-deployed.json` gain `interruption: null`;
+  new `status-interrupted.json`), web contract fixtures (same, new
+  `status-interrupted.json`), `web/src/lib/{api.ts, project.ts,
+  ProjectPage.svelte, project.test.ts, contract.test.ts}`, README,
+  `docs/service.md`, `docs/contracts/cli-json.md`.
+- Tests: new `tests/kill.rs` (kill in each of the four phases, staging
+  scope), `tests/invariants.rs` (secret scan over a full scenario in a
+  child process with the real logger, plus deliberate-leak self-test),
+  `tests/real_recovery.rs` (ignored; real Engine: kill per phase, image
+  history, unlabelled inventory); `listeners.rs` gained a deliberate
+  0.0.0.0 / stray-socket test; `recovery.rs` gained start observation.
+- `metis verify --post`: green (run 6). Runs 1–5 failed on fmt, one
+  clippy lint, test setup (secret before project; fake read only two
+  Compose files) and once on the pre-existing
+  `push::tests::only_an_answering_address_answers` (port reuse flake;
+  untouched code, passed on rerun).
+- Not run here: the `real_*` tests (no Docker access in this session);
+  CI's docker job runs them.
+- Decisions: AC1's "runs no Docker command at the next start" taken as
+  no command that changes anything; the start observation (task 1) runs
+  `ps` / `container inspect`, and the tests assert only those appear.
+  The recovery command is `ship push --project P` when nothing ever
+  succeeded and `ship push --project P --recreate` for a removed
+  environment, since `ship redeploy` refuses both.

@@ -6,11 +6,11 @@ use std::path::Path;
 
 use ship_core::api::{
     DeploymentFailureView, DeploymentList, DeploymentView, EndpointView, EnvironmentView,
-    LastDeploymentView, ProjectRef, ServiceStatusView, StatusView,
+    InterruptionView, LastDeploymentView, ProjectRef, ServiceStatusView, StatusView,
 };
 use ship_core::{
-    ApiError, DeploymentResult, EnvironmentSummary, ErrorCode, ProjectList, ProjectSummary,
-    ReceivedCode, RouteStatus, ServiceStatus,
+    ApiError, DeploymentAction, DeploymentResult, DesiredState, EnvironmentSummary, ErrorCode,
+    OperationPhase, ProjectList, ProjectSummary, ReceivedCode, RouteStatus, ServiceStatus,
 };
 use ship_docker::Runner;
 use ship_store::{Deployment, Environment, Project, Store, StoreError};
@@ -26,6 +26,76 @@ pub fn reported(deployments: &[Deployment]) -> Option<&Deployment> {
         .iter()
         .find(|d| d.result == Some(DeploymentResult::Succeeded))
         .or_else(|| deployments.first())
+}
+
+/// The deployments `ship status` may report as interrupted part-way,
+/// newest first: those interrupted with nothing succeeding after them (a
+/// success, a removal included, settles what Docker runs). Which of them
+/// counts depends on its operation's phase ([`part_way`]).
+pub fn interruption_candidates(deployments: &[Deployment]) -> impl Iterator<Item = &Deployment> {
+    deployments
+        .iter()
+        .take_while(|d| d.result != Some(DeploymentResult::Succeeded))
+        .filter(|d| {
+            d.result == Some(DeploymentResult::Interrupted) && d.action == DeploymentAction::Deploy
+        })
+}
+
+/// Whether an operation interrupted in `phase` may have changed what Docker
+/// runs: in `deploying` and `verifying` the new containers have started to
+/// replace the old in place; before that nothing in Docker changed (Human,
+/// 2026-11-28).
+pub fn part_way(phase: OperationPhase) -> bool {
+    matches!(phase, OperationPhase::Deploying | OperationPhase::Verifying)
+}
+
+/// The command that puts an interrupted environment right: `ship redeploy`
+/// of the release that served before it, when there is one; `ship push
+/// --recreate` for an environment still removed; else `ship push`, since
+/// there is nothing to redeploy. `--env` is added outside `development`.
+pub fn recovery_command(
+    project: &Project,
+    environment: &Environment,
+    deployments: &[Deployment],
+) -> String {
+    let env = if environment.name.as_str() == ship_store::DEVELOPMENT {
+        String::new()
+    } else {
+        format!(" --env {}", environment.name.as_str())
+    };
+    let serving = deployments
+        .iter()
+        .find(|d| d.result == Some(DeploymentResult::Succeeded))
+        .filter(|d| d.action == DeploymentAction::Deploy);
+    if environment.desired_state == DesiredState::Removed {
+        format!("ship push --project {}{env} --recreate", project.slug)
+    } else if serving.is_some() {
+        format!("ship redeploy {}{env}", project.slug)
+    } else {
+        format!("ship push --project {}{env}", project.slug)
+    }
+}
+
+/// The interruption `ship status` reports for `environment`, if any.
+pub async fn interruption(
+    store: &Store,
+    project: &Project,
+    environment: &Environment,
+    deployments: &[Deployment],
+) -> Result<Option<InterruptionView>, StoreError> {
+    for d in interruption_candidates(deployments) {
+        let op = store.get_operation(d.operation_id).await?;
+        if let Some(phase) = op.failure_phase.filter(|p| part_way(*p)) {
+            return Ok(Some(InterruptionView {
+                deployment_id: d.id,
+                operation_id: d.operation_id,
+                release_id: d.release_id,
+                phase: phase.as_str().to_owned(),
+                command: recovery_command(project, environment, deployments),
+            }));
+        }
+    }
+    Ok(None)
 }
 
 /// The status of `environment` of `project`: its services observed now
@@ -48,6 +118,7 @@ pub async fn status_view(
         started_at: d.started_at,
         ended_at: d.ended_at,
     });
+    let interruption = interruption(store, project, environment, &deployments).await?;
     let observed = observe(store, docker, environment).await?;
     let stale = crate::config::stale_services(store, state_dir, environment).await?;
     let routes = store.list_routes(environment.id).await?;
@@ -94,6 +165,7 @@ pub async fn status_view(
             desired_state: environment.desired_state.as_str().to_owned(),
         },
         last_deployment,
+        interruption,
         services,
     })
 }
@@ -213,6 +285,104 @@ mod tests {
         // Nothing succeeded yet: the latest, whatever its result.
         let list = [deployment(2, None), deployment(1, Some(Failed))];
         assert_eq!(reported(&list).unwrap().id, list[0].id);
+    }
+
+    fn action(mut d: Deployment, action: DeploymentAction) -> Deployment {
+        d.action = action;
+        d
+    }
+
+    #[test]
+    fn only_interruptions_after_the_last_success_are_candidates() {
+        use DeploymentResult::*;
+        let ids = |list: &[Deployment]| -> Vec<DeploymentId> {
+            interruption_candidates(list).map(|d| d.id).collect()
+        };
+        assert!(ids(&[]).is_empty());
+        let list = [
+            deployment(4, Some(Failed)),
+            deployment(3, Some(Interrupted)),
+            deployment(2, Some(Interrupted)),
+            deployment(1, Some(Succeeded)),
+        ];
+        assert_eq!(ids(&list), [list[1].id, list[2].id]);
+        // A success after the interruption settles it.
+        let list = [
+            deployment(2, Some(Succeeded)),
+            deployment(1, Some(Interrupted)),
+        ];
+        assert!(ids(&list).is_empty());
+        // So does a removal.
+        let list = [
+            action(deployment(2, Some(Succeeded)), DeploymentAction::Remove),
+            deployment(1, Some(Interrupted)),
+        ];
+        assert!(ids(&list).is_empty());
+        // Still running: not interrupted.
+        assert!(ids(&[deployment(1, None)]).is_empty());
+    }
+
+    #[test]
+    fn only_deploying_and_verifying_are_part_way() {
+        use OperationPhase::*;
+        for phase in [Deploying, Verifying] {
+            assert!(part_way(phase), "{phase}");
+        }
+        for phase in [
+            Queued, Validating, Uploading, Building, Preparing, Succeeded,
+        ] {
+            assert!(!part_way(phase), "{phase}");
+        }
+    }
+
+    #[test]
+    fn the_recovery_command_names_what_works() {
+        use DeploymentResult::*;
+        let project = Project {
+            id: ship_core::ProjectId::from_parts(1, 1).unwrap(),
+            slug: ship_core::Slug::parse("app").unwrap(),
+            created_at: Timestamp::from_unix_millis(0).unwrap(),
+        };
+        let env = |name: &str, desired| Environment {
+            id: EnvironmentId::from_parts(1, 1).unwrap(),
+            project_id: project.id,
+            name: ship_core::Slug::parse(name).unwrap(),
+            desired_state: desired,
+            recovery_policy: ship_core::RecoveryPolicy::ObserveOnly,
+            created_at: Timestamp::from_unix_millis(0).unwrap(),
+        };
+        let dev = env("development", DesiredState::Running);
+        let served = [
+            deployment(2, Some(Interrupted)),
+            deployment(1, Some(Succeeded)),
+        ];
+        assert_eq!(
+            recovery_command(&project, &dev, &served),
+            "ship redeploy app"
+        );
+        assert_eq!(
+            recovery_command(&project, &env("staging", DesiredState::Running), &served),
+            "ship redeploy app --env staging"
+        );
+        // Nothing to redeploy: push again.
+        let first = [deployment(1, Some(Interrupted))];
+        assert_eq!(
+            recovery_command(&project, &dev, &first),
+            "ship push --project app"
+        );
+        // Interrupted while recreating a removed environment.
+        let removed = [
+            deployment(2, Some(Interrupted)),
+            action(deployment(1, Some(Succeeded)), DeploymentAction::Remove),
+        ];
+        assert_eq!(
+            recovery_command(
+                &project,
+                &env("development", DesiredState::Removed),
+                &removed
+            ),
+            "ship push --project app --recreate"
+        );
     }
 
     #[test]

@@ -14,7 +14,7 @@ API may change at any time.
 |---|---|---|---|
 | `ship host -o json` | one object | `host.json` | Phase 0 |
 | `ship projects -o json` | one object | `projects-empty.json`, `projects.json` | Phase 0; `environments` since Phase 1 |
-| `ship status PROJECT -o json` | one object | `status.json`, `status-never-deployed.json` | Phase 1 |
+| `ship status PROJECT -o json` | one object | `status.json`, `status-never-deployed.json`, `status-interrupted.json` | Phase 1 |
 | `ship deployments PROJECT -o json` | one object, newest first | `deployments.json` | Phase 1 |
 | `ship logs PROJECT[/SERVICE] -o json` | one object per line | `logs.jsonl` | Phase 1 |
 | `ship push --wait -o json` | one object per line, the last with `"type": "result"` | `push-wait-succeeded.jsonl`, `push-wait-failed.jsonl` | Phase 1 |
@@ -50,6 +50,30 @@ gained, on purpose:
   `status` derives from the one that applies, so a service stopped on
   purpose is `stopped`, never `failed`.
 
+On 2026-11-28 (phase-1-ws-1.14) `status.json` gained `interruption`, on
+purpose, with the new fixture `status-interrupted.json`. It is `null`
+unless a daemon restart cut a deployment short in `deploying` or
+`verifying` and nothing has succeeded since. The daemon takes no Docker
+action when it starts again (ADR-0006 rule 11), so by then the new
+containers may already run in place of the old: `services` shows what
+Docker runs, `last_deployment` stays the last one that succeeded, and
+`interruption` names the deployment, its operation, the release it was
+bringing up (`null` if none was recorded), the `phase` it was cut short
+in, and `command`, the command that puts it right: `ship redeploy
+PROJECT`, which deploys the last good revision again; `ship push
+--project PROJECT` when nothing ever succeeded; `ship push --project
+PROJECT --recreate` when the environment was being recreated after a
+removal. `--env E` is added outside `development`. A deployment cut short
+in `building` or `preparing` changed nothing in Docker: the previous
+release still serves, it shows as `interrupted` in `ship deployments`,
+and `interruption` stays `null`.
+
+The address `192.0.2.10` in the fixtures is a documentation example
+(RFC 5737) standing for the host's configured publish address
+(`publish.address`): the tailnet address under `auto` when the host is on
+a tailnet, else `127.0.0.1`, or the address fixed with `ship settings set
+publish.address ADDR`.
+
 ## Rules for every shape
 
 - Ids are strings with a type prefix. Timestamps are ISO 8601, UTC, with
@@ -81,7 +105,7 @@ the same.
 | 90 | `daemon_unreachable` | No daemon answered on the target | untouched |
 | 91 | `version_mismatch` | Client and daemon API versions are incompatible | untouched |
 | 92 | `docker_unavailable` | The host's Docker Engine or Compose is unreachable or unsupported | untouched |
-| 93 | `interrupted` | The daemon stopped during the operation; it is never resumed | untouched |
+| 93 | `interrupted` | The daemon stopped during the operation; it is never resumed | untouched if it stopped before `deploying`; else possibly replaced in part, and `ship status` names the command that puts it right |
 | 94 | `connection_lost` | The client lost the daemon while waiting; the operation continues and can be followed by its id | unknown |
 | 99 | `internal` | Any other Ship failure | untouched |
 

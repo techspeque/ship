@@ -18,8 +18,9 @@ use std::path::{Path, PathBuf};
 
 use ship_core::api::{
     DeploymentFailureView, DeploymentList, DeploymentView, EndpointView, EnvironmentView,
-    LastDeploymentView, LogLineView, OperationEventView, OperationFailureView, OperationView,
-    ProjectRef, SecretList, SecretView, ServiceStatusView, StatusView, VarList, VarView,
+    InterruptionView, LastDeploymentView, LogLineView, OperationEventView, OperationFailureView,
+    OperationView, ProjectRef, SecretList, SecretView, ServiceStatusView, StatusView, VarList,
+    VarView,
 };
 use ship_core::{
     ApiError, ConfigScope, DeploymentAction, DeploymentResult, DesiredState, DockerInfo,
@@ -128,7 +129,8 @@ const REL_OLD: &str = "rel_01aryz6s41tsv4rrffq69g5faw";
 const REV: &str = "rev_01aryz6s41tsv4rrffq69g5fav";
 
 /// `ship status`: a deployed environment with a healthy service and one
-/// stopped on purpose with stale config, and one never deployed.
+/// stopped on purpose with stale config, one whose deployment a daemon
+/// restart interrupted while verifying, and one never deployed.
 fn status_samples() -> Vec<(&'static str, StatusView)> {
     let project = ProjectRef {
         id: "prj_01aryz6s41tsv4rrffq69g5fav".parse().unwrap(),
@@ -154,6 +156,7 @@ fn status_samples() -> Vec<(&'static str, StatusView)> {
                     started_at: ts(1_767_323_045_000),
                     ended_at: Some(ts(1_767_323_085_000)),
                 }),
+                interruption: None,
                 services: vec![
                     ServiceStatusView {
                         id: "svc_01aryz6s41tsv4rrffq69g5fav".parse().unwrap(),
@@ -184,11 +187,46 @@ fn status_samples() -> Vec<(&'static str, StatusView)> {
             },
         ),
         (
+            "status-interrupted",
+            StatusView {
+                project: project.clone(),
+                environment: environment.clone(),
+                last_deployment: Some(LastDeploymentView {
+                    id: "dep_01aryz6s41tsv4rrffq69g5fav".parse().unwrap(),
+                    action: "deploy".to_owned(),
+                    release_id: Some(REL_OLD.parse().unwrap()),
+                    operation_id: OP.parse().unwrap(),
+                    result: Some("succeeded".to_owned()),
+                    started_at: ts(1_767_323_045_000),
+                    ended_at: Some(ts(1_767_323_085_000)),
+                }),
+                interruption: Some(InterruptionView {
+                    deployment_id: "dep_01aryz6s41tsv4rrffq69g5faw".parse().unwrap(),
+                    operation_id: OP_FAILED.parse().unwrap(),
+                    release_id: Some(REL.parse().unwrap()),
+                    phase: "verifying".to_owned(),
+                    command: "ship redeploy my-app".to_owned(),
+                }),
+                services: vec![ServiceStatusView {
+                    id: "svc_01aryz6s41tsv4rrffq69g5fav".parse().unwrap(),
+                    name: "web".to_owned(),
+                    kind: "web".to_owned(),
+                    desired_state: "running".to_owned(),
+                    status: "running_unverified".to_owned(),
+                    restarts: 0,
+                    observed_at: ts(1_767_323_100_000),
+                    stale_config: false,
+                    endpoints: vec![],
+                }],
+            },
+        ),
+        (
             "status-never-deployed",
             StatusView {
                 project,
                 environment,
                 last_deployment: None,
+                interruption: None,
                 services: vec![],
             },
         ),

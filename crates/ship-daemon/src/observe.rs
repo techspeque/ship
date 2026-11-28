@@ -133,8 +133,11 @@ pub async fn observe_all(store: &Store, docker: &Runner) -> Result<(), StoreErro
     Ok(())
 }
 
-/// Observes every environment every `interval` until `closing` is set or
-/// dropped. A failed round is logged and the next one runs as usual.
+/// Observes every environment at once, then every `interval`, until
+/// `closing` is set or dropped. The first round is how a daemon start
+/// rebuilds observed state from Ship's labelled containers, with no
+/// operator action and nothing reconciled (ADR-0006 rule 11). A failed
+/// round is logged and the next one runs as usual.
 pub fn spawn_observer(
     store: Store,
     docker: Runner,
@@ -142,14 +145,16 @@ pub fn spawn_observer(
     mut closing: watch::Receiver<bool>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
+        let mut wait = Duration::ZERO;
         loop {
             tokio::select! {
-                _ = tokio::time::sleep(interval) => {}
+                _ = tokio::time::sleep(wait) => {}
                 changed = closing.wait_for(|c| *c) => {
                     let _ = changed;
                     return;
                 }
             }
+            wait = interval;
             if let Err(e) = observe_all(&store, &docker).await {
                 tracing::error!(error = %e, "observing the environments failed");
             }
