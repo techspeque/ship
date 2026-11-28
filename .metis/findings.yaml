@@ -601,9 +601,12 @@ findings:
       severity: P2
       category: behavior
       finding: 'crates/ship-daemon/src/recovery.rs:57 — Cleanup selects only deployments with no result, then persists Interrupted before removing staging (lines 65–77). If recovery dies or deletion fails after that write, later starts never retry the leftover release directory or env files. Reproduced with a marked unrecorded release: deny directory writes for the first recover, restore permissions, run recover again; the second reports zero work and staging remains. Retain durable cleanup eligibility until deletion succeeds, including across interrupted recovery, and add a regression test for retry after a temporary cleanup failure.'
-      status: open
+      status: resolved
+      resolved_by: commit a82fb631d897; test staging_whose_removal_failed_in_the_trash_is_removed_by_the_next_start
       cycle: 1
       file: crates/ship-daemon/src/recovery.rs
+      commit: a82fb631d897c65e5085daf75b6ee9195b5ade28
+      evidence: test staging_whose_removal_failed_in_the_trash_is_removed_by_the_next_start
     - id: f-052
       date: "2026-11-28"
       slice: phase-1-ws-1.14
