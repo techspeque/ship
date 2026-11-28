@@ -209,8 +209,11 @@ findings:
       severity: P2
       category: behavior
       finding: 'crates/ship/src/service.rs:607 and scripts/install.sh:251-252: an in-place upgrade that follows what install.sh prints (sudo install to /usr/local/bin, then sudo ship service install) leaves the old daemon running: the unit is unchanged, so install prints only ''Start the daemon: sudo systemctl start ship'', a no-op for a running service. Gate run 2, gate host A: binary 0.0.2 on disk, daemon still 0.0.1 (ship host version 0.0.1). docs/service.md:48-50 says to restart; neither printed hint does. Required: install.sh and service install name ''sudo systemctl restart ship'' when a daemon is already running.'
-      status: advisory
+      status: resolved
+      resolved_by: 'commit 412ecf14adb3; test daemon_on_another_version_is_told_to_restart; install.sh restart_hint and ship host Client: line in the same commit; selftest cases in scripts/install-selftest.sh'
       file: crates/ship/src/service.rs
+      commit: 412ecf14adb311f129fd07b0dbe35c248bd0be61
+      evidence: test daemon_on_another_version_is_told_to_restart
     - id: f-019
       date: "2026-11-27"
       slice: phase-0-gate
