@@ -14,6 +14,10 @@ slices:
       reviewed: false
       review_cycles: 0
       created: ""
+      waiting:
+        reason: 'Plan §1.12 wants start/stop/restart/redeploy/remove on one service, but desired state is per environment only (schema, OVERVIEW §2.2, ADR-0006 r1), so ''stop P/S'' would show the service failed (exit 143) and a release/Compose project is per environment: (a) add a per-service desired state (new migration 0005 + status derivation) and support /SERVICE for all five, (b) /SERVICE for start/stop/restart only with a per-service desired state, redeploy/remove project-level only, or (c) project-level only in Phase 1?'
+        since: "2026-11-28T09:35:43Z"
+        human: true
     - id: phase-1-ws-1.13
       title: UI for projects, services and logs
       type: feat
