@@ -556,3 +556,12 @@ findings:
       status: open
       cycle: 1
       file: crates/ship-daemon/src/lifecycle.rs
+    - id: f-048
+      date: "2026-11-28"
+      slice: phase-1-ws-1.12
+      severity: P2
+      category: behavior
+      finding: crates/ship-daemon/src/lifecycle.rs:172 — The audit call is skipped by every action error, including stop after desired_state has already been persisted. A focused test with a Docker label-check failure leaves the environment stopped with zero stop audit events, violating the brief requirement of one audit event per action. Record the stop intent/mutation even when its Docker step fails, without duplicating successful-action audits, and test project and service failures.
+      status: open
+      cycle: 1
+      file: crates/ship-daemon/src/lifecycle.rs
