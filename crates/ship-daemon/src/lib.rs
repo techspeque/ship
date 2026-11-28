@@ -12,7 +12,9 @@
 //! serves the router in [`http`] (uploads, [`deploy`]ments, [`push`]es,
 //! [`settings`] and [`config`] values and secrets among its routes), with
 //! the embedded UI ([`ui`]) as its
-//! fallback; [`Running::shutdown`] stops it; [`run`] does both around
+//! fallback; it also starts the interval [`observe`]r. [`status`] and
+//! [`logs`] serve `ship status`, `ship deployments`, `ship projects` and
+//! `ship logs`. [`Running::shutdown`] stops it; [`run`] does both around
 //! SIGTERM/SIGINT.
 //! `ship daemon` is supported on Linux only (ADR-0002 rule 2); that check
 //! belongs to the `ship` binary, so this library builds and tests on any
@@ -24,10 +26,13 @@ pub mod deploy;
 pub mod host;
 pub mod http;
 pub mod log;
+pub mod logs;
+pub mod observe;
 pub mod push;
 pub mod queue;
 pub mod secrets;
 pub mod settings;
+pub mod status;
 pub mod ui;
 pub mod upload;
 
@@ -88,6 +93,9 @@ pub struct Config {
     /// Where `publish.address auto` finds the host's tailnet address; the
     /// host's `tailscale` CLI by default.
     pub tailnet: Arc<dyn TailnetAddress>,
+    /// Time between two observations of every environment by the interval
+    /// observer ([`observe::spawn_observer`]).
+    pub observe_interval: Duration,
 }
 
 impl Config {
@@ -103,6 +111,7 @@ impl Config {
             upload_limits: UnpackLimits::default(),
             deploy: DeploySettings::default(),
             tailnet: Arc::new(TailscaleCli::default()),
+            observe_interval: observe::DEFAULT_INTERVAL,
         }
     }
 }
@@ -147,6 +156,7 @@ pub struct Running {
     /// Fails every open connection's I/O once the drain deadline passes.
     kill: watch::Sender<bool>,
     servers: Vec<JoinHandle<io::Result<()>>>,
+    observer: JoinHandle<()>,
 }
 
 impl fmt::Debug for Running {
@@ -248,6 +258,12 @@ pub async fn start(config: &Config) -> Result<Running, DaemonError> {
         uploads,
         Arc::new(deployer),
     );
+    let observer = observe::spawn_observer(
+        store.clone(),
+        config.docker.clone(),
+        config.observe_interval,
+        queue.subscribe_closing(),
+    );
     let (stop, stopped) = watch::channel(false);
     let (kill, killed) = watch::channel(false);
     let servers = vec![
@@ -273,6 +289,7 @@ pub async fn start(config: &Config) -> Result<Running, DaemonError> {
         stop,
         kill,
         servers,
+        observer,
     })
 }
 
@@ -298,7 +315,8 @@ impl Running {
     }
 
     /// Stops the operation queue (running jobs are aborted and left for
-    /// the next start to mark `interrupted`; event streams end), stops
+    /// the next start to mark `interrupted`; event streams end) and the
+    /// interval observer, stops
     /// accepting, drains open connections on both listeners for up to
     /// 10 s in total, closes whatever is still open and waits for those
     /// connections to end, closes the database and removes the socket file.
@@ -310,9 +328,13 @@ impl Running {
             stop,
             kill,
             servers,
+            observer,
             ..
         } = self;
         queue.shutdown().await;
+        // Before the store closes: a round in progress is abandoned.
+        observer.abort();
+        let _ = observer.await;
         let _ = stop.send(true);
         // One deadline for every listener, not one per listener.
         let deadline = tokio::time::Instant::now() + DRAIN_TIMEOUT;

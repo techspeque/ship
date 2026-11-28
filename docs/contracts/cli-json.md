@@ -13,7 +13,7 @@ API may change at any time.
 | Command | Output | Fixture | Since |
 |---|---|---|---|
 | `ship host -o json` | one object | `host.json` | Phase 0 |
-| `ship projects -o json` | one object | `projects-empty.json` | Phase 0 |
+| `ship projects -o json` | one object | `projects-empty.json`, `projects.json` | Phase 0; `environments` since Phase 1 |
 | `ship status PROJECT -o json` | one object | `status.json`, `status-never-deployed.json` | Phase 1 |
 | `ship deployments PROJECT -o json` | one object, newest first | `deployments.json` | Phase 1 |
 | `ship logs PROJECT[/SERVICE] -o json` | one object per line | `logs.jsonl` | Phase 1 |
@@ -22,6 +22,18 @@ API may change at any time.
 The four Phase 1 fixtures were written before the code, on 2026-11-27, to
 fix the shapes Gaia's adapter is planned against. The Phase 1 slices make
 the output match them or change them on purpose.
+
+`projects.json` was added on 2026-11-28 (phase-1-ws-1.11): each project
+gains `environments`, each with its `desired_state` and `status`, the
+overall status of its services as Docker reports them now (the one most
+in need of attention: `unknown`, `failed`, `unhealthy`, `starting`,
+`paused`, `stopped`, `running_unverified`, `healthy`), `null` when it has
+no service.
+
+`ship status`'s `last_deployment` is the deployment serving now, the
+latest that succeeded, so a later failure leaves it visible; before any
+success it is the latest deployment, whatever its result. `ship
+deployments` lists every deployment, failures included.
 
 ## Rules for every shape
 

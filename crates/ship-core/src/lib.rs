@@ -82,8 +82,9 @@ pub mod time;
 pub mod trust;
 
 pub use api::{
-    API_PREFIX, API_VERSION, API_VERSION_HEADER, DockerInfo, DockerStatus, HostCapacity, HostInfo,
-    ProjectList, ProjectSummary, SHIP_VERSION_HEADER, SupportedVersions, api_version_number,
+    API_PREFIX, API_VERSION, API_VERSION_HEADER, DockerInfo, DockerStatus, EnvironmentSummary,
+    HostCapacity, HostInfo, ProjectList, ProjectSummary, SHIP_VERSION_HEADER, SupportedVersions,
+    api_version_number,
 };
 pub use compose::compose_project_name;
 pub use config::ConfigScope;

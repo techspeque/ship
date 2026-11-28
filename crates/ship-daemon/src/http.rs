@@ -30,8 +30,7 @@ use ship_core::api::{
 use ship_core::config as config_rules;
 use ship_core::{
     API_VERSION, API_VERSION_HEADER, ApiError, EnvironmentId, ErrorCode, HostInfo, OperationId,
-    OperationPhase, ProjectList, ProjectSummary, ReceivedCode, SHIP_VERSION_HEADER, SecretValue,
-    Slug,
+    OperationPhase, ReceivedCode, SHIP_VERSION_HEADER, SecretValue, Slug,
 };
 use ship_docker::Runner;
 use ship_store::{
@@ -44,8 +43,13 @@ use crate::upload::Uploads;
 
 /// `POST`: a snapshot upload, answered with [`UploadView`].
 const UPLOADS_ROUTE: &str = "/api/v1/projects/{project}/uploads";
-/// `POST`: a deployment of a revision, answered `202` with its operation.
+/// `POST`: a deployment of a revision, answered `202` with its operation;
+/// `GET`: the environment's deployments, newest first.
 const DEPLOYMENTS_ROUTE: &str = "/api/v1/projects/{project}/deployments";
+/// `GET`: an environment's status (ADR-0006).
+const STATUS_ROUTE: &str = "/api/v1/projects/{project}/status";
+/// `GET`: the services' logs as NDJSON ([`crate::logs`]).
+const LOGS_ROUTE: &str = "/api/v1/projects/{project}/logs";
 /// `POST`: `ship push`, an upload and its deployment as one operation.
 const PUSHES_ROUTE: &str = "/api/v1/projects/{project}/pushes";
 /// `GET`: the deployment an operation recorded.
@@ -131,7 +135,9 @@ pub fn router_with(
         .route(HOST_PATH, get(host_info))
         .route(PROJECTS_PATH, get(projects))
         .route(UPLOADS_ROUTE, post(upload))
-        .route(DEPLOYMENTS_ROUTE, post(deploy))
+        .route(DEPLOYMENTS_ROUTE, get(deployments).post(deploy))
+        .route(STATUS_ROUTE, get(status))
+        .route(LOGS_ROUTE, get(logs))
         .route(PUSHES_ROUTE, post(push))
         .route(SETTING_ROUTE, get(setting).post(set_setting))
         .route(
@@ -599,19 +605,11 @@ async fn host_info(State(state): State<AppState>) -> Json<HostInfo> {
     Json(info)
 }
 
+/// Every project with its environments and their overall status, observed
+/// now ([`crate::status::project_list`]).
 async fn projects(State(state): State<AppState>) -> Response {
-    match state.store.list_projects().await {
-        Ok(list) => Json(ProjectList {
-            projects: list
-                .into_iter()
-                .map(|p| ProjectSummary {
-                    id: p.id,
-                    slug: p.slug,
-                    created_at: p.created_at,
-                })
-                .collect(),
-        })
-        .into_response(),
+    match crate::status::project_list(&state.store, state.deployer.docker()).await {
+        Ok(list) => Json(list).into_response(),
         Err(e) => {
             tracing::error!(error = %e, "listing projects failed");
             error_response(ApiError::new(
@@ -620,6 +618,75 @@ async fn projects(State(state): State<AppState>) -> Response {
             ))
         }
     }
+}
+
+// ---- status, deployments and logs ----
+
+/// The project and environment a status or deployments request names, or
+/// the error answer: `400` for a bad query or slug, `404` for none.
+async fn find_environment(
+    state: &AppState,
+    project: &str,
+    uri: &Uri,
+) -> Result<(Project, ship_store::Environment), Response> {
+    let env = crate::status::env_of(uri.query()).map_err(error_response)?;
+    let scope = crate::config::find_scope(&state.store, project, Some(&env), None)
+        .await
+        .map_err(error_response)?;
+    match scope.environment {
+        Some(environment) => Ok((scope.project, environment)),
+        None => Err(error_response(ApiError::new(
+            ErrorCode::Internal,
+            "no environment",
+        ))),
+    }
+}
+
+/// `ship status`: [`crate::status::status_view`].
+async fn status(State(state): State<AppState>, Path(project): Path<String>, uri: Uri) -> Response {
+    let (project, environment) = match find_environment(&state, &project, &uri).await {
+        Ok(found) => found,
+        Err(r) => return r,
+    };
+    match crate::status::status_view(
+        &state.store,
+        state.deployer.docker(),
+        state.deployer.state_dir(),
+        &project,
+        &environment,
+    )
+    .await
+    {
+        Ok(view) => Json(view).into_response(),
+        Err(e) => database_error(&e),
+    }
+}
+
+/// `ship deployments`: [`crate::status::deployment_list`].
+async fn deployments(
+    State(state): State<AppState>,
+    Path(project): Path<String>,
+    uri: Uri,
+) -> Response {
+    let (_, environment) = match find_environment(&state, &project, &uri).await {
+        Ok(found) => found,
+        Err(r) => return r,
+    };
+    match crate::status::deployment_list(&state.store, &environment).await {
+        Ok(list) => Json(list).into_response(),
+        Err(e) => database_error(&e),
+    }
+}
+
+/// `ship logs`: [`crate::logs::handle`].
+async fn logs(State(state): State<AppState>, Path(project): Path<String>, uri: Uri) -> Response {
+    let cx = crate::logs::LogsContext {
+        store: &state.store,
+        docker: state.deployer.docker(),
+        redactor: state.queue.redactor(),
+        closing: state.queue.subscribe_closing(),
+    };
+    crate::logs::handle(cx, &project, uri.query()).await
 }
 
 // ---- uploads ----

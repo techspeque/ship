@@ -17,8 +17,8 @@
 use std::path::{Path, PathBuf};
 
 use ship_core::{
-    ApiError, DockerInfo, DockerStatus, ErrorCode, HostCapacity, HostInfo, ProjectList,
-    ProjectSummary, ServiceStatus, Slug, SupportedVersions, Timestamp,
+    ApiError, DockerInfo, DockerStatus, EnvironmentSummary, ErrorCode, HostCapacity, HostInfo,
+    ProjectList, ProjectSummary, ServiceStatus, Slug, SupportedVersions, Timestamp,
 };
 
 fn contract_dir() -> PathBuf {
@@ -146,6 +146,12 @@ fn samples() -> Vec<(String, String)> {
                 id: "prj_01aryz6s41tsv4rrffq69g5fav".parse().unwrap(),
                 slug: Slug::parse("my-app").unwrap(),
                 created_at: Timestamp::from_unix_millis(1_469_918_176_385).unwrap(),
+                environments: vec![EnvironmentSummary {
+                    id: "env_01aryz6s41tsv4rrffq69g5fav".parse().unwrap(),
+                    name: "development".to_owned(),
+                    desired_state: "running".to_owned(),
+                    status: Some("running_unverified".to_owned()),
+                }],
             }],
         }),
     ));

@@ -10,6 +10,7 @@ mod config;
 mod error;
 mod history;
 mod migrate;
+mod observation;
 mod repo;
 mod route;
 mod settings;
@@ -27,6 +28,7 @@ pub use config::{ConfigTarget, ConfigValue, SecretRecord};
 pub use error::StoreError;
 pub use history::{Deployment, NewDeployment, NewRelease, NewRevision, Release, Revision};
 pub use migrate::{LATEST_VERSION, OpenReport};
+pub use observation::{NewObservation, StoredObservation};
 pub use repo::{
     CreatedOperation, DEVELOPMENT, EnsuredProject, Environment, NewEnvironment, NewEvent,
     NewOperation, NewService, Operation, OperationEvent, OperationFailure, Project, Service,

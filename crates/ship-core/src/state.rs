@@ -159,6 +159,29 @@ impl ServiceStatus {
             }
         }
     }
+
+    /// How much a status needs the operator's attention; `0` is the most.
+    /// Order: `unknown`, `failed`, `unhealthy`, `starting`, `paused`,
+    /// `stopped`, `running_unverified`, `healthy`.
+    pub fn severity(self) -> u8 {
+        match self {
+            ServiceStatus::Unknown => 0,
+            ServiceStatus::Failed => 1,
+            ServiceStatus::Unhealthy => 2,
+            ServiceStatus::Starting => 3,
+            ServiceStatus::Paused => 4,
+            ServiceStatus::Stopped => 5,
+            ServiceStatus::RunningUnverified => 6,
+            ServiceStatus::Healthy => 7,
+        }
+    }
+
+    /// The overall status of several (services of an environment, or
+    /// containers of a service): the one of least [`severity`](Self::severity),
+    /// so it is `healthy` only when every one is. `None` for none.
+    pub fn overall(statuses: impl IntoIterator<Item = ServiceStatus>) -> Option<ServiceStatus> {
+        statuses.into_iter().min_by_key(|s| s.severity())
+    }
 }
 
 /// What Docker reported for a service that is `failed`.
@@ -505,6 +528,44 @@ mod tests {
                 // Reachable Docker never yields `unknown`.
                 assert_ne!(got, S::Unknown, "{obs:?} {desired}");
             }
+        }
+    }
+
+    #[test]
+    fn severity_orders_every_status_once() {
+        use ServiceStatus as S;
+        let order = [
+            S::Unknown,
+            S::Failed,
+            S::Unhealthy,
+            S::Starting,
+            S::Paused,
+            S::Stopped,
+            S::RunningUnverified,
+            S::Healthy,
+        ];
+        assert_eq!(order.len(), S::ALL.len());
+        for (i, s) in order.iter().enumerate() {
+            assert_eq!(usize::from(s.severity()), i, "{s}");
+        }
+    }
+
+    #[test]
+    fn overall_is_the_worst() {
+        use ServiceStatus as S;
+        assert_eq!(S::overall([]), None);
+        assert_eq!(S::overall([S::Healthy, S::Healthy]), Some(S::Healthy));
+        assert_eq!(
+            S::overall([S::Healthy, S::RunningUnverified]),
+            Some(S::RunningUnverified)
+        );
+        assert_eq!(
+            S::overall([S::Healthy, S::Stopped, S::Failed]),
+            Some(S::Failed)
+        );
+        for &s in S::ALL {
+            assert_eq!(S::overall([s, S::Unknown]), Some(S::Unknown), "{s}");
+            assert_eq!(S::overall([S::Healthy, s]), Some(s), "{s}");
         }
     }
 

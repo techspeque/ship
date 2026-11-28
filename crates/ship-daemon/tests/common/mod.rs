@@ -30,6 +30,7 @@ pub fn config(dir: &Path) -> Config {
         deploy: DeploySettings::default(),
         // No test asks the developer's own tailnet.
         tailnet: std::sync::Arc::new(ship_net::StaticTailnet(None)),
+        observe_interval: ship_daemon::observe::DEFAULT_INTERVAL,
     }
 }
 

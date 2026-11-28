@@ -109,6 +109,7 @@ describe('projectsView', () => {
             id: 'prj_01aryz6s41tsv4rrffq69g5fav',
             slug: 'my-app',
             created_at: '2016-07-30T22:36:16.385Z',
+            environments: [],
           },
         ],
       },

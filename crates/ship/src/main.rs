@@ -2,7 +2,8 @@
 //!
 //! Phase 0: `--version` / `-V`, `ship daemon`, `ship target`, `ship host`,
 //! `ship projects`, `ship open`, `ship dial-stdio` and `ship service`.
-//! Phase 1: `ship push`, `ship settings`, `ship vars` and `ship secrets`.
+//! Phase 1: `ship push`, `ship settings`, `ship vars`, `ship secrets`,
+//! `ship status`, `ship deployments` and `ship logs`.
 //! Exit codes: 0 success, 1
 //! failure, 2 usage error; `ship push` has the contract's codes
 //! ([`exit`]).
@@ -16,6 +17,7 @@ mod open;
 mod push;
 mod service;
 mod settings;
+mod status;
 mod vars;
 
 use std::path::PathBuf;
@@ -57,8 +59,16 @@ enum Command {
     Target(commands::TargetCommand),
     /// Show the current target's host and Docker status.
     Host(commands::HostArgs),
-    /// List the projects on the current target.
+    /// List the projects on the current target, each environment with
+    /// what was asked of it and its services' overall status.
     Projects(commands::ProjectsArgs),
+    /// Show a project's environment: what was asked, what the last
+    /// deployment did, and what Docker reports for each service now.
+    Status(status::StatusArgs),
+    /// List a project's deployments, newest first, with each failure.
+    Deployments(status::DeploymentsArgs),
+    /// Print the logs of a project's services, stdout and stderr apart.
+    Logs(status::LogsArgs),
     /// Send a directory, uncommitted changes included, to the target's
     /// daemon, build it, start it and print its address.
     Push(push::PushArgs),
@@ -215,6 +225,9 @@ fn main() -> ExitCode {
         Some(Command::Target(command)) => commands::target(command),
         Some(Command::Host(args)) => commands::host(args),
         Some(Command::Projects(args)) => commands::projects(args),
+        Some(Command::Status(args)) => status::status(args),
+        Some(Command::Deployments(args)) => status::deployments(args),
+        Some(Command::Logs(args)) => status::logs(args),
         Some(Command::Push(args)) => push::push(args),
         Some(Command::Settings(command)) => settings::settings(command),
         Some(Command::Vars(command)) => vars::vars(command),

@@ -58,11 +58,22 @@ export interface HostInfo {
   capacity: HostCapacity;
 }
 
+/** One environment of a project, `ship_core::api::EnvironmentSummary`. */
+export interface EnvironmentSummary {
+  id: string;
+  name: string;
+  /** What the operator asked for: `running`, `stopped` or `removed`. */
+  desired_state: string;
+  /** The overall status of its services now; `null` with no service. */
+  status: ServiceStatus | null;
+}
+
 export interface ProjectSummary {
   id: string;
   slug: string;
   /** RFC 3339, UTC, millisecond precision. */
   created_at: string;
+  environments: EnvironmentSummary[];
 }
 
 export interface ProjectList {
@@ -134,8 +145,21 @@ export function isHostInfo(v: unknown): v is HostInfo {
   });
 }
 
+const isEnvironmentSummary: Check = (v) =>
+  exact(v, {
+    id: isString,
+    name: isString,
+    desired_state: isString,
+    status: (s) => s === null || isServiceStatus(s),
+  });
+
 const isProjectSummary: Check = (v) =>
-  exact(v, { id: isString, slug: isString, created_at: isString });
+  exact(v, {
+    id: isString,
+    slug: isString,
+    created_at: isString,
+    environments: (e) => Array.isArray(e) && e.every(isEnvironmentSummary),
+  });
 
 export function isProjectList(v: unknown): v is ProjectList {
   return exact(v, {

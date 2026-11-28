@@ -101,6 +101,7 @@ Docker unreachable makes every service `unknown` and changes nothing else.
   - crates/ship/tests/fixtures/projects.json
   - docs/contracts/cli-json.md
   - web/src/lib/api.ts
+  - web/src/lib/view.test.ts
   - web/src/lib/contract/
   - Cargo.lock
   - .metis/briefs/phase-1-ws-1.11.md
@@ -108,41 +109,42 @@ Docker unreachable makes every service `unknown` and changes nothing else.
   OVERVIEW.md, crates/ship/tests/fixtures/ (other than `projects.json`),
   crates/ship-store/migrations/, crates/ship-docker/, crates/ship-net/,
   crates/ship-daemon/tests/ (other than the two above), web/src/ (other
-  than the two above)
+  than the three above)
 
 ## Definition of Done
 
-- [ ] `ship status -o json`, `ship deployments -o json` and `ship logs -o json`
+- [x] `ship status -o json`, `ship deployments -o json` and `ship logs -o json`
       match `status.json`, `status-never-deployed.json`, `deployments.json`
       and `logs.jsonl` apart from ids and timestamps (logs: exactly, the
       fake Docker's timestamps being fixed); `ship projects -o json` matches
       `projects-empty.json` and the new `projects.json`.
-- [ ] A running service with no health check is `running_unverified`, with
+- [x] A running service with no health check is `running_unverified`, with
       a passing check `healthy`, never `healthy` otherwise.
-- [ ] With Docker unreachable every service is `unknown` in status and
+- [x] With Docker unreachable every service is `unknown` in status and
       projects, the stored observations say unreachable, and no Docker
       command other than the read-only listing ran; desired state,
       deployments and routes are unchanged.
-- [ ] A failed deployment is listed by `ship deployments` with its failure
+- [x] A failed deployment is listed by `ship deployments` with its failure
       code, phase and message, `release_id` null and
       `previous_release_id` set, while `ship status`'s `last_deployment`
       stays the running release's succeeded deployment.
-- [ ] `ship logs --follow` prints lines as they are produced (a line
+- [x] `ship logs --follow` prints lines as they are produced (a line
       arrives before the container's log ends), stdout and stderr apart,
       and ends when the client is stopped; `PROJECT/SERVICE` narrows to one
       service; an unknown service is refused.
-- [ ] Observations are recorded on request and by the interval observer.
-- [ ] A secret value registered with the redactor never appears in a log
+- [x] Observations are recorded on request and by the interval observer.
+- [x] A secret value registered with the redactor never appears in a log
       line answered.
-- [ ] An endpoint is listed only for a confirmed route that answers; none
+- [x] An endpoint is listed only for a confirmed route that answers; none
       prints `not configured` in text.
-- [ ] `metis verify --post` green.
+- [x] `metis verify --post` green.
 
 ## Test plan
 
 - `ship-core` unit tests: `severity`/`overall` over every status; the new
-  API shapes round-trip and serialise to the fixtures' key sets; query
-  builders.
+  API shapes keep absent fields as `null`; query builders and the logs
+  query parser. (The fixtures are read in the `ship` crate: `ship-core`'s
+  purity test forbids `include_str!`.)
 - `ship-store` `tests/observation.rs`: record and read back reachable and
   unreachable observations; a second record replaces the first; another
   environment's are not listed.
@@ -170,8 +172,40 @@ Docker unreachable makes every service `unknown` and changes nothing else.
 
 ## Out-of-scope touches
 
-None.
+- `crates/ship-daemon/tests/common/mod.rs`: one line,
+  `observe_interval: ship_daemon::observe::DEFAULT_INTERVAL`, in its
+  `Config` struct literal. Why: `Config` gains `observe_interval`, and that
+  literal names every field, so every daemon test binary would fail to
+  compile without it. No behaviour of any existing test changes.
+- `crates/ship/Cargo.toml`: `ship-store` added to `[dev-dependencies]`.
+  Why: `tests/cli_status.rs` seeds the in-process daemon's store with
+  deployments, a failed build and routes, which no API creates without a
+  real build. `ship` is top-level, so the dependency rule allows it
+  (`tests/dependency_rule.rs` restricts leaves only).
 
 ## Report
 
-Filled at implementation.
+- Changed: `ship-core` (`state.rs` severity/overall; `api.rs` status,
+  deployments, logs and projects shapes, paths and queries), `ship-store`
+  (`observation.rs`), `ship-daemon` (`observe.rs`, `status.rs`, `logs.rs`,
+  routes in `http.rs`, observer start/stop and `Config::observe_interval`
+  in `lib.rs`), `ship` (`status.rs`; `commands.rs` projects text and a
+  shared `table`; `main.rs`), `projects.json` fixture, `cli-json.md`, the
+  UI's `ProjectSummary` guard and contract fixture.
+- Tests added: `ship-store/tests/observation.rs` (2),
+  `ship-daemon/tests/status.rs` (8), `ship/tests/cli_status.rs` (4), unit
+  tests in `state.rs`, `api.rs`, `observe.rs`, `status.rs` (daemon),
+  `logs.rs`, `ship/src/status.rs`, `commands.rs`.
+- `metis verify --post --slice phase-1-ws-1.11`: ALL GREEN
+  (`.metis/runs/phase-1-ws-1.11/verify-post.log`). Real-Docker and
+  real-sshd tests are ignored locally, as before; none is new.
+- Decisions: `last_deployment` is the latest succeeded deployment, else
+  the latest (plan §1.11 AC 4), recorded in `cli-json.md`. A service's
+  observation covers every labelled container of it (any release: what
+  Docker reports now), the worst one winning. Any failure to read Docker
+  is recorded as unreachable (`unknown`). Recording an observation is not
+  an operation: it changes no desired state, deployment or Docker object.
+  Logs without `--follow` are sorted by time before they are sent; the
+  stream sends a blank line after 15 s of silence so an abandoned
+  `--follow` is noticed and its readers killed. `ship logs` also takes
+  `--tail N`.

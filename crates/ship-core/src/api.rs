@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::deploy::PortSpec;
 use crate::error::ReceivedCode;
-use crate::id::{DeploymentId, EnvironmentId, OperationId, ProjectId, ReleaseId, RevisionId};
+use crate::id::{
+    DeploymentId, EnvironmentId, OperationId, ProjectId, ReleaseId, RevisionId, ServiceId,
+};
 use crate::slug::Slug;
 use crate::state::{OperationPhase, OperationStatus};
 use crate::time::Timestamp;
@@ -94,7 +96,8 @@ pub struct UploadView {
 
 /// `POST`: deploy a revision of `project` to its `development`
 /// environment. The body is a [`DeployRequest`]; the answer `202` with the
-/// `deploy` operation. Needs an idempotency key.
+/// `deploy` operation. Needs an idempotency key. `GET` (with
+/// [`env_query`]): the environment's [`DeploymentList`].
 pub fn deployments_path(project: &Slug) -> String {
     format!("{PROJECTS_PATH}/{}/deployments", project.as_str())
 }
@@ -584,6 +587,221 @@ pub struct ProjectSummary {
     pub id: ProjectId,
     pub slug: Slug,
     pub created_at: Timestamp,
+    /// The project's environments, oldest first.
+    pub environments: Vec<EnvironmentSummary>,
+}
+
+/// One environment of a project and its state at a glance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvironmentSummary {
+    pub id: EnvironmentId,
+    pub name: String,
+    /// A `DesiredState` string: what the operator asked for.
+    pub desired_state: String,
+    /// The overall `ServiceStatus` string of its services as Docker
+    /// reports them now (`ServiceStatus::overall`); `None` when it has no
+    /// service.
+    pub status: Option<String>,
+}
+
+// ---- status, deployments and logs (ADR-0006) ----
+
+/// The query naming an environment: `?env=E`, or empty for `development`.
+pub fn env_query(env: Option<&str>) -> String {
+    match env {
+        Some(e) => format!("?env={}", percent_encode(e)),
+        None => String::new(),
+    }
+}
+
+/// `GET` (with [`env_query`]): a [`StatusView`].
+pub fn status_path(project: &Slug) -> String {
+    format!("{PROJECTS_PATH}/{}/status", project.as_str())
+}
+
+/// `GET` (with [`logs_query`]): the services' logs as NDJSON, one
+/// [`LogLineView`] per line. With `follow` the answer stays open and lines
+/// arrive as they are written.
+pub fn logs_path(project: &Slug) -> String {
+    format!("{PROJECTS_PATH}/{}/logs", project.as_str())
+}
+
+/// The query of a logs request; empty when nothing is set.
+pub fn logs_query(
+    env: Option<&str>,
+    service: Option<&str>,
+    follow: bool,
+    tail: Option<u32>,
+) -> String {
+    let mut pairs = Vec::new();
+    if let Some(e) = env {
+        pairs.push(format!("env={}", percent_encode(e)));
+    }
+    if let Some(s) = service {
+        pairs.push(format!("service={}", percent_encode(s)));
+    }
+    if follow {
+        pairs.push("follow=true".to_owned());
+    }
+    if let Some(n) = tail {
+        pairs.push(format!("tail={n}"));
+    }
+    if pairs.is_empty() {
+        String::new()
+    } else {
+        format!("?{}", pairs.join("&"))
+    }
+}
+
+/// The options a logs query carries.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LogsOptions {
+    pub env: Option<String>,
+    pub service: Option<String>,
+    pub follow: bool,
+    pub tail: Option<u32>,
+}
+
+/// Reads a logs query ([`logs_query`]); an unknown or repeated key, a bad
+/// encoding or a bad value is an error naming it.
+pub fn parse_logs_query(query: Option<&str>) -> Result<LogsOptions, String> {
+    let mut options = LogsOptions::default();
+    let mut seen = Vec::new();
+    for pair in query.unwrap_or("").split('&').filter(|p| !p.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        if seen.contains(&key) {
+            return Err(format!("`{key}` is given twice"));
+        }
+        seen.push(key);
+        let value = percent_decode(value).ok_or_else(|| format!("`{key}` is badly encoded"))?;
+        match key {
+            "env" => options.env = Some(value),
+            "service" => options.service = Some(value),
+            "follow" => match value.as_str() {
+                "true" => options.follow = true,
+                "false" => options.follow = false,
+                _ => return Err("`follow` must be `true` or `false`".to_owned()),
+            },
+            "tail" => {
+                options.tail = Some(
+                    value
+                        .parse()
+                        .ok()
+                        .filter(|_| value.bytes().all(|b| b.is_ascii_digit()))
+                        .ok_or_else(|| format!("`tail` must be a line count, not `{value}`"))?,
+                )
+            }
+            _ => return Err(format!("unknown logs option `{key}`")),
+        }
+    }
+    Ok(options)
+}
+
+/// A project as [`StatusView`] names it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectRef {
+    pub id: ProjectId,
+    pub slug: Slug,
+}
+
+/// An environment and what the operator asked of it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvironmentView {
+    pub id: EnvironmentId,
+    pub name: String,
+    /// A `DesiredState` string.
+    pub desired_state: String,
+}
+
+/// The deployment [`StatusView`] reports: the one serving (the latest that
+/// succeeded), else the latest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LastDeploymentView {
+    pub id: DeploymentId,
+    /// `None` when it failed before a release was recorded.
+    pub release_id: Option<ReleaseId>,
+    pub operation_id: OperationId,
+    /// A `DeploymentResult` string; `None` while in progress.
+    pub result: Option<String>,
+    pub started_at: Timestamp,
+    pub ended_at: Option<Timestamp>,
+}
+
+/// One service as Docker reports it now.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServiceStatusView {
+    pub id: ServiceId,
+    pub name: String,
+    /// A `ServiceKind` string.
+    pub kind: String,
+    /// A `ServiceStatus` string.
+    pub status: String,
+    /// Restarts Docker made under its restart policy, summed over the
+    /// service's containers.
+    pub restarts: u64,
+    pub observed_at: Timestamp,
+    /// It runs with config values older than the stored ones (ADR-0009
+    /// rule 6).
+    pub stale_config: bool,
+    /// Only addresses that answer now; empty when none.
+    pub endpoints: Vec<EndpointView>,
+}
+
+/// `ship status PROJECT -o json` (`status.json`): desired state, the last
+/// deployment and what Docker reports, kept apart (ADR-0006).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatusView {
+    pub project: ProjectRef,
+    pub environment: EnvironmentView,
+    pub last_deployment: Option<LastDeploymentView>,
+    pub services: Vec<ServiceStatusView>,
+}
+
+/// Why a deployment did not succeed: its operation's failure.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeploymentFailureView {
+    pub code: ReceivedCode,
+    /// An `OperationPhase` string: where it failed.
+    pub phase: String,
+    pub message: String,
+}
+
+/// One deployment in [`DeploymentList`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeploymentView {
+    pub id: DeploymentId,
+    /// The environment's name.
+    pub environment: String,
+    pub revision_id: RevisionId,
+    /// `None` when it failed before a release was recorded.
+    pub release_id: Option<ReleaseId>,
+    /// The release that was serving when it started.
+    pub previous_release_id: Option<ReleaseId>,
+    pub operation_id: OperationId,
+    /// A `DeploymentResult` string; `None` while in progress.
+    pub result: Option<String>,
+    /// Set when it failed or was interrupted.
+    pub failure: Option<DeploymentFailureView>,
+    pub started_at: Timestamp,
+    pub ended_at: Option<Timestamp>,
+}
+
+/// `ship deployments PROJECT -o json` (`deployments.json`), newest first.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct DeploymentList {
+    pub deployments: Vec<DeploymentView>,
+}
+
+/// One line a service's container wrote (`logs.jsonl`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogLineView {
+    /// The service's name.
+    pub service: String,
+    /// `stdout` or `stderr`.
+    pub stream: String,
+    /// When Docker received it.
+    pub ts: Timestamp,
+    pub line: String,
 }
 
 /// `GET /api/v1/projects`.
@@ -852,6 +1070,12 @@ mod tests {
                 id: "prj_01aryz6s41tsv4rrffq69g5fav".parse().unwrap(),
                 slug: Slug::parse("my-app").unwrap(),
                 created_at: Timestamp::from_unix_millis(1_469_918_176_385).unwrap(),
+                environments: vec![EnvironmentSummary {
+                    id: "env_01aryz6s41tsv4rrffq69g5fav".parse().unwrap(),
+                    name: "development".to_owned(),
+                    desired_state: "running".to_owned(),
+                    status: None,
+                }],
             }],
         };
         let v = serde_json::to_value(&list).unwrap();
@@ -861,6 +1085,12 @@ mod tests {
                 "id": "prj_01aryz6s41tsv4rrffq69g5fav",
                 "slug": "my-app",
                 "created_at": "2016-07-30T22:36:16.385Z",
+                "environments": [{
+                    "id": "env_01aryz6s41tsv4rrffq69g5fav",
+                    "name": "development",
+                    "desired_state": "running",
+                    "status": null,
+                }],
             }]})
         );
         assert_eq!(serde_json::from_value::<ProjectList>(v).unwrap(), list);
@@ -973,14 +1203,95 @@ mod tests {
             "id": "env_01aryz6s41tsv4rrffq69g5fav",
             "slug": "my-app",
             "created_at": "2016-07-30T22:36:16.385Z",
+            "environments": [],
         }]});
         assert!(serde_json::from_value::<ProjectList>(bad_id).is_err());
         let bad_slug = json!({ "projects": [{
             "id": "prj_01aryz6s41tsv4rrffq69g5fav",
             "slug": "My App",
             "created_at": "2016-07-30T22:36:16.385Z",
+            "environments": [],
         }]});
         assert!(serde_json::from_value::<ProjectList>(bad_slug).is_err());
+    }
+
+    #[test]
+    fn status_paths_and_queries() {
+        let p = Slug::parse("my-app").unwrap();
+        assert_eq!(status_path(&p), "/api/v1/projects/my-app/status");
+        assert_eq!(logs_path(&p), "/api/v1/projects/my-app/logs");
+        assert_eq!(env_query(None), "");
+        assert_eq!(env_query(Some("dev elopment")), "?env=dev%20elopment");
+        assert_eq!(logs_query(None, None, false, None), "");
+        let q = logs_query(Some("development"), Some("web"), true, Some(20));
+        assert_eq!(q, "?env=development&service=web&follow=true&tail=20");
+        assert_eq!(
+            parse_logs_query(q.strip_prefix('?')).unwrap(),
+            LogsOptions {
+                env: Some("development".to_owned()),
+                service: Some("web".to_owned()),
+                follow: true,
+                tail: Some(20),
+            }
+        );
+        assert_eq!(parse_logs_query(None).unwrap(), LogsOptions::default());
+        for bad in [
+            "follow=yes",
+            "tail=-1",
+            "tail=x",
+            "tail=+3",
+            "tail=99999999999",
+            "service=a&service=b",
+            "service=%zz",
+            "since=1",
+        ] {
+            assert!(parse_logs_query(Some(bad)).is_err(), "{bad}");
+        }
+    }
+
+    /// Absent values are `null`, never left out (the fixtures themselves
+    /// are checked against these types in the `ship` crate, which may read
+    /// files).
+    #[test]
+    fn status_shapes_keep_null_fields() {
+        let line = LogLineView {
+            service: "web".to_owned(),
+            stream: "stderr".to_owned(),
+            ts: Timestamp::from_unix_millis(0).unwrap(),
+            line: "x".to_owned(),
+        };
+        assert_eq!(
+            serde_json::to_value(&line).unwrap(),
+            json!({
+                "service": "web",
+                "stream": "stderr",
+                "ts": "1970-01-01T00:00:00.000Z",
+                "line": "x",
+            })
+        );
+        let d = DeploymentView {
+            id: "dep_01aryz6s41tsv4rrffq69g5fav".parse().unwrap(),
+            environment: "development".to_owned(),
+            revision_id: "rev_01aryz6s41tsv4rrffq69g5fav".parse().unwrap(),
+            release_id: None,
+            previous_release_id: None,
+            operation_id: "op_01aryz6s41tsv4rrffq69g5fav".parse().unwrap(),
+            result: None,
+            failure: None,
+            started_at: Timestamp::from_unix_millis(0).unwrap(),
+            ended_at: None,
+        };
+        let v = serde_json::to_value(&d).unwrap();
+        for key in [
+            "release_id",
+            "previous_release_id",
+            "result",
+            "failure",
+            "ended_at",
+        ] {
+            assert_eq!(v[key], serde_json::Value::Null, "{key}");
+        }
+        assert_eq!(serde_json::from_value::<DeploymentView>(v).unwrap(), d);
     }
 
     #[test]

@@ -17,7 +17,7 @@ use crate::config::{self, Config, ConfigError};
 /// Exit code for a failed command.
 pub(crate) const FAILURE: u8 = 1;
 /// Exit code for a usage error.
-const USAGE: u8 = 2;
+pub(crate) const USAGE: u8 = 2;
 
 /// Output format of list and status commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
@@ -212,7 +212,10 @@ pub(crate) fn runtime() -> Result<tokio::runtime::Runtime, ExitCode> {
 
 /// `GET path` from the current target as `T`; on failure the message is
 /// already printed and the exit code returned.
-fn fetch<T: serde::de::DeserializeOwned>(path: &str, timeout_secs: u64) -> Result<T, ExitCode> {
+pub(crate) fn fetch<T: serde::de::DeserializeOwned>(
+    path: &str,
+    timeout_secs: u64,
+) -> Result<T, ExitCode> {
     let endpoint = endpoint()?;
     let rt = runtime()?;
     let timeout = Duration::from_secs(timeout_secs);
@@ -318,40 +321,55 @@ fn render_projects(list: &ProjectList, output: Output) -> String {
         }
         Output::Text if list.projects.is_empty() => "No projects.\n".to_owned(),
         Output::Text => {
-            let rows: Vec<[String; 3]> = list
-                .projects
-                .iter()
-                .map(|p| {
-                    [
+            let mut rows: Vec<Vec<String>> = Vec::new();
+            for p in &list.projects {
+                if p.environments.is_empty() {
+                    rows.push(vec![
                         p.slug.to_string(),
+                        "-".to_owned(),
+                        "-".to_owned(),
+                        "-".to_owned(),
                         p.id.to_string(),
-                        p.created_at.to_string(),
-                    ]
-                })
-                .collect();
-            let header = ["SLUG", "ID", "CREATED"].map(str::to_owned);
-            let mut widths = [0usize; 3];
-            for row in std::iter::once(&header).chain(&rows) {
-                for (w, cell) in widths.iter_mut().zip(row) {
-                    *w = (*w).max(cell.len());
+                    ]);
+                }
+                for e in &p.environments {
+                    rows.push(vec![
+                        p.slug.to_string(),
+                        e.name.clone(),
+                        e.desired_state.clone(),
+                        e.status.clone().unwrap_or_else(|| "no services".to_owned()),
+                        p.id.to_string(),
+                    ]);
                 }
             }
-            let mut s = String::new();
-            for row in std::iter::once(&header).chain(&rows) {
-                let line = format!(
-                    "{:w0$}  {:w1$}  {}",
-                    row[0],
-                    row[1],
-                    row[2],
-                    w0 = widths[0],
-                    w1 = widths[1]
-                );
-                s.push_str(line.trim_end());
-                s.push('\n');
-            }
-            s
+            table(&["SLUG", "ENVIRONMENT", "DESIRED", "STATUS", "ID"], &rows)
         }
     }
+}
+
+/// `header` and `rows` as left-aligned columns two spaces apart, each line
+/// trimmed at the end.
+pub(crate) fn table(header: &[&str], rows: &[Vec<String>]) -> String {
+    let mut widths: Vec<usize> = header.iter().map(|h| h.len()).collect();
+    for row in rows {
+        for (w, cell) in widths.iter_mut().zip(row) {
+            *w = (*w).max(cell.chars().count());
+        }
+    }
+    let header: Vec<String> = header.iter().map(|h| (*h).to_owned()).collect();
+    let mut s = String::new();
+    for row in std::iter::once(&header).chain(rows) {
+        let mut line = String::new();
+        for (cell, w) in row.iter().zip(&widths) {
+            line.push_str(cell);
+            for _ in cell.chars().count()..*w + 2 {
+                line.push(' ');
+            }
+        }
+        s.push_str(line.trim_end());
+        s.push('\n');
+    }
+    s
 }
 
 pub fn dial_stdio(args: DialStdioArgs) -> ExitCode {
@@ -381,18 +399,34 @@ mod tests {
             render_projects(&ProjectList::default(), Output::Text),
             "No projects.\n"
         );
-        let list = ProjectList {
+        let list: ProjectList =
+            serde_json::from_str(include_str!("../tests/fixtures/projects.json")).unwrap();
+        assert_eq!(
+            render_projects(&list, Output::Text),
+            "SLUG     ENVIRONMENT  DESIRED  STATUS              ID\n\
+             my-app   development  running  running_unverified  prj_01aryz6s41tsv4rrffq69g5fav\n\
+             new-app  development  running  no services         prj_01aryz6s41tsv4rrffq69g5faw\n"
+        );
+        let bare = ProjectList {
             projects: vec![ProjectSummary {
                 id: "prj_01aryz6s41tsv4rrffq69g5fav".parse().unwrap(),
                 slug: Slug::parse("my-app").unwrap(),
                 created_at: Timestamp::from_unix_millis(1_469_918_176_385).unwrap(),
+                environments: Vec::new(),
             }],
         };
         assert_eq!(
-            render_projects(&list, Output::Text),
-            "SLUG    ID                              CREATED\n\
-             my-app  prj_01aryz6s41tsv4rrffq69g5fav  2016-07-30T22:36:16.385Z\n"
+            render_projects(&bare, Output::Text),
+            "SLUG    ENVIRONMENT  DESIRED  STATUS  ID\n\
+             my-app  -            -        -       prj_01aryz6s41tsv4rrffq69g5fav\n"
         );
+    }
+
+    #[test]
+    fn projects_json_is_the_fixture_with_entries() {
+        let text = include_str!("../tests/fixtures/projects.json");
+        let list: ProjectList = serde_json::from_str(text).unwrap();
+        assert_eq!(render_projects(&list, Output::Json), text);
     }
 
     const HOST_FIXTURE: &str = include_str!("../tests/fixtures/host.json");
