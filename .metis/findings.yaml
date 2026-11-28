@@ -631,3 +631,12 @@ findings:
       status: advisory
       cycle: 2
       file: crates/ship-daemon/src/push.rs
+    - id: f-055
+      date: "2026-11-28"
+      slice: phase-1-ws-1.14
+      severity: P3
+      category: behavior
+      finding: 'crates/ship-daemon/src/recovery.rs:141-144: empty_trash silently ignores read_dir failures and drops per-entry enumeration errors through flatten(), so unreadable trash can remain without the diagnostic requested by the brief. Log enumeration errors other than a missing trash directory; cleanup eligibility is retained, so this is advisory in the narrowed review.'
+      status: advisory
+      cycle: 3
+      file: crates/ship-daemon/src/recovery.rs
