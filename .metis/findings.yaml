@@ -640,3 +640,12 @@ findings:
       status: advisory
       cycle: 3
       file: crates/ship-daemon/src/recovery.rs
+    - id: f-056
+      date: "2026-11-28"
+      slice: phase-1-ws-1.14
+      severity: P3
+      category: testing
+      finding: Independent verification failed in killed_while_building_the_previous_release_serves at crates/ship-daemon/tests/kill.rs:369 with Socket(InUse) on restart after shutdown_background at line 363. All three cleanup retry regressions passed. Investigate synchronization of runtime teardown before reopening the socket; recorded as advisory under the narrowed-review rule for new non-P1 findings.
+      status: advisory
+      cycle: 3
+      file: crates/ship-daemon/tests/kill.rs
