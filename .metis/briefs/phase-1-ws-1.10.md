@@ -179,6 +179,22 @@ findings f-043, f-044 and f-045.
 
 None.
 
+## Reviewer checklist — re-review
+
+Narrowed to f-043, f-044 and f-045.
+
+- Behavioral correctness: PASS — attempted releases are tracked before preparation and pruned after failure (`crates/ship-daemon/src/deploy.rs:393`, `crates/ship-daemon/src/compose_import.rs:499`).
+- Security and authorization correctness: PASS — startup registers retained secret values (`crates/ship-daemon/src/secrets.rs:148`); secret-command parse errors use argument-free diagnostics (`crates/ship/src/main.rs:197`).
+- Scope discipline: PASS — `metis log phase-1-ws-1.10 --validate -o json` reports no scope or commit violations; scope remains declared in this brief.
+- Test sufficiency: PASS — rotation and unset before restart (`crates/ship-daemon/tests/config.rs:533`), leading-hyphen arguments (`crates/ship/tests/cli_config.rs:152`), and partial preparation failure (`crates/ship-daemon/tests/config.rs:563`) have regression coverage.
+- Architectural fit: PASS — retained values reuse release metadata and env files (`crates/ship-daemon/src/secrets.rs:169`); attempted-release cleanup uses the existing deployment outcome path (`crates/ship-daemon/src/deploy.rs:393`).
+- Maintainability: PASS — shared env-file decoding and pruning keep the fixes localized (`crates/ship-daemon/src/secrets.rs:201`, `crates/ship-daemon/src/config.rs:673`).
+
+Independent `metis verify --post --slice phase-1-ws-1.10 --force`: ALL
+GREEN. Resolved f-043 at bece0b1, f-044 at 4e885c4, f-045 at 53c0d6a
+with regression-test evidence. No new findings. Real-Engine ignored
+tests were not run locally. Verdict: pass.
+
 ## Report
 
 - `ship-core`: `config.rs` (new: `ConfigScope`, `check_name`,
