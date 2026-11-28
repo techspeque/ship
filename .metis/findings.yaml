@@ -595,3 +595,12 @@ findings:
       file: web/src/lib/OperationPage.svelte
       commit: 30ed30d960e5b77761a9b9b73d8b083b083cd11c
       evidence: test web/src/lib/operation.test.ts
+    - id: f-051
+      date: "2026-11-28"
+      slice: phase-1-ws-1.14
+      severity: P2
+      category: behavior
+      finding: 'crates/ship-daemon/src/recovery.rs:57 — Cleanup selects only deployments with no result, then persists Interrupted before removing staging (lines 65–77). If recovery dies or deletion fails after that write, later starts never retry the leftover release directory or env files. Reproduced with a marked unrecorded release: deny directory writes for the first recover, restore permissions, run recover again; the second reports zero work and staging remains. Retain durable cleanup eligibility until deletion succeeds, including across interrupted recovery, and add a regression test for retry after a temporary cleanup failure.'
+      status: open
+      cycle: 1
+      file: crates/ship-daemon/src/recovery.rs
