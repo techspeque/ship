@@ -239,10 +239,30 @@ system_path() {
 	done
 }
 
+# A daemon already running under systemd keeps the binary it started with
+# until restarted: say so when it does not report the version of $1/ship.
+# It asks the local daemon: SHIP_CONFIG names no file, so the client ignores
+# any current target. Reads only.
+restart_hint() {
+	command -v systemctl >/dev/null 2>&1 || return 0
+	systemctl is-active --quiet ship.service 2>/dev/null || return 0
+	new=$("$1/ship" --version 2>/dev/null | awk 'NR == 1 { print $2 }')
+	running=$(SHIP_CONFIG="$tmp/no-config.json" "$1/ship" host -o json 2>/dev/null |
+		sed -n 's/^  "version": "\([^"]*\)",*$/\1/p' | head -n 1) || running=""
+	if [ -z "$running" ]; then
+		say "a ship daemon is running and did not report its version;"
+		say "to be sure it runs ship $new: sudo systemctl restart ship"
+	elif [ "$running" != "$new" ]; then
+		say "the running daemon is ship $running, not ship $new;"
+		say "to run ship $new: sudo systemctl restart ship"
+	fi
+}
+
 if [ "$os" = linux ]; then
 	dir=$(cd "$prefix" && pwd -P)
 	if system_path "$dir"; then
 		say "to run the daemon under systemd: sudo $dir/ship service install"
+		restart_hint "$dir"
 	else
 		say "$dir is under a home directory or closed to other users: the ship service user"
 		say "cannot run a binary there under systemd,"

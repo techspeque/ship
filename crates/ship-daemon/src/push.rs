@@ -474,14 +474,21 @@ mod tests {
         assert_ne!(project_key("a"), project_key("b"));
     }
 
+    /// The port is held for the whole test by one socket, first bound but
+    /// not listening, then listening. Bound without `SO_REUSEADDR`, no other
+    /// process or test can take the port, so the silent case cannot be
+    /// answered by someone else (a freed port could be).
     #[tokio::test]
     async fn only_an_answering_address_answers() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.bind((Ipv4Addr::LOCALHOST, 0).into()).unwrap();
+        let port = socket.local_addr().unwrap().port();
+        assert!(!answers(&format!("127.0.0.1:{port}")).await);
+        assert!(!answers(&format!("0.0.0.0:{port}")).await);
+
+        let _listener = socket.listen(16).unwrap();
         assert!(answers(&format!("127.0.0.1:{port}")).await);
         assert!(answers(&format!("0.0.0.0:{port}")).await);
-        drop(listener);
-        assert!(!answers(&format!("127.0.0.1:{port}")).await);
         assert!(!answers("not an address").await);
     }
 }

@@ -49,14 +49,27 @@ done
 exit 0
 "#;
 
+/// Written once per test binary. This process never opens the executed
+/// file for writing: a `cp` child creates it from a source file. Otherwise
+/// a test spawning a child at that moment (one that does not wait on this
+/// lock) hands the child a copy of the write fd until its exec, and running
+/// the script in that window fails with "Text file busy" (ETXTBSY).
 fn fake_docker() -> &'static Path {
     static PATH: OnceLock<(tempfile::TempDir, PathBuf)> = OnceLock::new();
     &PATH
         .get_or_init(|| {
             use std::os::unix::fs::PermissionsExt;
             let dir = tempfile::tempdir().unwrap();
+            let source = dir.path().join("docker.src");
+            std::fs::write(&source, SCRIPT).unwrap();
             let path = dir.path().join("docker");
-            std::fs::write(&path, SCRIPT).unwrap();
+            let status = std::process::Command::new("cp")
+                .arg(&source)
+                .arg(&path)
+                .status()
+                .unwrap();
+            assert!(status.success(), "cp {status}");
+            // chmod changes metadata only; it opens nothing for writing.
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
             (dir, path)
         })

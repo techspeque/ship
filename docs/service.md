@@ -45,9 +45,15 @@ The daemon's socket is `/run/ship/ship.sock`, group `ship`, mode 0660. It
 also listens on 127.0.0.1:7180 and nowhere else.
 
 Install creates no password, token or key. A second run prints `ok` for
-every step and `Nothing changed.` After upgrading the binary in place, run
-install again only if its path changed; then restart the daemon with
-`sudo systemctl restart ship`.
+every step and `Nothing changed.`
+
+A running daemon keeps the binary it started with. After upgrading the
+binary in place, restart the daemon with `sudo systemctl restart ship`.
+Install (run it again if the binary's path changed) and `install.sh` both
+check: when `ship.service` is active and its daemon reports a version other
+than the installed binary's, or reports none, they print that restart
+command. `ship host` shows a `Client:` line when the client's version is
+not the daemon's.
 
 **Docker access is root.** The `ship` user can start any container, which
 is root on the host. Anyone who can use the daemon's socket can make the

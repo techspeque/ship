@@ -240,7 +240,7 @@ pub fn projects(args: ProjectsArgs) -> ExitCode {
 pub fn host(args: HostArgs) -> ExitCode {
     match fetch::<HostInfo>(HOST_PATH, args.timeout) {
         Ok(info) => {
-            print!("{}", render_host(&info, args.output));
+            print!("{}", render_host(&info, args.output, CLIENT_VERSION));
             ExitCode::SUCCESS
         }
         Err(code) => code,
@@ -250,7 +250,10 @@ pub fn host(args: HostArgs) -> ExitCode {
 /// `-o json` is the contract shape (ADR-0004 rule 2): the daemon's
 /// [`HostInfo`] pretty-printed and a newline. Text is one block with
 /// Docker's status first and, unless `ready`, the daemon's message verbatim.
-fn render_host(info: &HostInfo, output: Output) -> String {
+/// When `client` (this binary's version) is not the daemon's, a `Client:`
+/// line says so: after an in-place upgrade the daemon keeps running the old
+/// binary until restarted (f-018).
+fn render_host(info: &HostInfo, output: Output, client: &str) -> String {
     if output == Output::Json {
         let mut s = serde_json::to_string_pretty(info).expect("host info serialises");
         s.push('\n');
@@ -294,12 +297,24 @@ fn render_host(info: &HostInfo, output: Output) -> String {
         "Daemon",
         format!("ship {}, API {}", info.version, info.api_version),
     ));
+    if info.version != client {
+        lines.push((
+            "Client",
+            format!(
+                "ship {client}, not the daemon's version; if the host was upgraded, \
+                 restart the daemon there: sudo systemctl restart ship"
+            ),
+        ));
+    }
     let mut s = String::new();
     for (label, value) in lines {
         s.push_str(&format!("{:10}{value}\n", format!("{label}:")));
     }
     s
 }
+
+/// This client's Ship version.
+const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Bytes as GiB with one decimal; `unknown` when absent.
 fn gib(bytes: Option<u64>) -> String {
@@ -437,13 +452,24 @@ mod tests {
 
     #[test]
     fn host_json_is_the_fixture() {
-        assert_eq!(render_host(&fixture_host(), Output::Json), HOST_FIXTURE);
+        assert_eq!(render_host(&fixture_host(), Output::Json, "0.0.0"), HOST_FIXTURE);
+        // The contract shape does not change when the versions differ.
+        assert_eq!(render_host(&fixture_host(), Output::Json, "9.9.9"), HOST_FIXTURE);
+    }
+
+    #[test]
+    fn host_text_shows_a_client_daemon_version_difference() {
+        let text = render_host(&fixture_host(), Output::Text, "0.0.1");
+        let last = text.lines().last().unwrap();
+        assert!(last.starts_with("Client:   ship 0.0.1, not the daemon's version"), "{text}");
+        assert!(last.ends_with("sudo systemctl restart ship"), "{text}");
+        assert!(text.contains("Daemon:   ship 0.0.0, API v1\n"), "{text}");
     }
 
     #[test]
     fn host_text_ready() {
         assert_eq!(
-            render_host(&fixture_host(), Output::Text),
+            render_host(&fixture_host(), Output::Text, "0.0.0"),
             "Docker:   ready\n\
              Engine:   28.3.2 (supported >= 24.0.0, < 30.0.0)\n\
              Compose:  2.39.1 (supported >= 2.20.0, < 6.0.0)\n\
@@ -465,7 +491,7 @@ mod tests {
             memory_bytes: None,
             disk_free_bytes: None,
         };
-        let text = render_host(&info, Output::Text);
+        let text = render_host(&info, Output::Text, "0.0.0");
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[0], "Docker:   unreachable");
         assert_eq!(lines[1], format!("Message:  {message}"));
@@ -486,7 +512,7 @@ mod tests {
         info.docker.status = DockerStatus::UnsupportedVersion;
         info.docker.engine_version = Some("20.10.24".to_owned());
         info.docker.message = Some("Docker Engine 20.10.24 is outside >= 24.0.0".to_owned());
-        let text = render_host(&info, Output::Text);
+        let text = render_host(&info, Output::Text, "0.0.0");
         assert!(text.starts_with(
             "Docker:   unsupported_version\n\
              Message:  Docker Engine 20.10.24 is outside >= 24.0.0\n\
