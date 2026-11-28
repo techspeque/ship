@@ -195,4 +195,44 @@ comes back only through `ship push --recreate` (Human, 2026-11-28).
 
 ## Report
 
-Filled at implementation.
+- Changed: `ship-core` (`DesiredState::effective`; `DeploymentAction`;
+  lifecycle kinds, `lifecycle_path`, `is_environment_only`,
+  `RECREATE_REQUIRED`; `recreate` on `DeployRequest`/`PushOptions`,
+  `push_query(&PushOptions)`; `action` on `DeploymentView` and
+  `LastDeploymentView`, `desired_state` on `ServiceStatusView`),
+  `ship-store` (migration 0005; `Service.desired_state`,
+  `set_service_desired_state`, `set_services_running`;
+  `Deployment.action/options`, `create_deployment_with`,
+  `record_removal`, `recreate_environment`; `list_services` ordered by
+  creation then insertion), `ship-daemon` (`lifecycle.rs`; five routes in
+  `http.rs`; `deploy.rs` removed-environment check, recorded options,
+  desired state after success, stopped things stopped again after a failed
+  deployment; effective desired state in `observe.rs`, `status.rs`,
+  `push.rs`), `ship` (`lifecycle.rs`; five commands in `main.rs`;
+  `push --recreate` and the recreate confirmation; DESIRED and ACTION
+  columns), fixtures `status.json`, `deployments.json`, `cli-json.md`.
+- Tests added: `ship-store/tests/lifecycle.rs` (7),
+  `ship-daemon/tests/lifecycle.rs` (9), `ship/tests/cli_lifecycle.rs` (2),
+  unit tests in `state.rs`, `api.rs`, `observe.rs`, `ship/src/lifecycle.rs`,
+  `ship/src/status.rs`.
+- `metis verify --post --slice phase-1-ws-1.12`: ALL GREEN
+  (`.metis/runs/phase-1-ws-1.12/verify-post.log`).
+- Decisions: a removal is a `remove` row in the deployment history (no
+  release, succeeded), so `ship deployments` shows it and the recreating
+  deploy has no previous release; `redeploy` repeats the serving deploy's
+  recorded `--file`/`--port` (a deployment from before 0005 has none, so
+  it detects and publishes nothing); a deployment (push, redeploy) sets a
+  stopped environment and every service `running`, and a failed one stops
+  again what was stopped; `start P` starts every service, `start P/S` and
+  `restart` are refused while the environment is stopped, `restart P`
+  skips services stopped on purpose; `stop` records the stop before
+  Docker is asked, `remove` records after `compose down` succeeded; a
+  removed environment answers `remove` with a no-op. Limit documented in
+  `cli-json.md`: a Compose file with `restart: always` is restarted by
+  Docker itself after a host reboot.
+- Flakes seen while verifying, both not from this slice's logic:
+  `push::tests::only_an_answering_address_answers` failed three runs in a
+  row then passed (it only uses `answers`, unchanged); the 1.11 fixture
+  tests (`cli_status.rs`, daemon `status.rs`) failed on service order
+  because ids made in one millisecond are random-ordered and
+  `list_services` ordered by id: fixed in `list_services`.

@@ -470,14 +470,16 @@ impl Store {
         service_from(&row)
     }
 
-    /// Every service of `environment`, oldest first.
+    /// Every service of `environment`, oldest first: by creation time,
+    /// then in the order inserted (ids made in one millisecond are not
+    /// ordered).
     pub async fn list_services(
         &self,
         environment: EnvironmentId,
     ) -> Result<Vec<Service>, StoreError> {
         sqlx::query(
             "SELECT id, environment_id, name, kind, port, desired_state, created_at \
-             FROM service WHERE environment_id = ? ORDER BY id",
+             FROM service WHERE environment_id = ? ORDER BY created_at, rowid",
         )
         .bind(environment.to_string())
         .fetch_all(&self.pool)
