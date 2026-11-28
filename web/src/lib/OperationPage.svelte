@@ -3,6 +3,7 @@
 
   import { getJson, isOperationView, operationPath, type OperationView } from './api';
   import Badge from './Badge.svelte';
+  import { watchOperation } from './operation';
   import { operationLine, operationPage, type OperationLine } from './project';
   import { href } from './route';
   import { followOperation, type Connection } from './sse';
@@ -18,34 +19,21 @@
 
   const view = $derived(op === null ? null : operationPage(op));
 
-  async function readOperation(): Promise<void> {
-    try {
-      op = await getJson(operationPath(id), isOperationView);
-    } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
-    }
-  }
-
   onMount(() => {
     const stop = new AbortController();
-    void (async () => {
-      await readOperation();
-      if (op === null) return;
-      try {
-        const end = await followOperation(
-          id,
-          (e) => {
-            lines.push(operationLine(e));
-            phase = e.phase;
-          },
-          { signal: stop.signal, onConnection: (c) => (connection = c) },
-        );
-        // The stored end: final phase, status and failure.
-        if (end === 'finished') await readOperation();
-      } catch (e) {
-        error = e instanceof Error ? e.message : String(e);
-      }
-    })();
+    watchOperation({
+      read: () => getJson(operationPath(id), isOperationView),
+      follow: (onEvent, signal) =>
+        followOperation(id, onEvent, { signal, onConnection: (c) => (connection = c) }),
+      onOperation: (o) => (op = o),
+      onEvent: (e) => {
+        lines.push(operationLine(e));
+        phase = e.phase;
+      },
+      signal: stop.signal,
+    }).catch((e: unknown) => {
+      if (!stop.signal.aborted) error = e instanceof Error ? e.message : String(e);
+    });
     return () => stop.abort();
   });
 
