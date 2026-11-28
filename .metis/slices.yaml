@@ -14,10 +14,6 @@ slices:
       reviewed: false
       review_cycles: 0
       created: ""
-      waiting:
-        reason: 'Plan §1.14 contradicts itself: AC1 wants the previous release serving after a kill in ANY phase, but compose up in ''deploying'' replaces containers in place and task 1/ADR-0006 r11 say start reconciles nothing — for a kill in deploying/verifying, should start bring the previous release back up (a Docker action at start), or should AC1 be narrowed to building/preparing with deploying/verifying leaving the new release as Docker reports it and the operation interrupted?'
-        since: "2026-11-28T12:33:04Z"
-        human: true
     - id: phase-1-gate
       title: 'Phase 1 gate: composed-system validation'
       type: gate
