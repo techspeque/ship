@@ -158,6 +158,37 @@ unlabelled object changed) that are shown to fail on a deliberate leak.
 - `ship-daemon/src/status.rs` unit tests: which deployment is reported as
   interrupted, and the command.
 
+## Direction for f-051 / f-053 (2026-11-28, after the repeat_finding stop)
+
+Given by Claude in the Human's planning session, at the Human's request for
+help with this stop. It is guidance on the design, within this brief's
+scope; the Reviewer judges the result as usual.
+
+Both findings are one defect: what makes a leftover release directory
+eligible for cleanup lives inside the thing being deleted, or is given up
+before the deletion has finished. Moving the marker later in the sequence
+only moves the window. Remove the window instead:
+
+1. Give the state directory a trash area on the same filesystem (for
+   example `<state>/trash/`). Everything in it is garbage by definition.
+2. To clean a leftover release directory, `rename` it into the trash under
+   a unique name. The rename is atomic: before it, the directory still
+   carries its marker and the next start retries; after it, the directory
+   is in the trash and the next start retries from there.
+3. At every start, before anything else in recovery, empty the trash, and
+   report (do not fail the start) what could not be removed.
+4. Record the operation as cleaned only as bookkeeping; never use that
+   record to decide whether files still need removing.
+
+No step then leaves an empty unmarked directory, and no later start
+reports zero work while files remain. Tests the Reviewer asked for:
+a failure injected (a) before the rename, (b) between the rename and the
+removal, (c) during the removal of the trash entry; in each, a second
+start finishes the job. Keep the deny-write reproduction from f-051.
+
+The `only_an_answering_address_answers` flake (f-052, f-054) is not this
+slice's; it gets its own fix slice after this one lands.
+
 ## Out-of-scope touches
 
 None.
