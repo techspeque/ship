@@ -613,9 +613,12 @@ findings:
       severity: P3
       category: tests
       finding: crates/ship-daemon/src/push.rs:484 — Independent forced post-verification failed in the unchanged only_an_answering_address_answers test after dropping its listener; the brief report already notes this port-reuse flake. The 15 targeted recovery, kill, invariants, listeners and web-contract tests pass. Track the existing verification flake separately from this slice’s implementation.
-      status: advisory
+      status: resolved
+      resolved_by: commit 412ecf14adb3; test only_an_answering_address_answers; port held by one bound socket (no SO_REUSEADDR), then listen() on it; freed port no longer probed
       cycle: 1
       file: crates/ship-daemon/src/push.rs
+      commit: 412ecf14adb311f129fd07b0dbe35c248bd0be61
+      evidence: test only_an_answering_address_answers
     - id: f-053
       date: "2026-11-28"
       slice: phase-1-ws-1.14
