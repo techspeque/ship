@@ -1,0 +1,15 @@
+{
+  "id": "op_01aryz6s41tsv4rrffq69g5faw",
+  "kind": "deploy",
+  "environment_id": null,
+  "phase": "failed",
+  "status": "failed",
+  "failure": {
+    "code": "build_failed",
+    "phase": "building",
+    "message": "the build exited 1"
+  },
+  "log_bytes": 0,
+  "created_at": "2026-01-02T03:06:40.000Z",
+  "updated_at": "2026-01-02T03:07:10.000Z"
+}

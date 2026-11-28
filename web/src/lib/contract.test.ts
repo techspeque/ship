@@ -6,12 +6,25 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  DEPLOYMENT_ACTIONS,
+  DEPLOYMENT_RESULTS,
+  DESIRED_STATES,
   DOCKER_STATUSES,
+  EVENT_KINDS,
+  OPERATION_PHASES,
+  OPERATION_STATUSES,
   SERVICE_STATUSES,
   isApiError,
+  isDeploymentList,
   isHostInfo,
+  isLogLine,
+  isOperationEvent,
+  isOperationView,
   isProjectList,
+  isSecretList,
   isServiceStatus,
+  isStatusView,
+  isVarList,
 } from './api';
 
 const fixtures = import.meta.glob<unknown>('./contract/*.json', {
@@ -40,6 +53,13 @@ function copy(name: string): Record<string, unknown> {
 
 function at(v: Record<string, unknown>, key: string): Record<string, unknown> {
   return v[key] as Record<string, unknown>;
+}
+
+/** The first element of the array at `key`. */
+function first(v: Record<string, unknown>, key: string): Record<string, unknown> {
+  const item = (v[key] as Record<string, unknown>[])[0];
+  if (item === undefined) throw new Error(`fixture has no ${key}`);
+  return item;
 }
 
 function firstProject(list: Record<string, unknown>): Record<string, unknown> {
@@ -73,6 +93,39 @@ describe('fixtures from the Rust types', () => {
     const statuses = fixture('service-statuses') as unknown[];
     expect(statuses).toContain('paused');
     for (const s of statuses) expect(isServiceStatus(s), String(s)).toBe(true);
+  });
+
+  it('every status fixture passes isStatusView', () => {
+    for (const [path, v] of byPrefix('status-')) expect(isStatusView(v), path).toBe(true);
+  });
+
+  it('the deployments fixture passes isDeploymentList', () => {
+    expect(isDeploymentList(fixture('deployments'))).toBe(true);
+  });
+
+  it('every operation fixture passes isOperationView', () => {
+    for (const [path, v] of byPrefix('operation-running').concat(byPrefix('operation-failed'))) {
+      expect(isOperationView(v), path).toBe(true);
+    }
+  });
+
+  it('the event and log line fixtures pass their guards', () => {
+    expect(isOperationEvent(fixture('operation-event'))).toBe(true);
+    expect(isLogLine(fixture('log-line'))).toBe(true);
+  });
+
+  it('every vars and secrets fixture passes its guard', () => {
+    for (const [path, v] of byPrefix('vars-')) expect(isVarList(v), path).toBe(true);
+    for (const [path, v] of byPrefix('secrets-')) expect(isSecretList(v), path).toBe(true);
+  });
+
+  it('the TS enum lists equal the Rust ones, in order', () => {
+    expect([...OPERATION_PHASES]).toEqual(fixture('operation-phases'));
+    expect([...OPERATION_STATUSES]).toEqual(fixture('operation-statuses'));
+    expect([...DESIRED_STATES]).toEqual(fixture('desired-states'));
+    expect([...DEPLOYMENT_RESULTS]).toEqual(fixture('deployment-results'));
+    expect([...DEPLOYMENT_ACTIONS]).toEqual(fixture('deployment-actions'));
+    expect([...EVENT_KINDS]).toEqual(fixture('event-kinds'));
   });
 
   it('there is a host fixture for every Docker status', () => {
@@ -128,6 +181,36 @@ describe('guards reject other shapes', () => {
     const h = copy('host-ready');
     at(h, 'docker')['status'] = 'stopped';
     expect(isHostInfo(h)).toBe(false);
+  });
+
+  it('rejects changed status, deployment, operation and config shapes', () => {
+    const cases: [string, (v: unknown) => boolean, (v: Record<string, unknown>) => void][] = [
+      ['status-deployed', isStatusView, (v) => (v['extra'] = 1)],
+      ['status-deployed', isStatusView, (v) => delete v['last_deployment']],
+      ['status-deployed', isStatusView, (v) => (at(v, 'environment')['desired_state'] = 'gone')],
+      ['status-deployed', isStatusView, (v) => (first(v, 'services')['status'] = 'up')],
+      ['status-deployed', isStatusView, (v) => (first(v, 'services')['restarts'] = -1)],
+      ['deployments', isDeploymentList, (v) => (v['deployments'] = {})],
+      ['deployments', isDeploymentList, (v) => (first(v, 'deployments')['result'] = 'done')],
+      ['operation-running', isOperationView, (v) => (v['phase'] = 'sleeping')],
+      ['operation-running', isOperationView, (v) => delete v['failure']],
+      ['operation-event', isOperationEvent, (v) => (v['sequence'] = 0)],
+      ['operation-event', isOperationEvent, (v) => (v['sequence'] = '3')],
+      ['log-line', isLogLine, (v) => (v['extra'] = '')],
+      ['vars-project', isVarList, (v) => (v['scope'] = 'host')],
+      ['secrets-environment', isSecretList, (v) => (v['secrets'] = [{ name: 'X' }])],
+    ];
+    for (const [name, guard, change] of cases) {
+      const v = copy(name);
+      change(v);
+      expect(guard(v), `${name}: ${guard.name}`).toBe(false);
+    }
+  });
+
+  it('rejects a secret list that carries a value', () => {
+    const v = copy('secrets-environment');
+    first(v, 'secrets')['value'] = 'hunter2';
+    expect(isSecretList(v)).toBe(false);
   });
 
   it('rejects an unknown service status', () => {

@@ -1,0 +1,8 @@
+{
+  "scope": "service",
+  "project": "my-app",
+  "environment": "development",
+  "service": "web",
+  "vars": [],
+  "stale_services": []
+}

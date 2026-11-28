@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { DOCKER_STATUSES, type DockerStatus, type HostInfo } from './api';
+import { DOCKER_STATUSES, type DockerStatus, type HostInfo, type ProjectList } from './api';
+import projectsOne from './contract/projects-one.json';
 import {
   UNKNOWN,
   announcement,
@@ -121,9 +122,21 @@ describe('projectsView', () => {
           id: 'prj_01aryz6s41tsv4rrffq69g5fav',
           slug: 'my-app',
           created: '2016-07-30T22:36:16.385Z',
+          environments: [],
         },
       ],
     });
+  });
+
+  it("shows each environment's desired state and observed status as the API sends them", () => {
+    const list = projectsOne as ProjectList;
+    const v = projectsView({ kind: 'ok', value: list });
+    if (v.kind !== 'list') throw new Error(v.kind);
+    const api = list.projects.flatMap((p) => p.environments);
+    const shown = v.rows.flatMap((r) => r.environments);
+    expect(shown.map((e) => [e.name, e.desired, e.status])).toEqual(
+      api.map((e) => [e.name, e.desired_state, e.status]),
+    );
   });
 });
 

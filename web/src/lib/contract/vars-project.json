@@ -1,0 +1,16 @@
+{
+  "scope": "project",
+  "project": "my-app",
+  "environment": null,
+  "service": null,
+  "vars": [
+    {
+      "name": "LOG_LEVEL",
+      "value": "debug",
+      "updated_at": "2026-01-02T03:03:20.000Z"
+    }
+  ],
+  "stale_services": [
+    "web"
+  ]
+}

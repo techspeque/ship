@@ -1,0 +1,6 @@
+{
+  "service": "web",
+  "stream": "stderr",
+  "ts": "2026-01-02T03:04:47.003Z",
+  "line": "warning: no cache directory"
+}

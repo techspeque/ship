@@ -1,0 +1,12 @@
+[
+  "queued",
+  "uploading",
+  "validating",
+  "building",
+  "preparing",
+  "deploying",
+  "verifying",
+  "succeeded",
+  "failed",
+  "interrupted"
+]
