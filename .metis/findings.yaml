@@ -535,3 +535,12 @@ findings:
       file: crates/ship-daemon/src/config.rs
       commit: 53c0d6a748c481097c6f9a36dfa52264fb9b7fd5
       evidence: test a_partly_prepared_release_keeps_no_values
+    - id: f-046
+      date: "2026-11-28"
+      slice: phase-1-ws-1.11
+      severity: P2
+      category: correctness
+      finding: 'crates/ship-daemon/src/logs.rs:145 — Docker log-reader failures are only logged and the response ends successfully: a probe with successful ps/inspect and container logs exiting 1 returned HTTP 200 with a clean empty body; crates/ship/src/status.rs:305 consequently reports success. Propagate reader failures to the response stream so the CLI exits nonzero rather than accepting missing or truncated logs, and add regression coverage for failed log reads.'
+      status: open
+      cycle: 1
+      file: crates/ship-daemon/src/logs.rs
