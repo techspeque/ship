@@ -363,6 +363,82 @@ async fn a_removed_environment_comes_back_only_through_a_later_deploy() {
     ));
 }
 
+/// Inserts a succeeded deployment of `action` started and ended at `ts`,
+/// with raw SQL so the millisecond is the test's.
+async fn raw_deployment(
+    conn: &mut SqliteConnection,
+    store: &Store,
+    env: &Environment,
+    serving: &Deployment,
+    action: DeploymentAction,
+    ts: i64,
+    n: u128,
+) -> DeploymentId {
+    let id = DeploymentId::from_parts(u64::try_from(ts).unwrap(), n).unwrap();
+    let op = operation(store, env, &format!("raw-{n}")).await;
+    let (name, release) = match action {
+        DeploymentAction::Deploy => ("deploy", format!("'{}'", serving.release_id.unwrap())),
+        DeploymentAction::Remove => ("remove", "NULL".to_owned()),
+    };
+    let sql = format!(
+        "INSERT INTO deployment (id, environment_id, revision_id, operation_id, started_at, \
+         action) VALUES ('{id}', '{}', '{}', '{op}', {ts}, '{name}');
+         UPDATE deployment SET release_id = {release} WHERE id = '{id}' AND {release} IS NOT NULL;
+         UPDATE deployment SET result = 'succeeded', ended_at = {ts} WHERE id = '{id}';",
+        env.id, serving.revision_id,
+    );
+    sqlx::raw_sql(AssertSqlSafe(sql))
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    id
+}
+
+#[tokio::test]
+async fn a_deploy_in_the_removals_millisecond_counts_only_when_inserted_after_it() {
+    let (dir, store) = open().await;
+    let env = environment(&store).await;
+    let first = deployed(&store, &env, "one", false).await;
+    let ts = first.ended_at.unwrap().unix_millis() + 60_000;
+    let mut conn = raw(&dir).await;
+    let (deploy, remove) = (DeploymentAction::Deploy, DeploymentAction::Remove);
+    let before = raw_deployment(&mut conn, &store, &env, &first, deploy, ts, 1).await;
+    raw_deployment(&mut conn, &store, &env, &first, remove, ts, 2).await;
+    store
+        .set_desired_state(env.id, DesiredState::Removed)
+        .await
+        .unwrap();
+
+    // Same millisecond, inserted before the removal: not after it.
+    assert!(matches!(
+        store.recreate_environment(env.id, before).await,
+        Err(StoreError::IllegalTransition { .. })
+    ));
+    let up = format!(
+        "UPDATE environment SET desired_state = 'running' WHERE id = '{}'",
+        env.id
+    );
+    assert!(
+        sqlx::query(AssertSqlSafe(up.clone()))
+            .execute(&mut conn)
+            .await
+            .is_err()
+    );
+
+    // Same millisecond, inserted after it: a later deploy.
+    let after = raw_deployment(&mut conn, &store, &env, &first, deploy, ts, 3).await;
+    sqlx::query(AssertSqlSafe(up))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    store
+        .set_desired_state(env.id, DesiredState::Removed)
+        .await
+        .unwrap();
+    let back = store.recreate_environment(env.id, after).await.unwrap();
+    assert_eq!(back.desired_state, DesiredState::Running);
+}
+
 #[tokio::test]
 async fn an_environment_removed_before_any_deployment_comes_back_through_one() {
     let (_dir, store) = open().await;

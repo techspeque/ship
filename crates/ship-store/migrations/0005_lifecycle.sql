@@ -80,16 +80,19 @@ END;
 -- removed only to running, and only once a deploy of the environment
 -- succeeded after its latest removal: `ship push --recreate` (Human,
 -- 2026-11-28). An environment removed before it had any deployment has no
--- removal row; any later deploy counts.
+-- removal row; any later deploy counts. "After" is the history's order,
+-- (started_at, rowid): two rows in one millisecond are told apart by which
+-- was inserted first, never by the clock alone.
 DROP TRIGGER environment_desired_state;
 CREATE TRIGGER environment_desired_state BEFORE UPDATE OF desired_state ON environment
 WHEN NEW.desired_state IS NOT OLD.desired_state AND OLD.desired_state = 'removed'
  AND NOT (NEW.desired_state = 'running' AND EXISTS (
      SELECT 1 FROM deployment d
       WHERE d.environment_id = NEW.id AND d.action = 'deploy' AND d.result = 'succeeded'
-        AND d.started_at >= COALESCE(
-            (SELECT MAX(r.ended_at) FROM deployment r
-              WHERE r.environment_id = NEW.id AND r.action = 'remove'), 0)))
+        AND NOT EXISTS (
+            SELECT 1 FROM deployment r
+             WHERE r.environment_id = NEW.id AND r.action = 'remove'
+               AND (r.started_at, r.rowid) > (d.started_at, d.rowid))))
 BEGIN
     SELECT RAISE(ABORT, 'illegal desired state transition');
 END;

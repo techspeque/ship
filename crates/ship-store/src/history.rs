@@ -351,8 +351,8 @@ impl Store {
     /// Brings a removed environment back to desired `running` through
     /// `deployment`, the `ship push --recreate` that just succeeded (Human,
     /// 2026-11-28). The only way out of `removed`: `deployment` must be a
-    /// succeeded `deploy` of this environment that started no earlier than
-    /// its latest removal ended, else [`StoreError::IllegalTransition`],
+    /// succeeded `deploy` of this environment with no removal after it in
+    /// the history's order (started_at, then insertion), else [`StoreError::IllegalTransition`],
     /// which the schema's trigger enforces too. An environment that is not
     /// removed is returned unchanged.
     pub async fn recreate_environment(
@@ -374,9 +374,15 @@ impl Store {
             .map_err(db)?
             .ok_or(not_found("deployment"))?;
         let d = deployment_from(&row)?;
-        let removed_at: Option<i64> = sqlx::query_scalar(
-            "SELECT MAX(ended_at) FROM deployment WHERE environment_id = ? AND action = 'remove'",
+        // "Later" in the history's order, (started_at, rowid): a deploy
+        // started in the removal's millisecond but inserted before it is
+        // not after it.
+        let removed_later: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM deployment d, deployment r
+              WHERE d.id = ? AND r.environment_id = ? AND r.action = 'remove'
+                AND (r.started_at, r.rowid) > (d.started_at, d.rowid))",
         )
+        .bind(deployment.to_string())
         .bind(environment.to_string())
         .fetch_one(&mut *tx)
         .await
@@ -384,7 +390,7 @@ impl Store {
         let through = d.environment_id == environment
             && d.action == DeploymentAction::Deploy
             && d.result == Some(DeploymentResult::Succeeded)
-            && d.started_at.unix_millis() >= removed_at.unwrap_or(0);
+            && !removed_later;
         if !through {
             return Err(illegal("environment"));
         }
